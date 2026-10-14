@@ -1,1 +1,1 @@
-../../../../dev-config.lua
+../../../dev-claudecode.lua

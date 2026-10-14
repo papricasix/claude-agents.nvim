@@ -1,8 +1,8 @@
--- Development configuration for claudecode.nvim with Snacks Explorer.
+-- Development configuration for claude-agents.nvim with Snacks Explorer.
 -- Loads the local plugin checkout (resolved in lua/config/lazy.lua) via `dir`
 -- so it works from a normal checkout or a git worktree.
 return {
-  "coder/claudecode.nvim",
+  "papricasix/claude-agents.nvim",
   dir = vim.g.claudecode_dev_dir,
   dependencies = { "folke/snacks.nvim" },
   keys = {
