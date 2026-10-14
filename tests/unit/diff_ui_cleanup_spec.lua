@@ -31,6 +31,7 @@ describe("Diff UI cleanup behavior", function()
     vim._windows[target_win] = { buf = 3 }
 
     -- Register a pending diff that was opened in a new tab
+    local accepted_text
     diff._register_diff_state(tab_name, {
       old_file_path = test_old_file,
       new_window = new_win,
@@ -44,7 +45,9 @@ describe("Diff UI cleanup behavior", function()
       had_terminal_in_original = false,
       autocmd_ids = {},
       status = "pending",
-      resolution_callback = function(_) end,
+      resolution_callback = function(result)
+        accepted_text = result.content[2].text
+      end,
       is_new_file = false,
     })
 
@@ -54,6 +57,12 @@ describe("Diff UI cleanup behavior", function()
       vim._last_command == nil or vim._last_command:match("^tabclose") == nil,
       "Did not expect ':tabclose' before close_tab tool call"
     )
+
+    -- Claude writes what FILE_SAVED carried. The view waits for that write
+    -- (diff_saved_write_spec covers close_tab arriving first, as it usually does).
+    local f = assert(io.open(test_old_file, "wb"))
+    f:write(accepted_text)
+    f:close()
 
     -- Simulate close_tab tool invocation
     local closed = diff.close_diff_by_tab_name(tab_name)

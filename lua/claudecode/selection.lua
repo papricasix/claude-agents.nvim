@@ -115,6 +115,25 @@ function M._clear_autocommands()
   vim.api.nvim_clear_autocmds({ group = "ClaudeCodeSelection" })
 end
 
+---The path a buffer is reported to Claude as: its name, except for a review
+---diff's proposal. That is a scratch buffer named after the diff's tab
+---(`✻ [Claude Code] cart.py (…) ⧉ (proposed)`). Reported by that name, the CLI
+---showed it as the editor context and would attach it to the next prompt, and
+---kept doing so after the diff was accepted: focus then returns to the Claude
+---terminal, which reports nothing. It is reported as the file it proposes to
+---change, which is what the VS Code extension does (its proposed side is a
+---`_claude_fs_right:` document over the real path, and it sends that document's
+---`fsPath`). The positions stay the proposal's, which are the file's once the
+---diff is accepted.
+---@param bufnr integer
+---@return string path
+function M.reported_path(bufnr)
+  -- Only if the diff module is in use: nothing else makes a proposal buffer.
+  local diff = package.loaded["claudecode.diff"]
+  local path = type(diff) == "table" and type(diff.proposal_file) == "function" and diff.proposal_file(bufnr) or nil
+  return path or vim.api.nvim_buf_get_name(bufnr)
+end
+
 ---Handles cursor movement events.
 ---Triggers a debounced update of the selection.
 function M.on_cursor_moved()
@@ -488,7 +507,7 @@ function M.get_visual_selection()
   local start_coords, end_coords = get_selection_coordinates()
 
   local current_buf = vim.api.nvim_get_current_buf()
-  local file_path = vim.api.nvim_buf_get_name(current_buf)
+  local file_path = M.reported_path(current_buf)
 
   local lines_content = vim.api.nvim_buf_get_lines(
     current_buf,
@@ -533,7 +552,7 @@ end
 function M.get_cursor_position()
   local cursor_pos = vim.api.nvim_win_get_cursor(0)
   local current_buf = vim.api.nvim_get_current_buf()
-  local file_path = vim.api.nvim_buf_get_name(current_buf)
+  local file_path = M.reported_path(current_buf)
 
   return {
     text = "",
@@ -633,7 +652,7 @@ function M.get_range_selection(line1, line2)
   end
 
   local current_buf = vim.api.nvim_get_current_buf()
-  local file_path = vim.api.nvim_buf_get_name(current_buf)
+  local file_path = M.reported_path(current_buf)
 
   -- Get the total number of lines in the buffer
   local total_lines = vim.api.nvim_buf_line_count(current_buf)
@@ -717,8 +736,10 @@ function M.send_at_mention_for_visual_selection(line1, line2)
     end
   end
 
-  -- Sanity check: ensure the selection is for the current buffer
-  local current_buf_name = vim.api.nvim_buf_get_name(vim.api.nvim_get_current_buf())
+  -- Sanity check: ensure the selection is for the current buffer. Compared as
+  -- reported, or a selection made in a diff's proposal (reported as the real
+  -- file) would never match the proposal's own name.
+  local current_buf_name = M.reported_path(vim.api.nvim_get_current_buf())
   if sel_to_send.filePath ~= current_buf_name then
     logger.warn(
       "selection",

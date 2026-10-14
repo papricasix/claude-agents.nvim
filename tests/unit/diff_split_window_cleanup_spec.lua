@@ -22,6 +22,14 @@ describe("Diff split window cleanup", function()
   local test_old_file = "/tmp/test_split_window_cleanup_old.txt"
   local tab_name = "test_split_window_cleanup_tab"
 
+  -- Claude writes what FILE_SAVED carried. An accepted diff's view waits for
+  -- that write (diff_saved_write_spec covers close_tab arriving before it).
+  local function claude_writes_accepted_text(state)
+    local f = assert(io.open(test_old_file, "wb"))
+    f:write(state.result_content.content[2].text)
+    f:close()
+  end
+
   before_each(function()
     reset_vim_state_for_splits()
 
@@ -94,6 +102,7 @@ describe("Diff split window cleanup", function()
     -- Accept should not close windows yet
     assert.is_true(vim.api.nvim_win_is_valid(target_win))
 
+    claude_writes_accepted_text(state)
     local closed = diff.close_diff_by_tab_name(tab_name)
     assert.is_true(closed)
 
@@ -128,13 +137,27 @@ describe("Diff split window cleanup", function()
 
     diff._resolve_diff_as_saved(tab_name, state.new_buffer)
 
-    local closed = diff.close_diff_by_tab_name(tab_name)
+    -- Every command, not the last one: the file's reload follows the teardown.
+    local commands = {}
+    local real_cmd = vim.cmd
+    vim.cmd = function(command)
+      commands[#commands + 1] = command
+      return real_cmd(command)
+    end
+    claude_writes_accepted_text(state)
+    local ok, closed = pcall(diff.close_diff_by_tab_name, tab_name)
+    vim.cmd = real_cmd
+    assert.is_true(ok, tostring(closed))
     assert.is_true(closed)
 
     assert.is_false(vim.api.nvim_win_is_valid(new_win))
     assert.is_true(vim.api.nvim_win_is_valid(1000))
 
     -- In reuse scenario, diff mode should have been disabled.
-    assert.are.equal("diffoff", vim._last_command)
+    local diffoff = false
+    for _, command in ipairs(commands) do
+      diffoff = diffoff or command == "diffoff"
+    end
+    assert.is_true(diffoff, "Expected diffoff among " .. table.concat(commands, ", "))
   end)
 end)

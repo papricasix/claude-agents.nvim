@@ -1299,6 +1299,11 @@ function M._resolve_diff_as_saved(tab_name, buffer_id)
 
   diff_data.status = "saved"
   diff_data.result_content = result
+  -- What close_tab waits to see on disk before taking the view down (see
+  -- `await_saved_write`): the text Claude is about to write, and the file as it
+  -- stands before the answer below lets Claude write it.
+  diff_data.accepted_text = final_content
+  diff_data.disk_before = M._io.signature(diff_data.old_file_path)
 
   -- Resume the coroutine with the result (for deferred response system)
   if diff_data.resolution_callback then
@@ -1354,6 +1359,231 @@ local function reload_file_buffers(file_path, original_cursor_pos)
       end
     end
   end
+end
+
+-- Accepting a diff and Claude writing the file are two steps, and close_tab
+-- arrives between them. Read from CLI 2.1.299: once `openDiff` answers
+-- FILE_SAVED, Claude's diff helper sends close_tab without awaiting it and hands
+-- the accepted text back to the Edit tool, which writes the file after that.
+-- Taking the diff down on close_tab therefore put the file's buffer back into
+-- the window with its old text, and the reload that followed a fixed 100ms later
+-- brought the new text back: on screen, new → old → new. So an accepted diff
+-- stays up until its text is on disk, and is then taken down and its file
+-- reloaded in one go, which Neovim draws as a single change.
+
+---How often the file is looked at while an accepted diff waits for Claude's write.
+M._write_poll_ms = 10
+---How long it waits before taking the diff down anyway: long enough that only a
+---write that is not coming runs into it.
+M._write_timeout_ms = 2000
+
+-- The filesystem and the clock as the wait sees them, replaced by the specs.
+M._io = {
+  ---Size, mtime and inode of a file, or nil when it is missing (or nothing can stat).
+  ---@param path string|nil
+  ---@return string|nil
+  signature = function(path)
+    local uv = vim.uv or vim.loop
+    if not path or not uv or not uv.fs_stat then
+      return nil
+    end
+    local st = uv.fs_stat(path)
+    if not st then
+      return nil
+    end
+    return table.concat({ st.size, st.mtime.sec, st.mtime.nsec, st.ino }, ":")
+  end,
+  ---@param path string
+  ---@return string|nil contents nil when the file is missing
+  read = function(path)
+    local f = io.open(path, "rb")
+    if not f then
+      return nil
+    end
+    local data = f:read("*a")
+    f:close()
+    return data
+  end,
+  ---@return number milliseconds
+  now = function()
+    return (vim.uv or vim.loop).now()
+  end,
+}
+
+---Accepted diffs waiting for Claude to write their file, oldest first. An entry
+---outlives its view when a new diff takes that down early (`release_saved_diffs`),
+---since the file still wants reloading once the write lands.
+local awaiting_write = {}
+local write_timer = nil
+
+local function stop_write_timer()
+  local timer = write_timer
+  write_timer = nil
+  if timer then
+    pcall(function()
+      timer:stop()
+      timer:close()
+    end)
+  end
+end
+
+local function start_write_timer()
+  if write_timer then
+    return
+  end
+  local ok, timer = pcall(function()
+    return (vim.uv or vim.loop).new_timer()
+  end)
+  if not ok or not timer then
+    return
+  end
+  write_timer = timer
+  pcall(function()
+    timer:start(M._write_poll_ms, M._write_poll_ms, function()
+      vim.schedule(function()
+        M._poll_saved_writes()
+      end)
+    end)
+  end)
+end
+
+---@param text string
+---@return string
+local function lf(text)
+  return (text:gsub("\r\n", "\n"))
+end
+
+---Whether Claude's write of an accepted diff has reached the disk.
+---@param entry table
+---@return boolean
+local function accepted_on_disk(entry)
+  local text = M._io.read(entry.path)
+  if text == nil then
+    return false -- A new file Claude has not created yet.
+  end
+  -- Line endings aside: the proposal of a CRLF file holds LF text (Claude sends
+  -- it that way), and Claude writes the file back in its own endings.
+  if lf(text) == lf(entry.accepted) then
+    return true
+  end
+  -- Anything else Claude may convert (an encoding, a byte order mark) leaves the
+  -- text unrecognisable, so a change to the file that has held still for one
+  -- poll is taken to be the write. Held still, because a write truncates first.
+  local signature = M._io.signature(entry.path)
+  local settled = signature ~= nil and signature ~= entry.before and signature == entry.last_seen
+  entry.last_seen = signature
+  return settled
+end
+
+---Take an accepted diff's view down, unless that has happened already.
+---@param entry table
+local function tear_down_saved(entry)
+  if entry.torn_down then
+    return
+  end
+  entry.torn_down = true
+  -- Something else may have taken it down meanwhile (shutdown, a diff opened
+  -- under the same tab name); its state is gone then, or is another diff's.
+  if active_diffs[entry.tab_name] == entry.diff then
+    M._cleanup_diff_state(entry.tab_name, "diff tab closed after save")
+  end
+end
+
+---Take the view down and reload the file, in that order and in one go: Neovim
+---draws nothing between the two, so the window goes from the diff straight to
+---the file as Claude wrote it, never through the buffer's old text.
+---@param entry table
+local function finish_saved(entry)
+  tear_down_saved(entry)
+  reload_file_buffers(entry.path, entry.diff.original_cursor_pos)
+end
+
+---@param entry table
+local function finish_saved_safely(entry)
+  local ok, err = pcall(finish_saved, entry)
+  if not ok then
+    logger.error("diff", "Failed to finish accepted diff", entry.tab_name, tostring(err))
+  end
+end
+
+---Called by close_tab for an accepted diff: finish it once Claude has written
+---the file. Idempotent, since closeAllDiffTabs can name a diff close_tab already
+---did.
+---@param tab_name string
+---@param diff_data table
+local function await_saved_write(tab_name, diff_data)
+  for _, entry in ipairs(awaiting_write) do
+    if entry.diff == diff_data then
+      return
+    end
+  end
+  local entry = {
+    tab_name = tab_name,
+    diff = diff_data,
+    path = diff_data.old_file_path,
+    accepted = diff_data.accepted_text,
+    before = diff_data.disk_before,
+    deadline = M._io.now() + M._write_timeout_ms,
+  }
+  if not entry.path then
+    tear_down_saved(entry)
+    return
+  end
+  -- Nothing recorded to wait for, or the write landed before close_tab did.
+  if entry.accepted == nil or accepted_on_disk(entry) then
+    finish_saved(entry)
+    return
+  end
+  awaiting_write[#awaiting_write + 1] = entry
+  start_write_timer()
+end
+
+---One look at every accepted diff still waiting for its write. Driven by
+---`write_timer`; the specs call it directly.
+function M._poll_saved_writes()
+  local entries = awaiting_write
+  awaiting_write = {}
+  local now = M._io.now()
+  for _, entry in ipairs(entries) do
+    if accepted_on_disk(entry) or now >= entry.deadline then
+      finish_saved_safely(entry)
+    else
+      awaiting_write[#awaiting_write + 1] = entry
+    end
+  end
+  if #awaiting_write == 0 then
+    stop_write_timer()
+  end
+end
+
+---Take down every accepted diff still waiting for its write, before a new diff
+---picks a window: the unified provider would pick the very window a waiting
+---diff holds, record that diff's proposal as the buffer to restore, and lose its
+---own proposal from the window when the waiting diff came down and restored
+---what it had displaced. The reload still waits for the write unless it has
+---landed, as it usually has: a conversation runs its edits one call at a time,
+---so its next diff follows its last write. (A subagent beside it need not.)
+local function release_saved_diffs()
+  local entries = awaiting_write
+  awaiting_write = {}
+  for _, entry in ipairs(entries) do
+    if accepted_on_disk(entry) then
+      finish_saved_safely(entry)
+    else
+      pcall(tear_down_saved, entry)
+      awaiting_write[#awaiting_write + 1] = entry
+    end
+  end
+  if #awaiting_write == 0 then
+    stop_write_timer()
+  end
+end
+
+---Forget every write being waited for. Only for when every diff is torn down at
+---once, which is Neovim exiting (and spec teardown).
+local function drop_saved_waits()
+  awaiting_write = {}
+  stop_write_timer()
 end
 
 ---Resolve diff as rejected (user closed/rejected)
@@ -1743,6 +1973,7 @@ function M._cleanup_all_active_diffs(reason)
   for tab_name, _ in pairs(active_diffs) do
     M._cleanup_diff_state(tab_name, reason)
   end
+  drop_saved_waits()
 end
 
 ---Read a file's contents from disk; returns empty string if the file is missing.
@@ -2456,6 +2687,10 @@ end
 ---@param client_id string|nil Id of the MCP client opening the diff (so it can be cleaned up if that client disconnects)
 ---@return table response MCP-compliant response with content array
 function M.open_diff_blocking(old_file_path, new_file_path, new_file_contents, tab_name, client_id)
+  -- An accepted diff waiting for Claude's write still holds its window, which
+  -- this one may be about to pick.
+  release_saved_diffs()
+
   -- Check for existing diff with same tab_name
   if active_diffs[tab_name] then
     local existing_diff = active_diffs[tab_name]
@@ -2566,16 +2801,11 @@ function M.close_diff_by_tab_name(tab_name)
     return false
   end
 
-  -- If the diff was already saved, reload file buffers and clean up
+  -- If the diff was already saved, Claude sent this before writing the file:
+  -- the view stays up until the accepted text is on disk, then comes down with
+  -- the file reloaded (see `await_saved_write`).
   if diff_data.status == "saved" then
-    -- Claude Code CLI has written the file, reload any open buffers
-    if diff_data.old_file_path then
-      -- Add a small delay to ensure Claude CLI has finished writing the file
-      vim.defer_fn(function()
-        M.reload_file_buffers_manual(diff_data.old_file_path, diff_data.original_cursor_pos)
-      end, 100) -- 100ms delay
-    end
-    M._cleanup_diff_state(tab_name, "diff tab closed after save")
+    await_saved_write(tab_name, diff_data)
     return true
   end
 
@@ -2720,6 +2950,32 @@ function M.is_live_for_file(file_path)
     end
   end
   return false
+end
+
+---The file a review diff's proposal buffer stands for, or nil when `buf` is not
+---the proposal of a diff that is still open. The proposal is a scratch buffer
+---named after the diff's tab (`✻ [Claude Code] cart.py (…) ⧉ (proposed)`), which
+---is no path at all, so whatever reports "the file the user is in" asks here
+---first. Both providers mark it with `b:claudecode_diff_tab_name`.
+---@param buf integer
+---@return string|nil path
+function M.proposal_file(buf)
+  local ok, tab_name = pcall(function()
+    return vim.b[buf].claudecode_diff_tab_name
+  end)
+  if not ok or type(tab_name) ~= "string" then
+    return nil
+  end
+  local d = active_diffs[tab_name]
+  -- The variable alone could outlive its diff on a buffer something else kept;
+  -- only the buffer the open diff proposes counts.
+  if not d or d.new_buffer ~= buf then
+    return nil
+  end
+  -- The new path, which is what the VS Code extension reports: its proposed side
+  -- is a `_claude_fs_right:<new_file_path>` document, and its selection tracking
+  -- sends that document's `fsPath`. Claude passes the same path as both anyway.
+  return d.new_file_path or d.old_file_path
 end
 
 ---Manual buffer reload function for testing/debugging
