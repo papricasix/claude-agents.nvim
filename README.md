@@ -16,7 +16,9 @@ Claude Code connects to Neovim the way it connects to VS Code: it sees what you 
 - **Clickable paths.** File paths in Claude's terminal open in Neovim, not in your file manager.
 - **Conversations that come back.** Restore a Neovim session and each tab's Claude resumes where it left off.
 
-## See it work
+## In your editor
+
+With one Claude beside your code, as `:ClaudeCode` opens it.
 
 **The live cursor** follows Claude through a file as it reads and edits it.
 
@@ -25,6 +27,10 @@ Claude Code connects to Neovim the way it connects to VS Code: it sees what you 
 **Review an edit** as an inline diff in your editor, and accept it with `:w`.
 
 ![Claude's proposed rename shown as an inline diff, accepted with :w](https://raw.githubusercontent.com/papricasix/claude-agents.nvim/assets/diff-accept.gif)
+
+## In the agents view
+
+A tab of its own, for several Claudes at once. Diffs and files an agent opens appear there as floats.
 
 **Read what a session did**: open an edit, a changed file or a subagent's work, then flag the session to come back to.
 
@@ -37,7 +43,6 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 ```lua
 {
   "papricasix/claude-agents.nvim",
-  main = "claudecode", -- the Lua module keeps upstream's name
   dependencies = { "folke/snacks.nvim" }, -- optional: a nicer terminal window
   opts = {
     agents = { enabled = true },
@@ -50,9 +55,9 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 }
 ```
 
-Coming from [coder/claudecode.nvim](https://github.com/coder/claudecode.nvim)? Change the repo line, add `main = "claudecode"`, and keep everything else: the module, the commands and the options are the same.
+Coming from [coder/claudecode.nvim](https://github.com/coder/claudecode.nvim)? Change the repo line and keep everything else: the commands and the options are the same. The Lua module is now `claude_agents`; a `require("claudecode…")` in your config still works, with a one-time reminder to rename it.
 
-You need Neovim 0.11 or newer and the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code). [unified.nvim](https://github.com/papricasix/unified.nvim) is optional, and gives you inline diffs. `:checkhealth claudecode` tells you what is missing.
+You need Neovim 0.11 or newer and the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code). [unified.nvim](https://github.com/papricasix/unified.nvim) is optional, and gives you inline diffs. `:checkhealth claude_agents` tells you what is missing.
 
 ## Good to know
 
