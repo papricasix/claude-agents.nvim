@@ -63,9 +63,44 @@ local function searcher(name)
   end
 end
 
----Install the loader once. Neovim runs LuaJIT or Lua 5.1, whose searcher list
----is `package.loaders`.
+---Make `package.loaded["claudecode.<mod>"]` answer with the loaded
+---`claude_agents` module. Configs look a module up there to act only when it is
+---already loaded (a session manager's save hook, say), and that lookup never
+---reaches a loader: without this it found nothing after the rename and the
+---hook silently did nothing. Keys are only answered, never stored, and any
+---`__index` already on the table is kept behind this one.
+local function alias_loaded()
+  local loaded = package.loaded
+  local mt = getmetatable(loaded)
+  if mt and mt.__claude_agents_alias then
+    return
+  end
+  if not mt then
+    mt = {}
+    setmetatable(loaded, mt)
+  end
+  local previous = mt.__index
+  mt.__claude_agents_alias = true
+  mt.__index = function(t, key)
+    local new = type(key) == "string" and M.new_name(key) or nil
+    local mod = new and rawget(t, new)
+    if mod ~= nil then
+      warn_once(key)
+      return mod
+    end
+    if type(previous) == "function" then
+      return previous(t, key)
+    elseif type(previous) == "table" then
+      return previous[key]
+    end
+    return nil
+  end
+end
+
+---Install the loader and the `package.loaded` alias, once. Neovim runs LuaJIT
+---or Lua 5.1, whose searcher list is `package.loaders`.
 function M.install()
+  alias_loaded()
   local loaders = package.loaders
   for _, loader in ipairs(loaders) do
     if loader == searcher then

@@ -58,6 +58,23 @@ describe("claude_agents.compat", function()
     expect(notes[1].msg:find('"claude_agents"', 1, true) ~= nil).to_be_true()
   end)
 
+  it("answers a package.loaded lookup by the old name with the loaded module", function()
+    -- A save hook checks package.loaded to act only when the module is in
+    -- use; that lookup never reaches a loader.
+    expect(package.loaded["claudecode.fake"]).to_be(nil)
+    local mod = require("claude_agents.fake")
+    expect(package.loaded["claudecode.fake"]).to_be(mod)
+    expect(#notes).to_be(1)
+    -- Answered, not stored: the old key stays absent from the table itself.
+    expect(rawget(package.loaded, "claudecode.fake")).to_be(nil)
+  end)
+
+  it("leaves package.loaded lookups of other names alone", function()
+    expect(package.loaded["claudecode_unrelated"]).to_be(nil)
+    expect(package.loaded["string"]).to_be(string)
+    expect(#notes).to_be(0)
+  end)
+
   it("installs its loader only once", function()
     local loaders = package.loaders
     local before = #loaders
