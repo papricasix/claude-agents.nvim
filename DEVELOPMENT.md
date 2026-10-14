@@ -1,6 +1,6 @@
 # Development Guide
 
-Quick guide for contributors to the claudecode.nvim project.
+Quick guide for contributors to claude-agents.nvim.
 
 ## Development Environment
 
@@ -37,30 +37,29 @@ claudecode.nvim/
 ├── plugin/                  # Plugin loader
 ├── tests/                   # Test suite
 │   ├── unit/                # Unit tests
-│   ├── component/           # Component tests
 │   ├── integration/         # Integration tests
 │   └── mocks/               # Test mocks
+├── docs/                    # User guides, protocol and architecture
 ├── README.md                # User documentation
-├── ARCHITECTURE.md          # Architecture documentation
 └── DEVELOPMENT.md           # Development guide
 ```
 
 ## Core Components Implementation Status
 
-| Component              | Status  | Priority | Notes                                                                |
-| ---------------------- | ------- | -------- | -------------------------------------------------------------------- |
-| Basic plugin structure | ✅ Done | -        | Initial setup complete                                               |
-| Configuration system   | ✅ Done | -        | Support for user configuration                                       |
-| WebSocket server       | ✅ Done | -        | Pure Lua RFC 6455 compliant                                          |
-| Lock file management   | ✅ Done | -        | Basic implementation complete                                        |
-| Selection tracking     | ✅ Done | -        | Enhanced with multi-mode support                                     |
-| MCP tools framework    | ✅ Done | -        | Dynamic tool registration and schema system                          |
-| Core MCP tools         | ✅ Done | -        | openFile, openDiff, getCurrentSelection, getOpenEditors              |
-| Diff integration       | ✅ Done | -        | Native Neovim diff with configurable options                         |
-| Terminal integration   | ✅ Done | -        | Snacks.nvim and native terminal support                              |
-| Tests                  | ✅ Done | -        | Comprehensive test suite with unit, component, and integration tests |
-| CI pipeline            | ✅ Done | -        | GitHub Actions configured                                            |
-| Documentation          | ✅ Done | -        | Complete documentation                                               |
+| Component              | Status  | Priority | Notes                                                    |
+| ---------------------- | ------- | -------- | -------------------------------------------------------- |
+| Basic plugin structure | ✅ Done | -        | Initial setup complete                                   |
+| Configuration system   | ✅ Done | -        | Support for user configuration                           |
+| WebSocket server       | ✅ Done | -        | Pure Lua RFC 6455 compliant                              |
+| Lock file management   | ✅ Done | -        | Basic implementation complete                            |
+| Selection tracking     | ✅ Done | -        | Enhanced with multi-mode support                         |
+| MCP tools framework    | ✅ Done | -        | Dynamic tool registration and schema system              |
+| Core MCP tools         | ✅ Done | -        | openFile, openDiff, getCurrentSelection, getOpenEditors  |
+| Diff integration       | ✅ Done | -        | Native Neovim diff with configurable options             |
+| Terminal integration   | ✅ Done | -        | Snacks.nvim and native terminal support                  |
+| Tests                  | ✅ Done | -        | Comprehensive test suite with unit and integration tests |
+| CI pipeline            | ✅ Done | -        | GitHub Actions configured                                |
+| Documentation          | ✅ Done | -        | Complete documentation                                   |
 
 ## Development Priorities
 
@@ -102,6 +101,17 @@ mise run check
 mise run format
 ```
 
+## README media
+
+The README's GIFs are recorded with [vhs](https://github.com/charmbracelet/vhs) from `demo/`: a made-up project, a Neovim config of its own, and one tape per shot. Each recording runs a real `claude` (haiku) on the account you are logged in to, with your own Claude settings, hooks and MCP servers left out.
+
+```bash
+DEMO_UNIFIED=/path/to/papricasix/unified.nvim demo/render.sh   # every shot, into /tmp/demo/out
+demo/render.sh hero                                            # one shot
+```
+
+The media live on the orphan `assets` branch, so installing the plugin never downloads them; commit a new set there and push it. `demo/render.sh` documents its environment variables at the top.
+
 ## Implementation Guidelines
 
 1. **Error Handling**
@@ -115,8 +125,8 @@ mise run format
    - Use asynchronous operations where possible
 
 3. **Compatibility**
-   - Support Neovim >= 0.8.0
-   - Zero external dependencies (pure Lua implementation)
+   - Support Neovim >= 0.10 (terminal links need 0.11)
+   - No dependencies for the core (pure Lua); unified.nvim and snacks.nvim are optional and detected
    - Follow Neovim plugin best practices
 
 4. **Testing**

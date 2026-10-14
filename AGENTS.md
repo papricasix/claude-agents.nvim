@@ -6,7 +6,8 @@
 - `plugin/`: Lightweight loader that guards startup and optional auto-setup.
 - `tests/`: Busted test suite (`unit/`, `integration/`, `helpers/`, `mocks/`).
 - `fixtures/`: Minimal Neovim configs for manual and integration testing.
-- `scripts/`: Development helpers; `dev-config.lua` aids local testing.
+- `scripts/`: Development helpers.
+- `docs/`: User guides (`guide.md`, `agents.md`), `protocol.md`, `architecture.md`.
 
 ## Build, Test, and Development Commands
 
@@ -38,7 +39,7 @@
 ## Commit & Pull Request Guidelines
 
 - Commits: Use Conventional Commits (e.g., `feat:`, `fix:`, `docs:`, `test:`, `chore:`). Keep messages imperative and scoped.
-- PRs: include a clear description, linked issues, repro steps, and tests. Update docs (`README.md`, `ARCHITECTURE.md`, or `DEVELOPMENT.md`) when behavior changes.
+- PRs: include a clear description, linked issues, repro steps, and tests. Update docs (`README.md`, `docs/`, or `DEVELOPMENT.md`) when behavior changes.
 - Pre-flight: run `mise run all` (format, lint, test). Attach screenshots or terminal recordings for UX-visible changes (diff flows, terminal behavior).
 
 ## Security & Configuration Tips

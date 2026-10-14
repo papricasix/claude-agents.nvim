@@ -1,5 +1,8 @@
 # The Story: How I Reverse-Engineered Claude's IDE Protocol
 
+> [!NOTE]
+> How [claudecode.nvim](https://github.com/coder/claudecode.nvim), the plugin this fork grew out of, came to be — told by its author, Thomas Kosiewski of Coder, and kept here as he wrote it. The "I" is his.
+
 ## The Reddit Post That Started Everything
 
 While browsing Reddit at DevOpsCon in London, I stumbled upon a post that caught my eye: someone mentioned finding .vsix files in Anthropic's npm package for their Claude Code VS Code extension.
@@ -86,4 +89,4 @@ The genie is out of the bottle, and it speaks WebSocket.
 
 ---
 
-_If you found this story interesting, check out the [protocol documentation](./PROTOCOL.md) for implementation details, or dive into the [code](https://github.com/coder/claudecode.nvim) to see how it all works._
+_If you found this story interesting, check out the [protocol documentation](protocol.md) for implementation details, or dive into the [code](https://github.com/coder/claudecode.nvim) to see how it all works._

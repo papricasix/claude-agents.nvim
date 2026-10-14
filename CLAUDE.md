@@ -75,6 +75,8 @@ Available: `netrw`, `nvim-tree`, `oil`, `mini-files`.
 - `_measure_diff_region` reads unified.nvim's extmarks for the changed line span **plus deleted lines**, which are virtual lines and therefore invisible to a plain `zz`.
 - `_diff_scroll_position` centers the change when it fits the window, else pins its first changed line — with deleted lines above it, via `topfill` — to the top. Applied with `winrestview`; `topfill` is the only way to keep leading virtual lines on screen.
 - Shared with the live cursor's edit preview, which renders the same marks.
+- **An accepted diff stays up until Claude has written the file.** Claude sends `close_tab` _before_ it writes (read from CLI 2.1.299: once `openDiff` answers `FILE_SAVED`, `close_tab` is sent unawaited and the Edit tool writes afterwards), so tearing down on `close_tab` put the file's buffer back with its old text until a reload 100ms later — new → old → new on screen. `close_diff_by_tab_name` → `await_saved_write` polls every `_write_poll_ms` (10) until the accepted text is on disk (line-ending-blind; else a size/mtime/inode change that held still for one poll), then tears down and reloads in one call, which Neovim draws as one change; `_write_timeout_ms` (2s) bounds the wait. A new `openDiff` first takes waiting diffs down (`release_saved_diffs`), or the unified provider would pick the waiting diff's window and lose its proposal when that one restored its buffer.
+- **A proposal buffer is reported as the file it proposes to change** (`diff.proposal_file`, keyed by `b:claudecode_diff_tab_name`; `selection.reported_path` for every selection and the at-mention check). Its own name (`✻ [Claude Code] cart.py (…) ⧉ (proposed)`) became the CLI's editor context and stayed after accepting, since focus returns to the terminal, which reports nothing. Matches the VS Code extension, which sends the `fsPath` of its `_claude_fs_right:` document.
 
 ### 7. Live Cursor
 
@@ -571,7 +573,7 @@ opts = {
 - `lua/claudecode/init.lua` — entry point and setup
 - `lua/claudecode/config.lua` — configuration
 - `plugin/claudecode.lua` — plugin loader with version checks
-- `tests/` — unit, component, integration suites
+- `tests/` — unit and integration suites
 
 ## Configuration Options
 
@@ -599,10 +601,9 @@ require("claudecode").setup({
 
 ## Testing Architecture
 
-Three layers:
+Two layers (plus a few older top-level `tests/*_test.lua` files):
 
-- **Unit** (`tests/unit/`) — individual functions in isolation
-- **Component** (`tests/component/`) — subsystems with a controlled environment
+- **Unit** (`tests/unit/`) — individual functions and subsystems in isolation, against `tests/mocks/`
 - **Integration** (`tests/integration/`) — end-to-end with a mock Claude client
 
 Files match `*_spec.lua` / `*_test.lua`, busted framework. Custom JSON encoder/decoder in `tests/busted_setup.lua` handles nested structures, Lua keywords as keys (`["end"]`), and MCP message validation.
@@ -657,7 +658,7 @@ Log levels: DEBUG for successful auth/connection/handshake detail, WARN for hand
 
 ## Development Notes
 
-- Requires Neovim >= 0.8.0; only built-ins (`vim.loop`, `vim.json`, `vim.schedule`); zero external dependencies for core functionality.
+- Requires Neovim >= 0.10 (the `plugin/` guard and `:checkhealth` say so; terminal links need 0.11, where `TermRequest` hands over `data.sequence` — 0.10 passes a bare string); only built-ins (`vim.loop`, `vim.json`, `vim.schedule`); zero external dependencies for core functionality.
 - Selection tracking is debounced; WebSocket frames optimized for JSON-RPC payload sizes; connections pooled and cleaned up.
 - Compatible with nvim-tree, oil.nvim, neo-tree, mini.files.
 
@@ -684,7 +685,7 @@ rg "0\.1\.0" .  # only CHANGELOG.md historical entries should remain
 1. Read existing tests and docs to understand the system
 2. Follow existing patterns and conventions
 3. `mise run all`
-4. Update docs (this file, PROTOCOL.md)
+4. Update docs (this file, `docs/protocol.md`, and the user guides `docs/guide.md` / `docs/agents.md` — keep those short)
 5. Commit
 
 ### Adding an Integration (file explorer, terminal)
