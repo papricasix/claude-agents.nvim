@@ -1,5 +1,5 @@
-if vim.fn.has("nvim-0.8.0") ~= 1 then
-  vim.api.nvim_err_writeln("Claude Code requires Neovim >= 0.8.0")
+if vim.fn.has("nvim-0.10.0") ~= 1 then
+  vim.api.nvim_err_writeln("Claude Code requires Neovim >= 0.10.0")
   return
 end
 

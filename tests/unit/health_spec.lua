@@ -107,6 +107,62 @@ describe("health", function()
     expect(has_report("error", ".")).to_be_false()
   end)
 
+  describe("Neovim version", function()
+    local real_has
+
+    before_each(function()
+      real_has = vim.fn.has
+    end)
+
+    after_each(function()
+      vim.fn.has = real_has
+    end)
+
+    local function parts(version)
+      local out = {}
+      for n in version:gmatch("%d+") do
+        out[#out + 1] = tonumber(n)
+      end
+      return out
+    end
+
+    -- has("nvim-X") answers whether `version` is at least X, compared numerically
+    local function running(version)
+      local have = parts(version)
+      vim.fn.has = function(feature)
+        local wanted = feature:match("^nvim%-(.+)$")
+        if not wanted then
+          return 0
+        end
+        local want = parts(wanted)
+        for i = 1, 3 do
+          local w, h = want[i] or 0, have[i] or 0
+          if w ~= h then
+            return w < h and 1 or 0
+          end
+        end
+        return 1
+      end
+    end
+
+    it("warns on 0.10, where terminal links cannot work", function()
+      running("0.10.4")
+
+      health.check()
+
+      expect(has_report("warn", "needs 0%.11")).to_be_true()
+      expect(has_report("error", "Neovim")).to_be_false()
+    end)
+
+    it("errors below 0.10", function()
+      running("0.9.5")
+
+      health.check()
+
+      expect(has_report("error", "Neovim >= 0%.10%.0 is required")).to_be_true()
+    end)
+  end)
+
   it("errors when setup() was not called and stops early", function()
     fake_state.initialized = false
 

@@ -810,7 +810,7 @@ local vim = {
     end,
 
     has = function(feature)
-      if feature == "nvim-0.8.0" then
+      if feature == "nvim-0.8.0" or feature == "nvim-0.10.0" or feature == "nvim-0.11.0" then
         return 1
       end
       return 0

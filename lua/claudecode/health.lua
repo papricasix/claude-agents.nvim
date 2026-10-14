@@ -1,4 +1,4 @@
---- Health check for claudecode.nvim, run via `:checkhealth claudecode`.
+--- Health check for claude-agents.nvim, run via `:checkhealth claudecode`.
 ---
 --- Verifies the prerequisites (Neovim version, Claude CLI, terminal provider)
 --- and reports live integration state -- every running instance's WebSocket
@@ -23,11 +23,16 @@ local function executable_of(cmd)
   return cmd:match("^(%S+)") or cmd
 end
 
+-- 0.10 is the floor (the terminal-link capture registers a TermRequest
+-- autocmd, which older versions reject). On 0.10 TermRequest hands over the
+-- sequence as a bare string rather than `data.sequence`, so links never open.
 local function check_neovim()
-  if vim.fn.has("nvim-0.8.0") == 1 then
-    ok("Neovim >= 0.8.0")
+  if vim.fn.has("nvim-0.11.0") == 1 then
+    ok("Neovim >= 0.11.0")
+  elseif vim.fn.has("nvim-0.10.0") == 1 then
+    warn("Neovim 0.10: clicking file paths in the Claude terminal needs 0.11")
   else
-    error_("Neovim >= 0.8.0 is required")
+    error_("Neovim >= 0.10.0 is required")
   end
 end
 
@@ -35,7 +40,7 @@ end
 ---@return boolean set_up
 local function check_setup(claudecode)
   if claudecode.state.initialized then
-    ok("claudecode.nvim " .. claudecode.version:string() .. " is set up")
+    ok("claude-agents.nvim " .. claudecode.version:string() .. " is set up")
     return true
   end
   error_("setup() has not been called", { 'Call require("claudecode").setup() (or use your plugin manager\'s opts)' })
@@ -107,7 +112,7 @@ local function check_optional_deps(config)
     ok("unified.nvim available (inline diffs, live cursor edit previews, file history)")
   elseif wants_unified then
     warn("unified.nvim is not installed; inline/float diffs fall back to a two-window split", {
-      "Install kiyoon/unified.nvim (or papricasix/unified.nvim) for the inline renderer",
+      "Install papricasix/unified.nvim for the inline renderer (the fork; the original lacks show_against_text)",
     })
   else
     info("unified.nvim not installed: diffs use the native two-window split")
@@ -170,7 +175,7 @@ local function check_instances(claudecode)
 end
 
 function M.check()
-  start("claudecode.nvim")
+  start("claude-agents.nvim")
 
   check_neovim()
 
