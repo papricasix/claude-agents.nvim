@@ -1,4 +1,4 @@
-describe("claudecode.terminal.external", function()
+describe("claude_agents.terminal.external", function()
   local external_provider
   local mock_vim
   local original_vim
@@ -47,18 +47,18 @@ describe("claudecode.terminal.external", function()
     _G.vim = mock_vim
 
     -- Clear package cache and reload module
-    package.loaded["claudecode.terminal.external"] = nil
-    package.loaded["claudecode.logger"] = nil
+    package.loaded["claude_agents.terminal.external"] = nil
+    package.loaded["claude_agents.logger"] = nil
 
     -- Mock logger
-    package.loaded["claudecode.logger"] = {
+    package.loaded["claude_agents.logger"] = {
       debug = spy.new(function() end),
       info = spy.new(function() end),
       warn = spy.new(function() end),
       error = spy.new(function() end),
     }
 
-    external_provider = require("claudecode.terminal.external")
+    external_provider = require("claude_agents.terminal.external")
   end)
 
   after_each(function()

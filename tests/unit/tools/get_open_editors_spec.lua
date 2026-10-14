@@ -4,8 +4,8 @@ describe("Tool: get_open_editors", function()
   local get_open_editors_handler
 
   before_each(function()
-    package.loaded["claudecode.tools.get_open_editors"] = nil
-    get_open_editors_handler = require("claudecode.tools.get_open_editors").handler
+    package.loaded["claude_agents.tools.get_open_editors"] = nil
+    get_open_editors_handler = require("claude_agents.tools.get_open_editors").handler
 
     _G.vim = _G.vim or {}
     _G.vim.api = _G.vim.api or {}
@@ -51,7 +51,7 @@ describe("Tool: get_open_editors", function()
   end)
 
   after_each(function()
-    package.loaded["claudecode.tools.get_open_editors"] = nil
+    package.loaded["claude_agents.tools.get_open_editors"] = nil
     -- Clear mocks
     _G.vim.api.nvim_list_bufs = nil
     _G.vim.api.nvim_buf_is_loaded = nil
@@ -239,7 +239,7 @@ describe("Tool: get_open_editors", function()
 
   it("should include VS Code-compatible fields for each tab", function()
     -- Mock selection module to prevent errors
-    package.loaded["claudecode.selection"] = {
+    package.loaded["claude_agents.selection"] = {
       get_latest_selection = function()
         return nil
       end,
@@ -307,7 +307,7 @@ describe("Tool: get_open_editors", function()
     expect(tab.isUntitled).to_be_false()
 
     -- Clean up selection module mock
-    package.loaded["claudecode.selection"] = nil
+    package.loaded["claude_agents.selection"] = nil
   end)
 
   it("should filter out buffers that are not loaded", function()

@@ -11,7 +11,7 @@ describe("Logger", function()
   local echo_calls = {}
 
   local function setup()
-    package.loaded["claudecode.logger"] = nil
+    package.loaded["claude_agents.logger"] = nil
 
     -- Mock vim.schedule to track calls
     original_vim_schedule = vim.schedule
@@ -33,7 +33,7 @@ describe("Logger", function()
       table.insert(echo_calls, { chunks = chunks, history = history, opts = opts })
     end
 
-    logger = require("claudecode.logger")
+    logger = require("claude_agents.logger")
 
     -- Set log level to TRACE to enable all logging levels for testing
     logger.setup({ log_level = "trace" })

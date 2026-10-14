@@ -39,7 +39,7 @@ describe("Diff split window cleanup", function()
     f:close()
 
     -- Minimal logger stub
-    package.loaded["claudecode.logger"] = {
+    package.loaded["claude_agents.logger"] = {
       debug = function() end,
       error = function() end,
       info = function() end,
@@ -47,8 +47,8 @@ describe("Diff split window cleanup", function()
     }
 
     -- Reload diff module cleanly
-    package.loaded["claudecode.diff"] = nil
-    diff = require("claudecode.diff")
+    package.loaded["claude_agents.diff"] = nil
+    diff = require("claude_agents.diff")
 
     diff.setup({
       diff_opts = {
@@ -65,7 +65,7 @@ describe("Diff split window cleanup", function()
     if diff and diff._cleanup_all_active_diffs then
       diff._cleanup_all_active_diffs("test teardown")
     end
-    package.loaded["claudecode.diff"] = nil
+    package.loaded["claude_agents.diff"] = nil
   end)
 
   it("reuses the main window in-place and restores its pre-diff buffer on close", function()

@@ -14,8 +14,13 @@ describe("Selection in a review diff's proposal", function()
   local TAB = "✻ [Claude Code] cart.py (a1b2c3) ⧉"
   local PROPOSAL_BUF, TERMINAL_BUF = 7, 9
 
-  local MODULES =
-    { "claudecode", "claudecode.diff", "claudecode.logger", "claudecode.selection", "claudecode.terminal" }
+  local MODULES = {
+    "claude_agents",
+    "claude_agents.diff",
+    "claude_agents.logger",
+    "claude_agents.selection",
+    "claude_agents.terminal",
+  }
   local saved_modules = {}
   local real_get_current_buf, real_get_mode
   local terminal_bufnr
@@ -26,22 +31,22 @@ describe("Selection in a review diff's proposal", function()
     end
     vim._mock.reset()
 
-    package.loaded["claudecode.logger"] = {
+    package.loaded["claude_agents.logger"] = {
       debug = function() end,
       error = function() end,
       info = function() end,
       warn = function() end,
     }
     terminal_bufnr = nil
-    package.loaded["claudecode.terminal"] = {
+    package.loaded["claude_agents.terminal"] = {
       get_active_terminal_bufnr = function()
         return terminal_bufnr
       end,
     }
-    package.loaded["claudecode.diff"] = nil
-    package.loaded["claudecode.selection"] = nil
-    diff = require("claudecode.diff")
-    selection = require("claudecode.selection")
+    package.loaded["claude_agents.diff"] = nil
+    package.loaded["claude_agents.selection"] = nil
+    diff = require("claude_agents.diff")
+    selection = require("claude_agents.selection")
 
     sent = {}
     selection.send_selection_update = function(sel)
@@ -104,7 +109,7 @@ describe("Selection in a review diff's proposal", function()
 
   it("sends a range selected in the proposal as an at-mention of the file", function()
     local mention
-    package.loaded["claudecode"] = {
+    package.loaded["claude_agents"] = {
       get_instance = function()
         return { server = {} }
       end,

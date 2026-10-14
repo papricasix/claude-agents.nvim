@@ -7,8 +7,8 @@ describe("Diff Module", function()
   local original_vim_functions = {}
 
   local function setup()
-    package.loaded["claudecode.diff"] = nil
-    package.loaded["claudecode.config"] = nil
+    package.loaded["claude_agents.diff"] = nil
+    package.loaded["claude_agents.config"] = nil
 
     assert(_G.vim, "Global vim mock not initialized by busted_setup.lua")
     assert(_G.vim.fn, "Global vim.fn mock not initialized")
@@ -16,7 +16,7 @@ describe("Diff Module", function()
     -- For this spec, the global mock (which now includes stdpath) should be largely sufficient.
     -- The local mock_vim that was missing stdpath is removed.
 
-    diff = require("claudecode.diff")
+    diff = require("claude_agents.diff")
   end
 
   local function teardown()
@@ -544,8 +544,8 @@ describe("diff content_to_lines (CRLF normalization)", function()
   local diff
 
   before_each(function()
-    package.loaded["claudecode.diff"] = nil
-    diff = require("claudecode.diff")
+    package.loaded["claude_agents.diff"] = nil
+    diff = require("claude_agents.diff")
   end)
 
   it("splits unix content and reports unix fileformat", function()

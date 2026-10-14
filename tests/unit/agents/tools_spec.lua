@@ -8,8 +8,8 @@ describe("agents.tools", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.agents.tools"] = nil
-    tools = require("claudecode.agents.tools")
+    package.loaded["claude_agents.agents.tools"] = nil
+    tools = require("claude_agents.agents.tools")
   end)
 
   describe("the kind column", function()
@@ -237,7 +237,7 @@ describe("agents.tools", function()
     end)
 
     it("takes a printed file's word for what it is", function()
-      expect(tools.detect_filetype("cat lua/claudecode/init.lua", { "local M = {}" })).to_be("lua")
+      expect(tools.detect_filetype("cat lua/claude_agents/init.lua", { "local M = {}" })).to_be("lua")
       expect(tools.detect_filetype("head -50 config.json", { "{" })).to_be("json")
       -- The command as typed may be a path, and the pipeline's last stage is the
       -- one whose output this is.
@@ -256,7 +256,7 @@ describe("agents.tools", function()
 
     it("calls jq's output JSON unless it was asked for raw text", function()
       expect(tools.detect_filetype("cat x | jq .items", { "[" })).to_be("json")
-      expect(tools.detect_filetype("cat x | jq -r .name", { "claudecode" })).to_be_nil()
+      expect(tools.detect_filetype("cat x | jq -r .name", { "claude_agents" })).to_be_nil()
     end)
 
     it("guesses nothing from a command whose output says nothing", function()

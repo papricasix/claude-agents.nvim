@@ -5,10 +5,10 @@ describe("Configuration", function()
   local config
 
   local function setup()
-    package.loaded["claudecode.config"] = nil
-    package.loaded["claudecode.terminal"] = nil
+    package.loaded["claude_agents.config"] = nil
+    package.loaded["claude_agents.terminal"] = nil
 
-    config = require("claudecode.config")
+    config = require("claude_agents.config")
   end
 
   local function teardown()

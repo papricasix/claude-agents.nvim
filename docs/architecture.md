@@ -1,6 +1,6 @@
 # Architecture
 
-The map of the plugin, for reading the code. The repository is claude-agents.nvim; the Lua module is still `claudecode`, and every path below is under `lua/claudecode/` unless it says otherwise. [CLAUDE.md](../CLAUDE.md) has the reasoning and the measurements behind each piece.
+The map of the plugin, for reading the code. The repository is claude-agents.nvim and the Lua module `claude_agents` (its former name, `claudecode`, still loads through an alias in `compat.lua`); every path below is under `lua/claude_agents/` unless it says otherwise. [CLAUDE.md](../CLAUDE.md) has the reasoning and the measurements behind each piece.
 
 ## Three channels
 
@@ -31,7 +31,7 @@ claude (CLI)
 
 ## Instances
 
-Every Claude gets a server of its own, with its own port, token and lock file. A tab's own Claude is registered as `tab:<tabpage>`; in agents mode each agent is `agent:<session id>` (`start_agent_instance`). `require("claudecode").instances` holds them by id, and `tab_instance` points from a tabpage to its own one.
+Every Claude gets a server of its own, with its own port, token and lock file. A tab's own Claude is registered as `tab:<tabpage>`; in agents mode each agent is `agent:<session id>` (`start_agent_instance`). `require("claude_agents").instances` holds them by id, and `tab_instance` points from a tabpage to its own one.
 
 Before the server dispatches a message it records who sent it in `request_context.lua`, and tool handlers read that (`request_context.tab()`, `.session_id()`) to decide where a diff or a file belongs. That is how one agent's `closeAllDiffTabs` leaves a sibling's pending diff alone. The value is per message, so a handler that yields reads it first.
 
@@ -83,7 +83,7 @@ A window that is not for editing (the live cursor's preview, the plan view's hos
 ## Everything else
 
 - `terminal_links.lua`: file paths in Claude's terminal open in Neovim, from the OSC 8 links Claude prints (a `TermRequest` autocmd, no hooks).
-- `health.lua`: `:checkhealth claudecode`.
+- `health.lua`: `:checkhealth claude_agents`.
 - `utils.lua`, `logger.lua`, `cwd.lua`, `visual_commands.lua`, `types.lua`: helpers and type definitions.
 - `plugin/claudecode.lua`: the version guard and the optional `vim.g.claudecode_auto_setup`; the commands are created by `setup()`.
 - `lua/resession/extensions/claudecode.lua`: the resession.nvim extension for session persistence.

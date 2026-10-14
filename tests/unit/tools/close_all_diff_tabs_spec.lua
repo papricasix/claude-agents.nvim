@@ -4,8 +4,8 @@ describe("Tool: close_all_diff_tabs", function()
   local close_all_diff_tabs_handler
 
   before_each(function()
-    package.loaded["claudecode.tools.close_all_diff_tabs"] = nil
-    close_all_diff_tabs_handler = require("claudecode.tools.close_all_diff_tabs").handler
+    package.loaded["claude_agents.tools.close_all_diff_tabs"] = nil
+    close_all_diff_tabs_handler = require("claude_agents.tools.close_all_diff_tabs").handler
 
     _G.vim = _G.vim or {}
     _G.vim.api = _G.vim.api or {}
@@ -48,7 +48,7 @@ describe("Tool: close_all_diff_tabs", function()
   end)
 
   after_each(function()
-    package.loaded["claudecode.tools.close_all_diff_tabs"] = nil
+    package.loaded["claude_agents.tools.close_all_diff_tabs"] = nil
     -- Clear all mocks
     _G.vim.api.nvim_list_wins = nil
     _G.vim.api.nvim_win_get_buf = nil
@@ -120,15 +120,15 @@ describe("Tool: close_all_diff_tabs", function()
     -- Stub the diff module so we can assert the handler delegates to it. This is
     -- the fix for issue #248's secondary bug: the tool must resolve/clean tracked
     -- diffs (which the window/buffer scan never touched), not just close windows.
-    local saved = package.loaded["claudecode.diff"]
+    local saved = package.loaded["claude_agents.diff"]
     local close_all_spy = spy.new(function()
       return 3
     end)
-    package.loaded["claudecode.diff"] = { close_all_diffs = close_all_spy }
+    package.loaded["claude_agents.diff"] = { close_all_diffs = close_all_spy }
 
     local success, result = pcall(close_all_diff_tabs_handler, {})
 
-    package.loaded["claudecode.diff"] = saved
+    package.loaded["claude_agents.diff"] = saved
 
     expect(success).to_be_true()
     assert.spy(close_all_spy).was_called()

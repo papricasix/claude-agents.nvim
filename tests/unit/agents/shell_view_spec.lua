@@ -8,9 +8,9 @@ describe("agents.shell_view", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.agents.shell_view"] = nil
-    package.loaded["claudecode.agents.ansi"] = nil
-    view = require("claudecode.agents.shell_view")
+    package.loaded["claude_agents.agents.shell_view"] = nil
+    package.loaded["claude_agents.agents.ansi"] = nil
+    view = require("claude_agents.agents.shell_view")
   end)
 
   describe("paths", function()

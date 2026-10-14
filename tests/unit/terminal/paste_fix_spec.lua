@@ -2,13 +2,13 @@ require("tests.busted_setup")
 require("tests.mocks.vim")
 
 -- Tests for the streamed-paste compatibility shim (issue #161).
-describe("claudecode.terminal.paste_fix", function()
+describe("claude_agents.terminal.paste_fix", function()
   local paste_fix
 
   -- Reload the module fresh each test so its `installed`/`chunks` state resets.
   local function fresh()
-    package.loaded["claudecode.terminal.paste_fix"] = nil
-    paste_fix = require("claudecode.terminal.paste_fix")
+    package.loaded["claude_agents.terminal.paste_fix"] = nil
+    paste_fix = require("claude_agents.terminal.paste_fix")
   end
 
   local saved_version, saved_paste, saved_bo, saved_get_buf, saved_get_win, saved_win_valid, saved_win_call
@@ -32,8 +32,8 @@ describe("claudecode.terminal.paste_fix", function()
     vim.api.nvim_get_current_win = saved_get_win
     vim.api.nvim_win_is_valid = saved_win_valid
     vim.api.nvim_win_call = saved_win_call
-    package.loaded["claudecode.terminal.paste_fix"] = nil
-    package.loaded["claudecode.terminal"] = nil
+    package.loaded["claude_agents.terminal.paste_fix"] = nil
+    package.loaded["claude_agents.terminal"] = nil
   end)
 
   describe("_accumulate (seam-join)", function()
@@ -190,7 +190,7 @@ describe("claudecode.terminal.paste_fix", function()
       end
       -- Stub the terminal module so is_managed_terminal resolves without loading
       -- the real (heavy) module.
-      package.loaded["claudecode.terminal"] = {
+      package.loaded["claude_agents.terminal"] = {
         get_active_terminal_bufnr = function()
           return managed_bufnr
         end,

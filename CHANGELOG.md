@@ -4,7 +4,7 @@
 
 ## [1.0.0] - 2026-10-15
 
-The first release of claude-agents.nvim, a fork of [claudecode.nvim](https://github.com/coder/claudecode.nvim) 0.3.0. The Lua module, the commands and the options are unchanged: point the plugin spec at `papricasix/claude-agents.nvim` and add `main = "claudecode"`.
+The first release of claude-agents.nvim, a fork of [claudecode.nvim](https://github.com/coder/claudecode.nvim) 0.3.0. The commands and the options are unchanged: point the plugin spec at `papricasix/claude-agents.nvim` and keep the rest.
 
 ### Added
 
@@ -15,12 +15,13 @@ The first release of claude-agents.nvim, a fork of [claudecode.nvim](https://git
 - **Per-tab status** (`status`): busy, waiting, done or idle for each tab's Claude, for tablines, with the CLI's own spinner and a `User ClaudeCodeStatusChanged` event.
 - **Session persistence** (`session_persistence`): restoring a Neovim session resumes each tab's conversation; works with `:mksession`, persistence.nvim, mini.sessions, auto-session and resession.
 - **Inline diffs** with [unified.nvim](https://github.com/papricasix/unified.nvim) (`diff_opts.provider`, `:ClaudeCodeDiffToggleProvider`), and diffs in a floating window (`diff_opts.layout = "float"`).
-- `:checkhealth claudecode`: the prerequisites, and every running instance with its port, lock file and clients.
+- `:checkhealth claude_agents`: the prerequisites, and every running instance with its port, lock file and clients.
 - `:ClaudeCodeToggleFileTracking` (`<leader>aF`) stops or resumes sending your file and selection.
 - Claude Fable in the model picker.
 
 ### Changed
 
+- The Lua module is `claude_agents` (`require("claude_agents")`), so lazy.nvim finds it from the plugin's name. `require("claudecode")` and `require("claudecode.<module>")` still work and return the same modules, with a one-time warning to rename them. Commands, highlight groups, events and options keep their `ClaudeCode` names.
 - Neovim 0.10 or newer is required (clickable terminal links need 0.11).
 - Diffs open next to the Claude terminal, in the tab that owns it, and give the window back when they close. An accepted diff stays on screen until Claude has written the file, so the old text never flashes back.
 - The MCP tools answer in the shapes the VS Code extension sends (`getDiagnostics` with LSP ranges and severity names), and a diff's proposal buffer is reported to Claude as the file it changes.

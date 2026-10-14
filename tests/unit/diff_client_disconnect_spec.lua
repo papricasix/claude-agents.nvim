@@ -1,7 +1,7 @@
 --- Tests for issue #248: closing diffs that are orphaned when their owning
 --- client disconnects (or via the manual "close all diffs" path).
 require("tests.busted_setup")
-local diff = require("claudecode.diff")
+local diff = require("claude_agents.diff")
 
 describe("issue #248: closing orphaned diffs", function()
   local file_a = "/tmp/issue248_a.txt"
@@ -95,16 +95,16 @@ describe("issue #248: closing orphaned diffs", function()
     vim._tabs[101] = true
     vim._tabs[102] = true
 
-    require("claudecode.request_context").set({ tab = 101, instance_id = "tab:" .. tostring(101), kind = "tab" })
+    require("claude_agents.request_context").set({ tab = 101, instance_id = "tab:" .. tostring(101), kind = "tab" })
     local a = open_pending(file_a, "tab-101", "client101")
-    require("claudecode.request_context").set({ tab = 102, instance_id = "tab:" .. tostring(102), kind = "tab" })
+    require("claude_agents.request_context").set({ tab = 102, instance_id = "tab:" .. tostring(102), kind = "tab" })
     local b = open_pending(file_b, "tab-102", "client102")
 
     assert.equal(101, diff._get_active_diffs()["tab-101"].original_tab_number)
     assert.equal(102, diff._get_active_diffs()["tab-102"].original_tab_number)
 
     -- closeAllDiffTabs arrives from tab 101's Claude (its server set the active id).
-    require("claudecode.request_context").set({ tab = 101, instance_id = "tab:" .. tostring(101), kind = "tab" })
+    require("claude_agents.request_context").set({ tab = 101, instance_id = "tab:" .. tostring(101), kind = "tab" })
     local closed = diff.close_all_diffs("closeAllDiffTabs from tab 101")
 
     -- The calling tab's diff is closed/rejected...
@@ -117,7 +117,7 @@ describe("issue #248: closing orphaned diffs", function()
     assert.is_table(diff._get_active_diffs()["tab-102"])
     assert.is_nil(b.result)
 
-    require("claudecode.request_context").clear()
+    require("claude_agents.request_context").clear()
     vim._tabs[101] = nil
     vim._tabs[102] = nil
   end)
@@ -127,7 +127,7 @@ describe("issue #248: closing orphaned diffs", function()
   -- reject a sibling agent's pending diff and that agent would stop, believing the
   -- user declined its edit -- the same spurious-rejection bug, one level down.
   it("close_all_diffs only closes diffs owned by the calling agent in a shared tab", function()
-    local ctx = require("claudecode.request_context")
+    local ctx = require("claude_agents.request_context")
     vim._tabs[201] = true
 
     ctx.set({ tab = 201, instance_id = "agent:aaa", session_id = "aaa", kind = "agent" })

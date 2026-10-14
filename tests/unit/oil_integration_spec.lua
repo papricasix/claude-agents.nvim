@@ -6,12 +6,12 @@ describe("oil.nvim integration", function()
   local mock_vim
 
   local function setup_mocks()
-    package.loaded["claudecode.integrations"] = nil
-    package.loaded["claudecode.visual_commands"] = nil
-    package.loaded["claudecode.logger"] = nil
+    package.loaded["claude_agents.integrations"] = nil
+    package.loaded["claude_agents.visual_commands"] = nil
+    package.loaded["claude_agents.logger"] = nil
 
     -- Mock logger
-    package.loaded["claudecode.logger"] = {
+    package.loaded["claude_agents.logger"] = {
       debug = function() end,
       warn = function() end,
       error = function() end,
@@ -50,7 +50,7 @@ describe("oil.nvim integration", function()
 
   before_each(function()
     setup_mocks()
-    integrations = require("claudecode.integrations")
+    integrations = require("claude_agents.integrations")
   end)
 
   describe("_get_oil_selection", function()
@@ -143,7 +143,7 @@ describe("oil.nvim integration", function()
       end
 
       -- Mock visual_commands module
-      package.loaded["claudecode.visual_commands"] = {
+      package.loaded["claude_agents.visual_commands"] = {
         get_visual_range = function()
           return 2, 4 -- Lines 2 to 4
         end,

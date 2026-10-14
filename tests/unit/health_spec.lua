@@ -74,7 +74,7 @@ describe("health", function()
       return lock_readable and 1 or 0
     end
 
-    package.loaded["claudecode"] = {
+    package.loaded["claude_agents"] = {
       version = {
         string = function()
           return "0.2.0"
@@ -83,16 +83,16 @@ describe("health", function()
       state = fake_state,
       instances = instances,
     }
-    package.loaded["claudecode.lockfile"] = { lock_dir = "/tmp/claude/ide" }
+    package.loaded["claude_agents.lockfile"] = { lock_dir = "/tmp/claude/ide" }
 
-    package.loaded["claudecode.health"] = nil
-    health = require("claudecode.health")
+    package.loaded["claude_agents.health"] = nil
+    health = require("claude_agents.health")
   end)
 
   after_each(function()
-    package.loaded["claudecode"] = nil
-    package.loaded["claudecode.lockfile"] = nil
-    package.loaded["claudecode.health"] = nil
+    package.loaded["claude_agents"] = nil
+    package.loaded["claude_agents.lockfile"] = nil
+    package.loaded["claude_agents.health"] = nil
   end)
 
   it("reports all-ok for a healthy setup", function()

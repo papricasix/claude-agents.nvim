@@ -22,8 +22,8 @@ describe("agents.ansi", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.agents.ansi"] = nil
-    ansi = require("claudecode.agents.ansi")
+    package.loaded["claude_agents.agents.ansi"] = nil
+    ansi = require("claude_agents.agents.ansi")
     ansi.reset()
   end)
 

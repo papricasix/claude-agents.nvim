@@ -39,8 +39,8 @@ describe("session_state", function()
     vim._tabs = { [1] = true, [2] = true }
     vim._current_tabpage = 1
 
-    package.loaded["claudecode.session_state"] = nil
-    session_state = require("claudecode.session_state")
+    package.loaded["claude_agents.session_state"] = nil
+    session_state = require("claude_agents.session_state")
     session_state.reset()
   end)
 
@@ -50,13 +50,13 @@ describe("session_state", function()
 
   describe("configuration", function()
     it("is off by default", function()
-      package.loaded["claudecode.config"] = nil
-      expect(require("claudecode.config").defaults.session_persistence).to_be("off")
+      package.loaded["claude_agents.config"] = nil
+      expect(require("claude_agents.config").defaults.session_persistence).to_be("off")
     end)
 
     it("rejects an unknown mode", function()
-      package.loaded["claudecode.config"] = nil
-      local config = require("claudecode.config")
+      package.loaded["claude_agents.config"] = nil
+      local config = require("claude_agents.config")
       local base = {
         port_range = { min = 10000, max = 65535 },
         auto_start = true,
@@ -267,7 +267,7 @@ describe("session_state", function()
       enable()
       armed_two_tabs()
       local visited = {}
-      package.loaded["claudecode.terminal"] = {
+      package.loaded["claude_agents.terminal"] = {
         ensure_visible = function()
           table.insert(visited, vim.api.nvim_get_current_tabpage())
         end,
@@ -278,18 +278,18 @@ describe("session_state", function()
       expect(visited[1]).to_be(1)
       expect(visited[2]).to_be(2)
       expect(vim.api.nvim_get_current_tabpage()).to_be(2)
-      package.loaded["claudecode.terminal"] = nil
+      package.loaded["claude_agents.terminal"] = nil
     end)
 
     it("does nothing when no tab is armed", function()
       enable()
-      package.loaded["claudecode.terminal"] = {
+      package.loaded["claude_agents.terminal"] = {
         ensure_visible = function()
           error("should not be called")
         end,
       }
       expect(session_state.open_pending()).to_be(0)
-      package.loaded["claudecode.terminal"] = nil
+      package.loaded["claude_agents.terminal"] = nil
     end)
   end)
 

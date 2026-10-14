@@ -8,8 +8,8 @@ describe("agents.workflow_view", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.agents.workflow_view"] = nil
-    view = require("claudecode.agents.workflow_view")
+    package.loaded["claude_agents.agents.workflow_view"] = nil
+    view = require("claude_agents.agents.workflow_view")
   end)
 
   local run = {

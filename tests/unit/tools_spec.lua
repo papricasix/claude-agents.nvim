@@ -7,8 +7,8 @@ describe("Tools Module", function()
   local spy -- For spying on functions
 
   local function setup()
-    package.loaded["claudecode.tools.init"] = nil
-    package.loaded["claudecode.diff"] = nil
+    package.loaded["claude_agents.tools.init"] = nil
+    package.loaded["claude_agents.diff"] = nil
     package.loaded["luassert.spy"] = nil -- Ensure spy is fresh
 
     spy = require("luassert.spy")
@@ -112,7 +112,7 @@ describe("Tools Module", function()
 
     _G.vim = mock_vim
 
-    tools = require("claudecode.tools.init")
+    tools = require("claude_agents.tools.init")
     -- Ensure tools are registered for testing handle_invoke
     tools.register_all()
   end
@@ -225,15 +225,15 @@ describe("Tools Module", function()
       end)
 
       -- Mock selection module to prevent errors
-      package.loaded["claudecode.selection"] = {
+      package.loaded["claude_agents.selection"] = {
         get_latest_selection = function()
           return nil
         end,
       }
 
       -- Re-register the specific tool to ensure its handler picks up the new spies
-      package.loaded["claudecode.tools.get_open_editors"] = nil -- Clear cache for the sub-tool
-      tools.register(require("claudecode.tools.get_open_editors"))
+      package.loaded["claude_agents.tools.get_open_editors"] = nil -- Clear cache for the sub-tool
+      tools.register(require("claude_agents.tools.get_open_editors"))
 
       local params = {
         name = "getOpenEditors",
@@ -281,7 +281,7 @@ describe("Tools Module", function()
       expect(found_modified).to_be_true("Expected 'modified' option to be requested")
 
       -- Clean up selection module mock
-      package.loaded["claudecode.selection"] = nil
+      package.loaded["claude_agents.selection"] = nil
     end)
 
     it("should handle unknown tool invocation with JSON-RPC error", function()

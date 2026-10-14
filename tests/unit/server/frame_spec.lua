@@ -1,8 +1,8 @@
 require("tests.busted_setup")
 
-local client = require("claudecode.server.client")
-local frame = require("claudecode.server.frame")
-local utils = require("claudecode.server.utils")
+local client = require("claude_agents.server.client")
+local frame = require("claude_agents.server.frame")
+local utils = require("claude_agents.server.utils")
 
 describe("WebSocket frame parsing", function()
   describe("parse_frame fatal protocol violations", function()

@@ -1,4 +1,4 @@
-describe("claudecode.terminal.native toggle behavior", function()
+describe("claude_agents.terminal.native toggle behavior", function()
   local native_provider
   local mock_vim
   local logger_spy
@@ -8,8 +8,8 @@ describe("claudecode.terminal.native toggle behavior", function()
     package.path = "./lua/?.lua;" .. package.path
 
     -- Clean up any loaded modules
-    package.loaded["claudecode.terminal.native"] = nil
-    package.loaded["claudecode.logger"] = nil
+    package.loaded["claude_agents.terminal.native"] = nil
+    package.loaded["claude_agents.logger"] = nil
 
     -- Mock state for more realistic testing
     local mock_state = {
@@ -192,10 +192,10 @@ describe("claudecode.terminal.native toggle behavior", function()
         -- Track error calls
       end,
     }
-    package.loaded["claudecode.logger"] = logger_spy
+    package.loaded["claude_agents.logger"] = logger_spy
 
     -- Load the native provider
-    native_provider = require("claudecode.terminal.native")
+    native_provider = require("claude_agents.terminal.native")
     native_provider.setup({})
 
     -- Helper function to get mock state for verification
@@ -206,8 +206,8 @@ describe("claudecode.terminal.native toggle behavior", function()
 
   after_each(function()
     _G.vim = nil
-    package.loaded["claudecode.terminal.native"] = nil
-    package.loaded["claudecode.logger"] = nil
+    package.loaded["claude_agents.terminal.native"] = nil
+    package.loaded["claude_agents.logger"] = nil
   end)
 
   describe("toggle with no existing terminal", function()

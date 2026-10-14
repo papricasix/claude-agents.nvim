@@ -52,14 +52,14 @@ describe("Unified diff routes to the owning Claude tab", function()
     vim._next_winid = 4000
 
     -- Signal that the in-flight tool call originated from owner_tab's server.
-    require("claudecode.request_context").set({
+    require("claude_agents.request_context").set({
       tab = owner_tab,
       instance_id = "tab:" .. tostring(owner_tab),
       kind = "tab",
     })
 
-    package.loaded["claudecode.diff"] = nil
-    diff = require("claudecode.diff")
+    package.loaded["claude_agents.diff"] = nil
+    diff = require("claude_agents.diff")
 
     diff.setup({
       terminal = { split_side = "right", split_width_percentage = 0.30 },
@@ -74,7 +74,7 @@ describe("Unified diff routes to the owning Claude tab", function()
     -- Terminal provider returns the buffer belonging to the owner tab. The
     -- routing logic should still place the diff in that tab even though the
     -- user is currently looking at user_tab.
-    package.loaded["claudecode.terminal"] = {
+    package.loaded["claude_agents.terminal"] = {
       get_active_terminal_bufnr = function()
         return owner_terminal_buf
       end,
@@ -102,11 +102,11 @@ describe("Unified diff routes to the owning Claude tab", function()
   end)
 
   after_each(function()
-    require("claudecode.request_context").clear()
+    require("claude_agents.request_context").clear()
     os.remove(test_old_file)
     os.remove(test_new_file)
 
-    package.loaded["claudecode.terminal"] = nil
+    package.loaded["claude_agents.terminal"] = nil
     package.loaded["unified"] = nil
     package.loaded["unified.config"] = nil
     package.loaded["unified.diff"] = nil
@@ -162,7 +162,7 @@ describe("Unified diff routes to the owning Claude tab", function()
     -- The real float modules, not stubs: the window is opened through the agents
     -- wrapper (this is the agents tab) and closed through the shared stack they
     -- both share, so a stub on one side would no longer see the other.
-    local float = require("claudecode.float")
+    local float = require("claude_agents.float")
     float.reset()
 
     local co = coroutine.create(function()
@@ -182,7 +182,7 @@ describe("Unified diff routes to the owning Claude tab", function()
   end)
 
   it("falls back to the user's tab when no owning tab is set", function()
-    require("claudecode.request_context").clear()
+    require("claude_agents.request_context").clear()
 
     local co = coroutine.create(function()
       diff.open_diff_blocking(test_old_file, test_new_file, "updated content\n", tab_name)

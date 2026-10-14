@@ -25,7 +25,7 @@ claudecode.nvim/
 │   ├── nvim-tree/           # Neovim config testing with nvim-tree.lua
 │   ├── oil/                 # Neovim config testing with oil.nvim
 │   └── nvim-aliases.sh      # Shell aliases for fixture testing
-├── lua/claudecode/          # Plugin implementation
+├── lua/claude_agents/       # Plugin implementation
 │   ├── server/              # WebSocket server implementation
 │   ├── tools/               # MCP tool implementations and schema management
 │   ├── config.lua           # Configuration management

@@ -1,6 +1,6 @@
 --- Tests for MCP-compliant openDiff tool
 require("tests.busted_setup")
-local open_diff_tool = require("claudecode.tools.open_diff")
+local open_diff_tool = require("claude_agents.tools.open_diff")
 
 describe("openDiff tool MCP compliance", function()
   local test_old_file = ""
@@ -43,7 +43,7 @@ describe("openDiff tool MCP compliance", function()
       _G._original_io_open = nil
     end
     -- Clean up any active diffs
-    require("claudecode.diff")._cleanup_all_active_diffs("test_cleanup")
+    require("claude_agents.diff")._cleanup_all_active_diffs("test_cleanup")
   end)
 
   describe("tool schema", function()
@@ -146,7 +146,7 @@ describe("openDiff tool MCP compliance", function()
 
       -- Simulate file save
       vim.schedule(function()
-        require("claudecode.diff")._resolve_diff_as_saved(test_tab_name, 1)
+        require("claude_agents.diff")._resolve_diff_as_saved(test_tab_name, 1)
       end)
 
       -- Wait for resolution
@@ -183,7 +183,7 @@ describe("openDiff tool MCP compliance", function()
 
       -- Simulate diff rejection
       vim.schedule(function()
-        require("claudecode.diff")._resolve_diff_as_rejected(test_tab_name)
+        require("claude_agents.diff")._resolve_diff_as_rejected(test_tab_name)
       end)
 
       -- Wait for resolution
@@ -232,7 +232,7 @@ describe("openDiff tool MCP compliance", function()
       -- Mock require to fail
       local original_require = require
       _G.require = function(module)
-        if module == "claudecode.diff" then
+        if module == "claude_agents.diff" then
           error("Mock diff module load failure")
         end
         return original_require(module)
@@ -263,7 +263,7 @@ describe("openDiff tool MCP compliance", function()
       -- Mock diff module to throw structured error
       local original_require = require
       _G.require = function(module)
-        if module == "claudecode.diff" then
+        if module == "claude_agents.diff" then
           return {
             open_diff_blocking = function()
               error({

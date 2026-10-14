@@ -15,7 +15,7 @@ local M = {}
 ---@param opts table|nil resession's save options (unused).
 ---@return table data Payload for the session file (empty when nothing to save).
 function M.on_save(opts) -- luacheck: ignore 212
-  local ok, session_state = pcall(require, "claudecode.session_state")
+  local ok, session_state = pcall(require, "claude_agents.session_state")
   if not ok then
     return {}
   end
@@ -25,7 +25,7 @@ end
 ---@param data table Payload previously returned by `on_save`.
 ---@param opts table|nil resession's load options (unused).
 function M.on_post_load(data, opts) -- luacheck: ignore 212
-  local ok, session_state = pcall(require, "claudecode.session_state")
+  local ok, session_state = pcall(require, "claude_agents.session_state")
   if not ok then
     return
   end

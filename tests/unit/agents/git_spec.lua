@@ -21,8 +21,8 @@ describe("agents.git", function()
       vim._mock.reset()
     end
     runs = {}
-    package.loaded["claudecode.agents.git"] = nil
-    git = require("claudecode.agents.git")
+    package.loaded["claude_agents.agents.git"] = nil
+    git = require("claude_agents.agents.git")
     git.reset()
   end)
 
@@ -70,14 +70,14 @@ describe("agents.git", function()
       -- verbatim produced a key nothing could ever match, so no file in the
       -- Changes pane got a status letter.
       local status = git.parse_status({ " M lua/a.lua", "?? notes.md" }, "D:\\Git\\proj")
-      local utils = require("claudecode.utils")
+      local utils = require("claude_agents.utils")
       expect(status[utils.path_key("D:\\Git\\proj\\lua\\a.lua")]).to_be("M")
       expect(status[utils.path_key("D:\\Git\\proj\\notes.md")]).to_be("?")
     end)
 
     it("leaves an absolute Windows path alone", function()
       local status = git.parse_status({ " M D:/elsewhere/a.lua" }, "D:\\Git\\proj")
-      expect(status[require("claudecode.utils").path_key("D:\\elsewhere\\a.lua")]).to_be("M")
+      expect(status[require("claude_agents.utils").path_key("D:\\elsewhere\\a.lua")]).to_be("M")
     end)
 
     it("survives empty and malformed output", function()
@@ -357,8 +357,8 @@ describe("agents.git", function()
       loop.fs_stat = function(path)
         return marks[path] and {} or nil
       end
-      package.loaded["claudecode.agents.git"] = nil
-      git = require("claudecode.agents.git")
+      package.loaded["claude_agents.agents.git"] = nil
+      git = require("claude_agents.agents.git")
       vim.fn = setmetatable({}, {
         __index = function(_, name)
           return function()

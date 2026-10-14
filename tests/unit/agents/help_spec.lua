@@ -31,8 +31,8 @@ describe("agents.help", function()
       vim._mock.reset()
     end
     package.loaded["snacks.win"] = nil
-    package.loaded["claudecode.agents.help"] = nil
-    help = require("claudecode.agents.help")
+    package.loaded["claude_agents.agents.help"] = nil
+    help = require("claude_agents.agents.help")
   end)
 
   after_each(function()

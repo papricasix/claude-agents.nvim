@@ -104,10 +104,10 @@ describe("agents.search", function()
       return real_decode(str)
     end
 
-    package.loaded["claudecode.agents.transcript"] = nil
-    package.loaded["claudecode.agents.search"] = nil
-    transcript = require("claudecode.agents.transcript")
-    search = require("claudecode.agents.search")
+    package.loaded["claude_agents.agents.transcript"] = nil
+    package.loaded["claude_agents.agents.search"] = nil
+    transcript = require("claude_agents.agents.transcript")
+    search = require("claude_agents.agents.search")
     install_io()
   end)
 
@@ -129,7 +129,7 @@ describe("agents.search", function()
 
     it("matches literally, so punctuation is not a pattern", function()
       local dotted = transcript.compile_query("init.lua")
-      assert.is_not_nil(dotted.find("lua/claudecode/init.lua"))
+      assert.is_not_nil(dotted.find("lua/claude_agents/init.lua"))
       -- `.` as a pattern would match the `t` here; as a literal it must not.
       assert.is_nil(dotted.find("initXlua"))
 
@@ -216,11 +216,11 @@ describe("agents.search", function()
     end)
 
     it("does search the paths a session touched", function()
-      put("/s/a.jsonl", { edit_line("/proj/lua/claudecode/lockfile.lua") })
+      put("/s/a.jsonl", { edit_line("/proj/lua/claude_agents/lockfile.lua") })
       local matches = scan("/s/a.jsonl", "lockfile")
       assert.are_equal(1, #matches)
       assert.are_equal("file", matches[1].kind)
-      assert.are_equal("/proj/lua/claudecode/lockfile.lua", matches[1].text)
+      assert.are_equal("/proj/lua/claude_agents/lockfile.lua", matches[1].text)
     end)
 
     it("searches what a turn was thinking", function()
@@ -478,7 +478,7 @@ describe("agents.search", function()
       assert.is_not_nil(lines[1]:find("auth token work", 1, true))
       local lit = false
       for _, mark in ipairs(marks) do
-        if mark.hl == require("claudecode.agents.render").highlight("match") then
+        if mark.hl == require("claude_agents.agents.render").highlight("match") then
           lit = true
           assert.are_equal("token", lines[1]:sub(mark.col + 1, mark.end_col))
         end

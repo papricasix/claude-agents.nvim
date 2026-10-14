@@ -69,8 +69,8 @@ describe("diff.find_main_editor_window sidebar exclusion", function()
       nvim_tabpage_list_wins = _G.vim.api.nvim_tabpage_list_wins,
     }
     saved_w = _G.vim.w
-    package.loaded["claudecode.diff"] = nil
-    diff = require("claudecode.diff")
+    package.loaded["claude_agents.diff"] = nil
+    diff = require("claude_agents.diff")
   end)
 
   after_each(function()
@@ -78,7 +78,7 @@ describe("diff.find_main_editor_window sidebar exclusion", function()
       _G.vim.api[name] = fn
     end
     _G.vim.w = saved_w
-    package.loaded["claudecode.diff"] = nil
+    package.loaded["claude_agents.diff"] = nil
   end)
 
   it("skips the Snacks Explorer layout box and returns the real editor (issue #236)", function()

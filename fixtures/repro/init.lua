@@ -19,7 +19,7 @@ vim.opt.rtp:prepend(repo_root)
 vim.g.mapleader = " "
 vim.g.maplocalleader = "\\"
 
-local ok, claudecode = pcall(require, "claudecode")
+local ok, claudecode = pcall(require, "claude_agents")
 assert(ok, "Failed to load claudecode.nvim from repo root: " .. tostring(claudecode))
 
 claudecode.setup({
@@ -63,14 +63,14 @@ end
 -- Keymaps (kept small on purpose)
 vim.keymap.set("n", "<leader>ac", function()
   if ensure_claudecode_started() then
-    local terminal = require("claudecode.terminal")
+    local terminal = require("claude_agents.terminal")
     terminal.simple_toggle({}, nil)
   end
 end, { desc = "Toggle Claude" })
 
 vim.keymap.set("n", "<leader>af", function()
   if ensure_claudecode_started() then
-    local terminal = require("claudecode.terminal")
+    local terminal = require("claude_agents.terminal")
     terminal.focus_toggle({}, nil)
   end
 end, { desc = "Focus Claude" })

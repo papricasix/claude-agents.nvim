@@ -49,18 +49,18 @@ describe("agents.file_view", function()
     disk, shown, histories = {}, {}, {}
 
     package.loaded["unified.diff"] = nil
-    package.loaded["claudecode.agents.float"] = nil
-    package.loaded["claudecode.agents.transcript"] = nil
-    package.loaded["claudecode.agents.file_view"] = nil
+    package.loaded["claude_agents.agents.float"] = nil
+    package.loaded["claude_agents.agents.transcript"] = nil
+    package.loaded["claude_agents.agents.file_view"] = nil
 
-    float = require("claudecode.agents.float")
+    float = require("claude_agents.agents.float")
     float.reset()
-    transcript = require("claudecode.agents.transcript")
+    transcript = require("claude_agents.agents.transcript")
     transcript.file_history = function(_path, file, cb)
       cb(histories[file])
     end
 
-    file_view = require("claudecode.agents.file_view")
+    file_view = require("claude_agents.agents.file_view")
     file_view._io = {
       read_lines = function(path)
         return disk[path]
@@ -70,7 +70,7 @@ describe("agents.file_view", function()
 
   after_each(function()
     package.loaded["unified.diff"] = nil
-    package.loaded["claudecode.agents.transcript"] = nil
+    package.loaded["claude_agents.agents.transcript"] = nil
   end)
 
   it("diffs the file against what the session started from", function()
@@ -629,7 +629,7 @@ describe("agents.file_view", function()
       -- the title is there for.
       local columns = vim.o.columns
       vim.o.columns = 40
-      local path = "/proj/lua/claudecode/agents/deeply/nested/file_view.lua"
+      local path = "/proj/lua/claude_agents/agents/deeply/nested/file_view.lua"
       disk[path] = { "one" }
       open({ session_id = "s", path = path, cwd = "/proj" })
       vim.o.columns = columns
@@ -677,8 +677,8 @@ describe("agents.file_view", function()
 
     before_each(function()
       head, info, notified = {}, nil, {}
-      package.loaded["claudecode.agents.git"] = nil
-      git = require("claudecode.agents.git")
+      package.loaded["claude_agents.agents.git"] = nil
+      git = require("claude_agents.agents.git")
       git._set_head_reader(function(path, cb)
         cb(head[path], info)
       end)
@@ -691,7 +691,7 @@ describe("agents.file_view", function()
     after_each(function()
       vim.notify = notify
       git._set_head_reader(nil)
-      package.loaded["claudecode.agents.git"] = nil
+      package.loaded["claude_agents.agents.git"] = nil
     end)
 
     it("diffs the working tree against HEAD, not against the session", function()

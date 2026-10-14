@@ -33,15 +33,15 @@ describe("Diff with the Claude terminal as the only window (issue #231)", functi
   before_each(function()
     reset_to_terminal_only()
 
-    package.loaded["claudecode.logger"] = {
+    package.loaded["claude_agents.logger"] = {
       debug = function() end,
       error = function() end,
       info = function() end,
       warn = function() end,
     }
 
-    package.loaded["claudecode.diff"] = nil
-    diff = require("claudecode.diff")
+    package.loaded["claude_agents.diff"] = nil
+    diff = require("claude_agents.diff")
 
     diff.setup({
       diff_opts = {
@@ -58,8 +58,8 @@ describe("Diff with the Claude terminal as the only window (issue #231)", functi
     if diff and diff._cleanup_all_active_diffs then
       diff._cleanup_all_active_diffs("test teardown")
     end
-    package.loaded["claudecode.diff"] = nil
-    package.loaded["claudecode.logger"] = nil
+    package.loaded["claude_agents.diff"] = nil
+    package.loaded["claude_agents.logger"] = nil
   end)
 
   it("has no suitable editor window in this layout (root-cause precondition)", function()

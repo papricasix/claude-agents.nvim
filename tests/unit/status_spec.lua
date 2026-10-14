@@ -42,15 +42,15 @@ describe("status", function()
     vim._tabs = { [1] = true, [2] = true }
     vim._current_tabpage = 1
 
-    package.loaded["claudecode.status"] = nil
-    status = require("claudecode.status")
+    package.loaded["claude_agents.status"] = nil
+    status = require("claude_agents.status")
     status.reset()
   end)
 
   describe("configuration", function()
     it("is off by default", function()
-      package.loaded["claudecode.config"] = nil
-      expect(require("claudecode.config").defaults.status.enabled).to_be_false()
+      package.loaded["claude_agents.config"] = nil
+      expect(require("claude_agents.config").defaults.status.enabled).to_be_false()
     end)
 
     it("records nothing while disabled", function()
@@ -63,8 +63,8 @@ describe("status", function()
     end)
 
     it("rejects unknown icon states and non-string glyphs", function()
-      package.loaded["claudecode.config"] = nil
-      local config = require("claudecode.config")
+      package.loaded["claude_agents.config"] = nil
+      local config = require("claude_agents.config")
       expect(pcall(config.validate, base_config({ enabled = true, icons = { busy = "*" } }))).to_be_true()
       expect(pcall(config.validate, base_config({ enabled = true, icons = { thinking = "*" } }))).to_be_false()
       expect(pcall(config.validate, base_config({ enabled = true, icons = { busy = 42 } }))).to_be_false()
@@ -673,11 +673,11 @@ describe("status", function()
           return 0
         end
         vim.env = setup_env
-        package.loaded["claudecode.status"] = nil
-        local frames = require("claudecode.status").SPINNER
+        package.loaded["claude_agents.status"] = nil
+        local frames = require("claude_agents.status").SPINNER
         vim.fn.has, vim.env = saved_has, saved_env
-        package.loaded["claudecode.status"] = nil
-        status = require("claudecode.status")
+        package.loaded["claude_agents.status"] = nil
+        status = require("claude_agents.status")
         return frames
       end
 
@@ -690,11 +690,11 @@ describe("status", function()
         return feature == "win32" and 1 or 0
       end
       vim.env = {}
-      package.loaded["claudecode.status"] = nil
-      expect(require("claudecode.status").SPINNER[3]).to_be("✱")
+      package.loaded["claude_agents.status"] = nil
+      expect(require("claude_agents.status").SPINNER[3]).to_be("✱")
       vim.fn.has, vim.env = saved_has, saved_env
-      package.loaded["claudecode.status"] = nil
-      status = require("claudecode.status")
+      package.loaded["claude_agents.status"] = nil
+      status = require("claude_agents.status")
     end)
 
     it("animates only while a tab shows an animated icon", function()
@@ -731,8 +731,8 @@ describe("status", function()
     end)
 
     it("validates frame lists", function()
-      package.loaded["claudecode.config"] = nil
-      local config = require("claudecode.config")
+      package.loaded["claude_agents.config"] = nil
+      local config = require("claude_agents.config")
       expect(pcall(config.validate, base_config({ enabled = true, icons = { busy = { "a", "b" } } }))).to_be_true()
       expect(pcall(config.validate, base_config({ enabled = true, icons = { busy = {} } }))).to_be_false()
       expect(pcall(config.validate, base_config({ enabled = true, icons = { busy = { 1, 2 } } }))).to_be_false()
@@ -761,8 +761,8 @@ describe("status", function()
     end
 
     before_each(function()
-      package.loaded["claudecode.live_cursor"] = nil
-      live_cursor = require("claudecode.live_cursor")
+      package.loaded["claude_agents.live_cursor"] = nil
+      live_cursor = require("claude_agents.live_cursor")
       live_cursor.setup(base_config({ enabled = true }))
     end)
 
@@ -796,8 +796,8 @@ describe("status", function()
     local live_cursor
 
     before_each(function()
-      package.loaded["claudecode.live_cursor"] = nil
-      live_cursor = require("claudecode.live_cursor")
+      package.loaded["claude_agents.live_cursor"] = nil
+      live_cursor = require("claude_agents.live_cursor")
       live_cursor.setup(base_config({ enabled = true }))
       enable()
     end)

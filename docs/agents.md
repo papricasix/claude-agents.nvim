@@ -73,7 +73,7 @@ Each agent has its own connection to Neovim, so a diff goes to the agent that as
 
 ## Configuration
 
-Every option is in the `agents` block of [`lua/claudecode/config.lua`](../lua/claudecode/config.lua), except the fade animation's, which [`agents/fade.lua`](../lua/claudecode/agents/fade.lua) owns. The ones people change:
+Every option is in the `agents` block of [`lua/claude_agents/config.lua`](../lua/claude_agents/config.lua), except the fade animation's, which [`agents/fade.lua`](../lua/claude_agents/agents/fade.lua) owns. The ones people change:
 
 ```lua
 agents = {

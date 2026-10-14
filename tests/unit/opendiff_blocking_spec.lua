@@ -16,24 +16,24 @@ describe("openDiff blocking behavior", function()
       info = spy.new(function() end),
     }
 
-    package.loaded["claudecode.logger"] = mock_logger
+    package.loaded["claude_agents.logger"] = mock_logger
 
     -- Mock diff module to prevent loading issues
-    package.loaded["claudecode.diff"] = {
+    package.loaded["claude_agents.diff"] = {
       open_diff_blocking = function()
         error("This should not be called in coroutine context test")
       end,
     }
 
     -- Load the module under test
-    open_diff_module = require("claudecode.tools.open_diff")
+    open_diff_module = require("claude_agents.tools.open_diff")
   end)
 
   after_each(function()
     -- Clean up
-    package.loaded["claudecode.logger"] = nil
-    package.loaded["claudecode.tools.open_diff"] = nil
-    package.loaded["claudecode.diff"] = nil
+    package.loaded["claude_agents.logger"] = nil
+    package.loaded["claude_agents.tools.open_diff"] = nil
+    package.loaded["claude_agents.diff"] = nil
   end)
 
   it("should require coroutine context", function()

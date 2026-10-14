@@ -335,8 +335,8 @@ describe("Lockfile Module", function()
     os.execute("mkdir -p '" .. test_dir .. "'")
 
     -- Load the lockfile module for all tests
-    package.loaded["claudecode.lockfile"] = nil -- Clear any previous requires
-    lockfile = require("claudecode.lockfile")
+    package.loaded["claude_agents.lockfile"] = nil -- Clear any previous requires
+    lockfile = require("claude_agents.lockfile")
   end)
 
   teardown(function()
@@ -604,8 +604,8 @@ describe("Lockfile stale cleanup", function()
   end
 
   before_each(function()
-    package.loaded["claudecode.lockfile"] = nil
-    lockfile = require("claudecode.lockfile")
+    package.loaded["claude_agents.lockfile"] = nil
+    lockfile = require("claude_agents.lockfile")
     lockfile.lock_dir = "/mock/ide"
     files, removed, liveness = {}, {}, {}
     install_stubs()

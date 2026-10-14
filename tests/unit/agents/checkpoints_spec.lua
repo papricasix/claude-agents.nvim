@@ -13,8 +13,8 @@ describe("agents.checkpoints", function()
     store, writes = nil, 0
     -- The mock's decoder is a stub; the store is read back through a real one.
     vim.json.decode = _G.json_decode
-    package.loaded["claudecode.agents.checkpoints"] = nil
-    checkpoints = require("claudecode.agents.checkpoints")
+    package.loaded["claude_agents.agents.checkpoints"] = nil
+    checkpoints = require("claude_agents.agents.checkpoints")
     checkpoints.reset()
     checkpoints._io = {
       read = function()

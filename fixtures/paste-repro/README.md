@@ -146,7 +146,7 @@ fixture with `APPLY_PASTE_FIX=1`):
 This is **shipped** in the plugin as of the change that added this fixture:
 
 - **Real fix:** upgrade Neovim to **0.12.2+**.
-- **Plugin shim (default `"auto"`):** `lua/claudecode/terminal/paste_fix.lua` installs a scoped,
+- **Plugin shim (default `"auto"`):** `lua/claude_agents/terminal/paste_fix.lua` installs a scoped,
   version-gated, cooperative `vim.paste` override (config: `terminal.fix_streamed_paste`). Unlike
   the community snippet it is **scoped to the plugin's own managed terminal buffer** (not all
   `:terminal` buffers), is a **no-op on Neovim >= 0.12.2**, and delegates to any pre-existing

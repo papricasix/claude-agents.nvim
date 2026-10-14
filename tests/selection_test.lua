@@ -368,14 +368,14 @@ describe("Selection module", function()
   }
 
   setup(function()
-    package.loaded["claudecode.selection"] = nil
+    package.loaded["claude_agents.selection"] = nil
 
-    selection = require("claudecode.selection")
+    selection = require("claude_agents.selection")
 
     -- selection.lua resolves the active server per tab via
     -- claudecode.get_instance(); point it at the mock so broadcasts land there.
-    saved_get_instance = require("claudecode").get_instance
-    require("claudecode").get_instance = function()
+    saved_get_instance = require("claude_agents").get_instance
+    require("claude_agents").get_instance = function()
       return { server = mock_server }
     end
   end)
@@ -386,7 +386,7 @@ describe("Selection module", function()
     end
     mock_server.last_broadcast = nil
     -- Restore so the override doesn't leak into other spec files in this process.
-    require("claudecode").get_instance = saved_get_instance
+    require("claude_agents").get_instance = saved_get_instance
   end)
 
   it("should have the correct initial state", function()
@@ -483,11 +483,11 @@ describe("Selection module", function()
 
   describe("demotion_timer", function()
     local function install_terminal_stub()
-      local terminal_module = package.loaded["claudecode.terminal"]
+      local terminal_module = package.loaded["claude_agents.terminal"]
       local original_get = terminal_module and terminal_module.get_active_terminal_bufnr or nil
       if not terminal_module then
         terminal_module = {}
-        package.loaded["claudecode.terminal"] = terminal_module
+        package.loaded["claude_agents.terminal"] = terminal_module
       end
       terminal_module.get_active_terminal_bufnr = function()
         return nil
@@ -726,8 +726,8 @@ describe("Range Selection Tests", function()
     end
 
     -- Reload the selection module
-    package.loaded["claudecode.selection"] = nil
-    selection = require("claudecode.selection")
+    package.loaded["claude_agents.selection"] = nil
+    selection = require("claude_agents.selection")
   end)
 
   describe("get_range_selection", function()
@@ -836,7 +836,7 @@ describe("Range Selection Tests", function()
       -- Mock the require function to return our mock claudecode module
       original_require = _G.require
       _G.require = function(module_name)
-        if module_name == "claudecode" then
+        if module_name == "claude_agents" then
           return mock_claudecode_main
         else
           return original_require(module_name)

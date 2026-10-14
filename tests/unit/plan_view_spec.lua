@@ -26,16 +26,16 @@ describe("plan_view", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.plan_view"] = nil
-    plan_view = require("claudecode.plan_view")
+    package.loaded["claude_agents.plan_view"] = nil
+    plan_view = require("claude_agents.plan_view")
   end)
 
   describe("config validation", function()
     local config
 
     before_each(function()
-      package.loaded["claudecode.config"] = nil
-      config = require("claudecode.config")
+      package.loaded["claude_agents.config"] = nil
+      config = require("claude_agents.config")
     end)
 
     it("accepts a fully specified plan block", function()
@@ -93,7 +93,7 @@ describe("plan_view", function()
       vim._next_winid = 2000
 
       closest = 1000
-      package.loaded["claudecode.diff"] = {
+      package.loaded["claude_agents.diff"] = {
         find_window_closest_to_terminal = function()
           return closest
         end,
@@ -104,7 +104,7 @@ describe("plan_view", function()
     end)
 
     after_each(function()
-      package.loaded["claudecode.diff"] = nil
+      package.loaded["claude_agents.diff"] = nil
     end)
 
     it("takes over the closest editor window (no new split) and marks it", function()
@@ -270,8 +270,8 @@ describe("diff.find_window_closest_to_terminal geometry", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.diff"] = nil
-    diff = require("claudecode.diff")
+    package.loaded["claude_agents.diff"] = nil
+    diff = require("claude_agents.diff")
   end)
 
   it("picks the window adjacent to the terminal over a farther one", function()

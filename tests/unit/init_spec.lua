@@ -1,7 +1,7 @@
 require("tests.busted_setup")
 require("tests.mocks.vim")
 
-describe("claudecode.init", function()
+describe("claude_agents.init", function()
   ---@class AutocmdOptions
   ---@field group string|number|nil
   ---@field pattern string|string[]|nil
@@ -231,11 +231,11 @@ describe("claudecode.init", function()
     mock_lockfile.remove = SpyObject.new(mock_lockfile.remove)
 
     _G.require = function(mod)
-      if mod == "claudecode.server.init" then
+      if mod == "claude_agents.server.init" then
         return mock_server
-      elseif mod == "claudecode.lockfile" then
+      elseif mod == "claude_agents.lockfile" then
         return mock_lockfile
-      elseif mod == "claudecode.selection" then
+      elseif mod == "claude_agents.selection" then
         return mock_selection
       else
         return saved_require(mod)
@@ -257,7 +257,7 @@ describe("claudecode.init", function()
 
   describe("setup", function()
     it("should register VimLeavePre autocmd for auto-shutdown", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup()
 
       assert(#vim.api.nvim_create_augroup.calls > 0, "nvim_create_augroup was not called")
@@ -269,7 +269,7 @@ describe("claudecode.init", function()
 
   describe("auto-shutdown", function()
     it("should stop the server and remove lockfile when Neovim exits", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup()
       claudecode.start()
 
@@ -297,7 +297,7 @@ describe("claudecode.init", function()
     end)
 
     it("should do nothing if the server is not running", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup({ auto_start = false })
 
       local opts = vim.api.nvim_create_autocmd.calls[1].vals[2]
@@ -331,13 +331,13 @@ describe("claudecode.init", function()
 
       local original_require = _G.require
       _G.require = function(mod)
-        if mod == "claudecode.terminal" then
+        if mod == "claude_agents.terminal" then
           return mock_terminal
-        elseif mod == "claudecode.server.init" then
+        elseif mod == "claude_agents.server.init" then
           return mock_server
-        elseif mod == "claudecode.lockfile" then
+        elseif mod == "claude_agents.lockfile" then
           return mock_lockfile
-        elseif mod == "claudecode.selection" then
+        elseif mod == "claude_agents.selection" then
           return mock_selection
         else
           return original_require(mod)
@@ -346,7 +346,7 @@ describe("claudecode.init", function()
     end)
 
     it("should register ClaudeCode command with nargs='*'", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup({ auto_start = false })
 
       local command_found = false
@@ -363,7 +363,7 @@ describe("claudecode.init", function()
     end)
 
     it("should register ClaudeCodeOpen command with nargs='*'", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup({ auto_start = false })
 
       local command_found = false
@@ -383,7 +383,7 @@ describe("claudecode.init", function()
     end)
 
     it("should parse and pass arguments to terminal.toggle for ClaudeCode command", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup({ auto_start = false })
 
       -- Find and call the ClaudeCode command handler
@@ -406,7 +406,7 @@ describe("claudecode.init", function()
     end)
 
     it("should parse and pass arguments to terminal.open for ClaudeCodeOpen command", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup({ auto_start = false })
 
       -- Find and call the ClaudeCodeOpen command handler
@@ -429,7 +429,7 @@ describe("claudecode.init", function()
     end)
 
     it("should handle empty arguments gracefully", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup({ auto_start = false })
 
       local command_handler
@@ -448,7 +448,7 @@ describe("claudecode.init", function()
     end)
 
     it("should handle nil arguments gracefully", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup({ auto_start = false })
 
       local command_handler
@@ -467,7 +467,7 @@ describe("claudecode.init", function()
     end)
 
     it("should maintain backward compatibility when no arguments provided", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup({ auto_start = false })
 
       local command_handler
@@ -515,13 +515,13 @@ describe("claudecode.init", function()
 
       local original_require = _G.require
       _G.require = function(mod)
-        if mod == "claudecode.terminal" then
+        if mod == "claude_agents.terminal" then
           return mock_terminal
-        elseif mod == "claudecode.server.init" then
+        elseif mod == "claude_agents.server.init" then
           return mock_server
-        elseif mod == "claudecode.lockfile" then
+        elseif mod == "claude_agents.lockfile" then
           return mock_lockfile
-        elseif mod == "claudecode.selection" then
+        elseif mod == "claude_agents.selection" then
           return mock_selection
         else
           return original_require(mod)
@@ -530,7 +530,7 @@ describe("claudecode.init", function()
     end)
 
     it("should register ClaudeCodeSelectModel command with correct configuration", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup({ auto_start = false })
 
       local command_found = false
@@ -550,7 +550,7 @@ describe("claudecode.init", function()
     end)
 
     it("should call ClaudeCode command with model arg when no additional args provided", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup({ auto_start = false })
 
       -- Find and call the ClaudeCodeSelectModel command handler
@@ -576,7 +576,7 @@ describe("claudecode.init", function()
     end)
 
     it("should call ClaudeCode command with model and additional args", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup({ auto_start = false })
 
       -- Find and call the ClaudeCodeSelectModel command handler
@@ -606,7 +606,7 @@ describe("claudecode.init", function()
     end)
 
     it("should handle user cancellation gracefully", function()
-      local claudecode = require("claudecode")
+      local claudecode = require("claude_agents")
       claudecode.setup({ auto_start = false })
 
       -- Mock vim.ui.select to simulate user cancellation

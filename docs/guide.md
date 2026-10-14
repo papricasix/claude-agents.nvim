@@ -1,6 +1,6 @@
 # claude-agents.nvim guide
 
-Everything the [README](../README.md) leaves out except the agents view, which has [its own guide](agents.md). Every option and its default is in [`lua/claudecode/config.lua`](../lua/claudecode/config.lua), and the terminal's in [`lua/claudecode/terminal.lua`](../lua/claudecode/terminal.lua); this page names the ones worth knowing.
+Everything the [README](../README.md) leaves out except the agents view, which has [its own guide](agents.md). Every option and its default is in [`lua/claude_agents/config.lua`](../lua/claude_agents/config.lua), and the terminal's in [`lua/claude_agents/terminal.lua`](../lua/claude_agents/terminal.lua); this page names the ones worth knowing.
 
 ## Commands
 
@@ -21,7 +21,7 @@ Everything the [README](../README.md) leaves out except the agents view, which h
 :ClaudeCodeStatus               " this tab's server and port; with those features on, conversation id and status
 :ClaudeCodeStart / :ClaudeCodeStop   " the integration for the current tab
 :ClaudeCodeToggleFileTracking   " stop or resume sending your file and selection
-:checkhealth claudecode         " prerequisites, and every running instance's port and clients
+:checkhealth claude_agents      " prerequisites, and every running instance's port and clients
 ```
 
 The agents commands are in the [agents guide](agents.md). The plugin binds `<leader>aF` to `:ClaudeCodeToggleFileTracking` itself, and `<leader>aA` / `<leader>aR` when the agents view or session persistence are on.
@@ -63,7 +63,7 @@ end
 - `"native"`: a plain `:terminal` split, `terminal.split_side` and `terminal.split_width_percentage` wide.
 - `"external"`: another terminal application, with `terminal.provider_opts.external_terminal_cmd = "alacritty -e %s"` (or `"... --working-directory %s -e %s"` for cwd and command, or a function that is handed the claude command and returns the whole command line, as a string or a list).
 - `"none"`: nothing is opened. Start `claude` yourself and connect it with `/ide`.
-- A table of your own functions; [`lua/claudecode/terminal/native.lua`](../lua/claudecode/terminal/native.lua) shows what it must provide.
+- A table of your own functions; [`lua/claude_agents/terminal/native.lua`](../lua/claude_agents/terminal/native.lua) shows what it must provide.
 
 With snacks, `terminal.snacks_win_opts` is handed to `Snacks.terminal.open()`, so a floating Claude is:
 
@@ -100,7 +100,7 @@ For one Claude per tab: each tab is `busy`, `waiting` (for you: a permission pro
 ```lua
 status = { enabled = true }
 
-local status = require("claudecode.status")
+local status = require("claude_agents.status")
 status.get_state(tab) -- "busy" | "waiting" | "done" | "idle" | "none"
 status.icon(tab), status.hl_group(tab) -- the glyph and highlight for that state
 ```
@@ -112,13 +112,13 @@ Every change fires `User ClaudeCodeStatusChanged`. `icons = { busy = status.SPIN
 Restoring a Neovim session resumes each tab's conversation, the next time you open that tab's Claude. `:ClaudeCodeSessionRestore!` (`<leader>aR`) reopens all of them at once. Conversations you ended yourself stay ended, and a tab whose Claude you never spoke to opens a fresh one.
 
 - `session_persistence = "global"` works with `:mksession`, persistence.nvim and mini.sessions, once `vim.opt.sessionoptions:append("globals")` is set.
-- `session_persistence = "external"` leaves storage to your session manager. For resession.nvim: `require("resession").setup({ extensions = { claudecode = {} } })`. For auto-session, return `require("claudecode.session_state").encode()` from `save_extra_data` and hand it back to `.restore(data)` in `restore_extra_data`.
+- `session_persistence = "external"` leaves storage to your session manager. For resession.nvim: `require("resession").setup({ extensions = { claudecode = {} } })`. For auto-session, return `require("claude_agents.session_state").encode()` from `save_extra_data` and hand it back to `.restore(data)` in `restore_extra_data`.
 
-With the agents view, also call `require("claudecode.session_state").prepare_save()` from your session manager's pre-save hook (auto-session's `pre_save_cmds`, resession's `pre_save` hook, persistence.nvim's `User PersistenceSavePre`). Otherwise a view still open when you quit is saved with the session, agents' terminals included, and reopening the session starts them again.
+With the agents view, also call `require("claude_agents.session_state").prepare_save()` from your session manager's pre-save hook (auto-session's `pre_save_cmds`, resession's `pre_save` hook, persistence.nvim's `User PersistenceSavePre`). Otherwise a view still open when you quit is saved with the session, agents' terminals included, and reopening the session starts them again.
 
 ## Troubleshooting
 
-- **Claude does not connect:** `:checkhealth claudecode`, then `:ClaudeCodeStatus`. The lock file it connects through is in `~/.claude/ide/` (or `$CLAUDE_CONFIG_DIR/ide/`).
+- **Claude does not connect:** `:checkhealth claude_agents`, then `:ClaudeCodeStatus`. The lock file it connects through is in `~/.claude/ide/` (or `$CLAUDE_CONFIG_DIR/ide/`).
 - **`claude` not found:** set `terminal_cmd` to the path `which claude` prints.
 - **Terminal misbehaves with snacks:** try `terminal.provider = "native"`.
 - **Anything else:** `log_level = "debug"` and read `:messages`.

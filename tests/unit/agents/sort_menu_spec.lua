@@ -3,7 +3,7 @@ require("tests.busted_setup")
 
 describe("agents.sort_menu", function()
   local menu
-  local SORTS = require("claudecode.agents.model").SORTS
+  local SORTS = require("claude_agents.agents.model").SORTS
 
   ---Stand in for snacks.win, so both float paths can be exercised without one.
   local function stub_snacks()
@@ -34,8 +34,8 @@ describe("agents.sort_menu", function()
       vim._mock.reset()
     end
     package.loaded["snacks.win"] = nil
-    package.loaded["claudecode.agents.sort_menu"] = nil
-    menu = require("claudecode.agents.sort_menu")
+    package.loaded["claude_agents.agents.sort_menu"] = nil
+    menu = require("claude_agents.agents.sort_menu")
   end)
 
   after_each(function()
@@ -147,7 +147,7 @@ describe("agents.sort_menu", function()
   end)
 
   describe("how far back the list reaches", function()
-    local WINDOWS = require("claudecode.agents.model").WINDOWS
+    local WINDOWS = require("claude_agents.agents.model").WINDOWS
 
     local function lines_with_windows(active_window)
       return menu.render(SORTS, { key = "recent", desc = true }, WINDOWS, active_window)

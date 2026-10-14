@@ -1,4 +1,4 @@
-describe("claudecode.terminal (wrapper for Snacks.nvim)", function()
+describe("claude_agents.terminal (wrapper for Snacks.nvim)", function()
   local terminal_wrapper
   local spy
   local mock_snacks_module
@@ -222,16 +222,16 @@ describe("claudecode.terminal (wrapper for Snacks.nvim)", function()
       },
     }
 
-    package.loaded["claudecode.terminal"] = nil
-    package.loaded["claudecode.terminal.snacks"] = nil
-    package.loaded["claudecode.terminal.native"] = nil
-    package.loaded["claudecode.server.init"] = nil
+    package.loaded["claude_agents.terminal"] = nil
+    package.loaded["claude_agents.terminal.snacks"] = nil
+    package.loaded["claude_agents.terminal.native"] = nil
+    package.loaded["claude_agents.server.init"] = nil
     package.loaded["snacks"] = nil
-    package.loaded["claudecode.config"] = nil
-    package.loaded["claudecode.logger"] = nil
+    package.loaded["claude_agents.config"] = nil
+    package.loaded["claude_agents.logger"] = nil
 
     -- Mock logger
-    package.loaded["claudecode.logger"] = {
+    package.loaded["claude_agents.logger"] = {
       debug = function() end,
       warn = function(context, message)
         vim.notify(message, vim.log.levels.WARN)
@@ -245,7 +245,7 @@ describe("claudecode.terminal (wrapper for Snacks.nvim)", function()
     local mock_server_module = {
       state = { port = 12345 },
     }
-    package.loaded["claudecode.server.init"] = mock_server_module
+    package.loaded["claude_agents.server.init"] = mock_server_module
 
     mock_claudecode_config_module = {
       apply = spy.new(function(user_conf)
@@ -256,7 +256,7 @@ describe("claudecode.terminal (wrapper for Snacks.nvim)", function()
         return base_config
       end),
     }
-    package.loaded["claudecode.config"] = mock_claudecode_config_module
+    package.loaded["claude_agents.config"] = mock_claudecode_config_module
 
     -- Mock the provider modules
     mock_snacks_provider = {
@@ -282,7 +282,7 @@ describe("claudecode.terminal (wrapper for Snacks.nvim)", function()
         return last_created_mock_term_instance
       end),
     }
-    package.loaded["claudecode.terminal.snacks"] = mock_snacks_provider
+    package.loaded["claude_agents.terminal.snacks"] = mock_snacks_provider
 
     mock_native_provider = {
       setup = spy.new(function() end),
@@ -298,7 +298,7 @@ describe("claudecode.terminal (wrapper for Snacks.nvim)", function()
         return true
       end),
     }
-    package.loaded["claudecode.terminal.native"] = mock_native_provider
+    package.loaded["claude_agents.terminal.native"] = mock_native_provider
 
     mock_snacks_terminal = {
       open = spy.new(create_mock_terminal_instance),
@@ -361,18 +361,18 @@ describe("claudecode.terminal (wrapper for Snacks.nvim)", function()
     vim.cmd = spy.new(function(_cmd_str) end)
     vim.notify = spy.new(function(_msg, _level) end)
 
-    terminal_wrapper = require("claudecode.terminal")
+    terminal_wrapper = require("claude_agents.terminal")
     -- Don't call setup({}) here to allow custom provider tests to work
   end)
 
   after_each(function()
-    package.loaded["claudecode.terminal"] = nil
-    package.loaded["claudecode.terminal.snacks"] = nil
-    package.loaded["claudecode.terminal.native"] = nil
-    package.loaded["claudecode.server.init"] = nil
+    package.loaded["claude_agents.terminal"] = nil
+    package.loaded["claude_agents.terminal.snacks"] = nil
+    package.loaded["claude_agents.terminal.native"] = nil
+    package.loaded["claude_agents.server.init"] = nil
     package.loaded["snacks"] = nil
-    package.loaded["claudecode.config"] = nil
-    package.loaded["claudecode.logger"] = nil
+    package.loaded["claude_agents.config"] = nil
+    package.loaded["claude_agents.logger"] = nil
     if _G.vim and _G.vim._mock and _G.vim._mock.reset then
       _G.vim._mock.reset()
     end
@@ -427,7 +427,7 @@ describe("claudecode.terminal (wrapper for Snacks.nvim)", function()
       assert.are.equal("right", config_arg.split_side)
       assert.are.equal(0.30, config_arg.split_width_percentage)
       vim.notify:was_called_with(
-        "claudecode.terminal.setup expects a table or nil for user_term_config",
+        "claude_agents.terminal.setup expects a table or nil for user_term_config",
         vim.log.levels.WARN
       )
     end)
@@ -441,9 +441,9 @@ describe("claudecode.terminal (wrapper for Snacks.nvim)", function()
         mock_claudecode_config_module.apply = spy.new(function()
           return { terminal_cmd = "claude" }
         end)
-        package.loaded["claudecode.config"] = mock_claudecode_config_module
-        package.loaded["claudecode.terminal"] = nil
-        terminal_wrapper = require("claudecode.terminal")
+        package.loaded["claude_agents.config"] = mock_claudecode_config_module
+        package.loaded["claude_agents.terminal"] = nil
+        terminal_wrapper = require("claude_agents.terminal")
         terminal_wrapper.setup({})
 
         terminal_wrapper.open()
@@ -467,9 +467,9 @@ describe("claudecode.terminal (wrapper for Snacks.nvim)", function()
       mock_claudecode_config_module.apply = spy.new(function()
         return { terminal_cmd = "my_claude_cli" }
       end)
-      package.loaded["claudecode.config"] = mock_claudecode_config_module
-      package.loaded["claudecode.terminal"] = nil
-      terminal_wrapper = require("claudecode.terminal")
+      package.loaded["claude_agents.config"] = mock_claudecode_config_module
+      package.loaded["claude_agents.terminal"] = nil
+      terminal_wrapper = require("claude_agents.terminal")
       terminal_wrapper.setup({}, "my_claude_cli")
 
       terminal_wrapper.open()
@@ -569,9 +569,9 @@ describe("claudecode.terminal (wrapper for Snacks.nvim)", function()
       mock_claudecode_config_module.apply = spy.new(function()
         return { terminal_cmd = "toggle_claude" }
       end)
-      package.loaded["claudecode.config"] = mock_claudecode_config_module
-      package.loaded["claudecode.terminal"] = nil
-      terminal_wrapper = require("claudecode.terminal")
+      package.loaded["claude_agents.config"] = mock_claudecode_config_module
+      package.loaded["claude_agents.terminal"] = nil
+      terminal_wrapper = require("claude_agents.terminal")
       terminal_wrapper.setup({ split_side = "left", split_width_percentage = 0.4 }, "toggle_claude")
 
       terminal_wrapper.toggle({ split_width_percentage = 0.45 })

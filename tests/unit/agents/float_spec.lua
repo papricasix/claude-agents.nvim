@@ -8,8 +8,8 @@ describe("agents.float", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.agents.float"] = nil
-    float = require("claudecode.agents.float")
+    package.loaded["claude_agents.agents.float"] = nil
+    float = require("claude_agents.agents.float")
     float.setup({ agents = { enabled = true, float = { width = 0.5, height = 0.5, cascade_offset = 2 } } })
     float.reset()
   end)

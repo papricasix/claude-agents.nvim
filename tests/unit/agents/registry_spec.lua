@@ -12,7 +12,7 @@ describe("agents.registry", function()
     spawned, instances, stopped_instances, retagged_floats = {}, {}, {}, {}
 
     local next_port = 5000
-    package.loaded["claudecode"] = {
+    package.loaded["claude_agents"] = {
       start_agent_instance = function(session_id, tab)
         if instances[session_id] then
           return instances[session_id]
@@ -34,14 +34,14 @@ describe("agents.registry", function()
       end,
     }
 
-    package.loaded["claudecode.float"] = {
+    package.loaded["claude_agents.float"] = {
       retag = function(previous, session_id)
         retagged_floats[#retagged_floats + 1] = { previous, session_id }
         return 1
       end,
     }
 
-    package.loaded["claudecode.terminal"] = {
+    package.loaded["claude_agents.terminal"] = {
       build_launch = function(cmd_args, opts)
         local port = opts and opts.instance and opts.instance.port
         return "claude " .. (cmd_args or ""), { CLAUDE_CODE_SSE_PORT = tostring(port) }, { cwd = opts and opts.cwd }
@@ -55,8 +55,8 @@ describe("agents.registry", function()
     end
     stub_dependencies()
 
-    package.loaded["claudecode.agents.registry"] = nil
-    registry = require("claudecode.agents.registry")
+    package.loaded["claude_agents.agents.registry"] = nil
+    registry = require("claude_agents.agents.registry")
     registry._spawn = function(cmd, opts)
       spawned[#spawned + 1] = { cmd = cmd, opts = opts }
       return 100 + #spawned
@@ -73,9 +73,9 @@ describe("agents.registry", function()
   end)
 
   after_each(function()
-    package.loaded["claudecode"] = nil
-    package.loaded["claudecode.terminal"] = nil
-    package.loaded["claudecode.float"] = nil
+    package.loaded["claude_agents"] = nil
+    package.loaded["claude_agents.terminal"] = nil
+    package.loaded["claude_agents.float"] = nil
   end)
 
   describe("launching", function()

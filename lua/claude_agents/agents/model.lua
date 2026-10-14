@@ -1,0 +1,2334 @@
+---@brief [[
+--- The agents view's view-model: what the panes should say, with no window or
+--- buffer API in sight.
+---
+--- It joins four sources that each know only part of the answer — the transcript
+--- store (titles, counts, touched files, activity), this Neovim's agent registry
+--- (which conversations are actually running here), `status` (what the tab-hosted
+--- Claudes are doing), and git (what the working tree looks like) — and folds
+--- them into rows the renderer can draw.
+---
+--- Per-agent state is keyed by conversation id rather than tabpage. `status` keys
+--- by tab because a tab used to mean one Claude; here several share a tab, so the
+--- tab has no single state and the conversation is the only thing that does. The
+--- classification rules are still `status`'s, via `status.classify`, so a busy
+--- agent and a busy tab mean the same thing.
+---
+--- Refreshes are coalesced: hook events only set dirty flags, and one timer turns
+--- a burst of them into a single redraw.
+---@brief ]]
+---@module 'claude_agents.agents.model'
+
+local checkpoints = require("claude_agents.agents.checkpoints")
+local flags = require("claude_agents.agents.flags")
+local transcript = require("claude_agents.agents.transcript")
+
+local M = {}
+
+--- Agents config subtable.
+---@type table|nil
+local config = nil
+
+---When each thing on screen was first seen.
+---
+---Keyed by the event table itself rather than by its contents: the transcript
+---hands out its own stored tables, so identity is exact and free — no key to
+---build, and no two reads of the same file in the same second colliding. Weak
+---keys so the store trimming its oldest events drops these with them.
+---@return table
+local function new_seen()
+  return setmetatable({}, { __mode = "k" })
+end
+
+---A fresh model state.
+---
+---A factory rather than a table literal plus a hand-rolled rebuild in `reset()`:
+---the two copies drifted the moment they existed, and every field the rebuild
+---forgot is a nil index waiting to happen — `stamp_feed` indexes `state.seen` on
+---every draw of the Activity pane.
+---@return table
+local function new_state()
+  return {
+    tab = nil, ---@type integer|nil Tabpage hosting the view.
+    cwd = nil, ---@type string|nil Project the view is showing.
+    selected = nil, ---@type string|nil Conversation id.
+    rows = {}, ---@type table[] Session rows, newest first.
+    by_id = {}, ---@type table<string, table> Conversation id -> row.
+    status = {}, ---@type table<string, table> Conversation id -> { state, tool, message, since }
+    git = {}, ---@type table<string, string> Path -> status letter.
+    gone = {}, ---@type table<string, boolean> Path key -> no longer on disk.
+    dirty = {},
+    armed = false,
+    ---@type table<string, fun()> Keyed by name, so re-registering replaces rather
+    --- than stacking: a second `setup()` used to leave two identical listeners and
+    --- redraw the whole view twice per change, for ever.
+    listeners = {},
+    -- So the renderer can draw a fresh row differently from a settled one.
+    -- Milliseconds on a monotonic clock; see `now_ms`.
+    seen = new_seen(),
+    counts = {}, ---@type table<string, table> Row key -> { added, removed, added_at, removed_at }
+    -- Interrupt markers already acted on, `[session_id] = ts`. Keyed by
+    -- conversation and **not** stored on the row: `refresh_list` replaces every
+    -- row table on a 2s timer, so a row-held flag is forgotten and the same old
+    -- marker fires for ever.
+    interrupted = {},
+    -- Set when the selection changes: the events that arrive next are a backfill
+    -- of history, not news, and must not all light up at once.
+    feed_baseline = true,
+    -- The order the session list is *already* showing, as conversation ids. The
+    -- list is not re-sorted on every rebuild; see `apply_order`.
+    order = {},
+    -- `{ key, desc }` once asked for; nil until then, so the first ask takes
+    -- `agents.sessions.sort`. Lives and dies with the open view.
+    sort = nil,
+    -- How far back the list reaches, as a `WINDOWS` key. nil until `gs` changes
+    -- it, so the first ask takes `agents.sessions.limit` — and, like the sort
+    -- criterion, it is a way of reading the list rather than a setting about it,
+    -- so it dies with the view.
+    window = nil,
+    -- Conversations kept in the list whatever the window says, because something
+    -- asked for them by name: a search hit older than the window has no row to
+    -- select, and the panes all follow a row. `[session_id] = { path, cwd, title }`.
+    pinned = {},
+    -- Where the transcript of a conversation we are running was last looked for,
+    -- when the project's own enumeration did not list it: `[session_id] =
+    -- { path, at }`, `path` nil for "searched the store, not there". See
+    -- `locate_live`.
+    located = {},
+    -- Transcripts the window and the cap left out at the last enumeration, so the
+    -- centre can say "there are older ones" rather than "there are none".
+    hidden = 0,
+    -- Which Activity rows are shown: "all" | "files" | "tools". Lives and dies
+    -- with the view, like the sort criterion — it is a way of reading the list,
+    -- not a setting about it.
+    feed_filter = "all",
+    -- What names a row in the Subagents pane: "description" | "type". A way of
+    -- reading the pane, so it lives and dies with the view like the filter.
+    -- What a run was sent to do by default: several `general-purpose` rows are
+    -- told apart only by it.
+    subagent_label = "description",
+    -- The rule the Activity pane draws where a checkpoint falls, one table per
+    -- `(session, checkpoint)` and reused across paints: `stamp_feed` ages rows by
+    -- table identity, so a fresh table every frame would light the rule up on
+    -- every redraw, while a kept one arrives lit once and settles like any row.
+    dividers = {}, ---@type table<string, table>
+  }
+end
+
+local state = new_state()
+
+--- Injectable for the same reason `_scheduler` is: the vim mock has no clock
+--- that advances, so a spec that wants to watch something age needs to drive it.
+M._now_ms = function()
+  local ok, now = pcall(function()
+    return vim.loop.now()
+  end)
+  if ok and type(now) == "number" and now > 0 then
+    return now
+  end
+  return os.time() * 1000
+end
+
+--- Wall-clock seconds, which `_now_ms` cannot answer: its default is
+--- `vim.loop.now()`, a monotonic clock counting from when Neovim started, and the
+--- age window compares against a file's mtime. Injectable for the same reason.
+M._now_s = function()
+  return os.time()
+end
+
+---@param fn fun(): number
+function M._set_clock(fn)
+  M._now_ms = fn
+end
+
+---@param fn fun(): number
+function M._set_epoch_clock(fn)
+  M._now_s = fn
+end
+
+---@return number
+local function now_ms()
+  return M._now_ms()
+end
+
+---Forget what has been seen, so nothing that arrives next reads as new.
+---
+---Called wherever the *subject* changes rather than its contents: a different
+---session's history is not activity, and the same path under a different session
+---is a different set of counts.
+---
+---Two things deliberately survive it, because they do not belong to the
+---selection. **The session rows' count baselines** (`session\0<id>`) describe the
+---whole list, which does not change when you look at a different row — wiping
+---them meant the first change to any session after a selection change was seen
+---for the "first" time and so never flashed. And **`interrupted`**, which is
+---keyed by conversation: clearing it lets a marker that has already been acted on
+---fire again, which is the bug section 11 of the journal exists to record.
+local function reset_seen()
+  state.seen = new_seen()
+  local kept = {}
+  for key, value in pairs(state.counts) do
+    if key:sub(1, 8) == "session\0" then
+      kept[key] = value
+    end
+  end
+  state.counts = kept
+  state.feed_baseline = true
+end
+
+---End a `busy` the user stopped by hand.
+---
+---Claude Code reports an interrupt through **no hook at all** — measured against
+---the real CLI — so the transcript's own `[Request interrupted by user]` entry
+---is the only thing that can end one, and without it a cancelled conversation
+---spins until its next prompt. Every path that takes a fresh summary calls this,
+---since which of them sees the marker first is a matter of what is selected.
+---
+---Two things here are load-bearing, and the first version had neither:
+---
+---*What has been acted on is remembered per conversation, not on the row.*
+---`refresh_list` builds brand-new row tables every time it runs — on a 2s timer
+---— so a flag stored there was gone by the next pass and every refresh re-fired
+---the interrupt. Reported as an agent's spinner freezing whenever its counts
+---updated: a tool finishing re-reads the transcript, the stale marker fired
+---again, and `busy` was knocked back to `idle` until the next hook event.
+---
+---*A marker only ends the turn it belongs to.* The transcript keeps every
+---interrupt the conversation ever had, so the marker being present says nothing
+---on its own; it has to be newer than the moment the running turn started.
+---@param session_id string|nil
+---@param summary table|nil
+local function note_transcript_interrupt(session_id, summary)
+  local ts = summary and summary.interrupted_ts
+  if type(session_id) ~= "string" or type(ts) ~= "number" or ts <= 0 then
+    return
+  end
+  if state.interrupted[session_id] == ts then
+    return
+  end
+  state.interrupted[session_id] = ts
+
+  local entry = state.status[session_id]
+  local live = entry and (entry.state == "busy" or entry.state == "waiting")
+  if live and ts < (entry.since or 0) then
+    -- An interrupt from an earlier turn, or from before the question went up.
+    -- What is running or asking now still is.
+    return
+  end
+  M.note_interrupt(session_id)
+end
+
+---How long each Activity event has been on screen, positionally.
+---
+---The first batch after a selection change is history being backfilled, not news
+---— it must not light the whole pane up at once. An empty batch does not count
+---as that first one: the transcript may still be reading, and the events that
+---follow it *are* the backfill.
+---
+---A backfilled row is aged from **its own timestamp**, not declared infinitely
+---old. Declaring it old was the first version and it made the pane read as
+---permanently dim: switching session and back re-backfills everything, so an
+---edit from a second ago went fully grey the moment you looked away and
+---returned. What is recent is recent however you arrived at it.
+---@param events table[] Newest first, as the pane shows them.
+---@return table[]
+local function stamp_feed(events)
+  local now = now_ms()
+  local wall = os.time()
+  local baseline = state.feed_baseline and #events > 0
+  if baseline then
+    state.feed_baseline = false
+  end
+  -- Ages travel *beside* the events rather than on a copy of them. The events are
+  -- the transcript's own stored tables, cached to disk, so writing a field onto
+  -- one would leak a view concern into the store — which is why this used to
+  -- allocate a table per row on every frame instead.
+  local out = {}
+  for index, event in ipairs(events) do
+    local seen = state.seen[event]
+    if seen == nil then
+      if not baseline then
+        seen = now
+      else
+        -- `ts` is epoch seconds; `now` is a monotonic millisecond clock, so the
+        -- elapsed time is measured in the first and then subtracted from the
+        -- second. An event with no usable timestamp keeps the old behaviour and
+        -- reads as ancient, which is the safe way to be wrong.
+        local ts = tonumber(event.ts) or 0
+        seen = ts > 0 and (now - math.max(0, (wall - ts) * 1000)) or 0
+      end
+      state.seen[event] = seen
+    end
+    -- `seen == 0` means "was already here", which must never read as fresh.
+    out[index] = seen == 0 and math.huge or (now - seen)
+  end
+  return out
+end
+
+---Note a count moving, and say how long ago it did.
+---
+---A value seen for the first time never counts as a change: opening the view
+---would otherwise flash every number in it. Only a value that *moved* from one
+---we already showed is news.
+---@param key string Identity of the row the counts belong to.
+---@param added integer|nil
+---@param removed integer|nil
+---@return number|nil added_age_ms
+---@return number|nil removed_age_ms
+local function stamp_counts(key, added, removed)
+  local now = now_ms()
+  local prev = state.counts[key]
+  if not prev then
+    state.counts[key] = { added = added, removed = removed }
+    return nil, nil
+  end
+  if added ~= nil and prev.added ~= nil and added ~= prev.added then
+    prev.added_at = now
+  end
+  if removed ~= nil and prev.removed ~= nil and removed ~= prev.removed then
+    prev.removed_at = now
+  end
+  if added ~= nil then
+    prev.added = added
+  end
+  if removed ~= nil then
+    prev.removed = removed
+  end
+  return prev.added_at and (now - prev.added_at) or nil, prev.removed_at and (now - prev.removed_at) or nil
+end
+
+--- Injectable so specs can run the coalescing logic without a real timer (the
+--- vim mock runs `defer_fn` immediately, which would defeat the point).
+M._scheduler = function(fn, delay)
+  vim.defer_fn(fn, delay)
+end
+
+---@param fn fun(fn: function, delay: number)
+function M._set_scheduler(fn)
+  M._scheduler = fn
+end
+
+--- Conversations a restored Neovim session says were running. They are marked in
+--- the list but nothing starts until one is chosen, so N restored agents are not
+--- N processes at startup.
+local armed = {}
+
+---@param ids string[]|nil
+function M.set_armed(ids)
+  armed = {}
+  for _, id in ipairs(ids or {}) do
+    armed[id] = true
+  end
+end
+
+---@param full_config table|nil
+function M.setup(full_config)
+  config = (type(full_config) == "table" and type(full_config.agents) == "table") and full_config.agents or nil
+  transcript.setup(full_config)
+end
+
+---@return table
+local function opts()
+  return config or {}
+end
+
+--------------------------------------------------------------------------------
+-- Lifecycle
+--------------------------------------------------------------------------------
+
+---Point the model at a project, in the tab hosting the view.
+---@param tab integer
+---@param cwd string
+function M.attach(tab, cwd)
+  state.tab = tab
+  state.cwd = cwd
+  state.rows = {}
+  state.by_id = {}
+  state.dirty = { list = true, transcript = true, git = true }
+  reset_seen()
+  transcript.cache_load()
+  M.refresh_list()
+end
+
+---Stop tracking, leaving the folded transcripts cached for the next open.
+function M.detach()
+  transcript.cancel_all()
+  transcript.cache_save()
+  state.tab = nil
+  state.cwd = nil
+  state.selected = nil
+  state.rows = {}
+  state.by_id = {}
+  state.armed = false
+  -- Keyed by conversation and never pruned otherwise, so a long Neovim session
+  -- with the view closed accumulated one entry per Claude it ever saw.
+  state.status = {}
+  -- A sort chosen with `gs` lasts as long as the view is open. The next open
+  -- starts from `agents.sessions.sort` again, which is the one thing about the
+  -- order that is written down.
+  state.order = {}
+  state.sort = nil
+  -- Same rule for the window and for what a search pinned into the list: both are
+  -- ways of reading it, chosen for this sitting. The next open starts from
+  -- `agents.sessions.limit`.
+  state.window = nil
+  state.pinned = {}
+  state.hidden = 0
+  state.subagent_label = "description"
+end
+
+---@return string|nil
+function M.cwd()
+  return state.cwd
+end
+
+---Subscribe to "the model changed"; the view redraws from this.
+---
+---Named, so a second `claudecode.setup()` — a config reload, a re-sourced
+---plugin spec — replaces the listener rather than stacking another copy of it
+---and redrawing the whole view twice per change from then on.
+---@param name string
+---@param fn fun()
+function M.on_change(name, fn)
+  state.listeners[name] = fn
+end
+
+local function notify_change()
+  for _, fn in pairs(state.listeners) do
+    pcall(fn)
+  end
+end
+
+--------------------------------------------------------------------------------
+-- Rows
+--------------------------------------------------------------------------------
+
+--- What a conversation is called before it has said anything. Every other title
+--- comes out of the transcript, and this is the row that has none yet; the id
+--- prefix `rows()` otherwise falls back to names nothing a user would recognise.
+local NEW_SESSION_TITLE = "New session"
+
+---What to call a session in the list. A name the user gave it beats the CLI's
+---generated title — renaming is the user saying the generated one was wrong —
+---and the first prompt stands in until either exists.
+---@param summary ClaudeCodeAgentsSummary|nil
+---@return string|nil
+local function display_title(summary)
+  if not summary then
+    return nil
+  end
+  return summary.name or summary.title or summary.first_prompt
+end
+
+---What the launch running a conversation says it is called, for a row nothing
+---has been read for yet.
+---
+---The CLI writes a named conversation's transcript the moment `/clear` starts
+---it (measured against 2.1.295: the name is its first lines), so the row is
+---enumerated at once — a file with no fold and no row before it, which read as
+---the id prefix for the one paint before the fold landed. The launch was told
+---what the conversation it left was called (`registry.set_name`), and that is
+---what this one is called until its transcript says so itself.
+---@param session_id string
+---@return string|nil
+local function launch_name(session_id)
+  local term = require("claude_agents.agents.registry").get(session_id)
+  return term and term.name or nil
+end
+
+---Where a conversation is resumed from, and the worktree it works in.
+---
+---Two directories, because for a conversation in a worktree they are not the
+---same one. It is *resumed* from where it was before it entered: measured
+---against CLI 2.1.291, `--resume` from there finds the transcript in the
+---worktree's store and puts the session back in the worktree by itself — and
+---when the worktree has been deleted it says so and carries on where it was
+---started. Its files are *shown* relative to the worktree (`M.selected_cwd`).
+---@param summary ClaudeCodeAgentsSummary|nil
+---@return string|nil cwd nil while the transcript has not said.
+---@return ClaudeCodeAgentsWorktree|nil worktree
+local function place_of(summary)
+  local worktree = transcript.worktree_of(summary)
+  return (worktree and worktree.original_cwd) or (summary and summary.cwd) or nil, worktree
+end
+
+---Take a freshly folded summary onto a row.
+---
+---One place, because three hand-written copies disagreed about what a fold
+---refreshes: a background agent's row updated its counts but never its title or
+---its position in the list, so a session renamed while another was selected kept
+---showing its old name until the view was reopened.
+---@param row table
+---@param summary ClaudeCodeAgentsSummary
+local function apply_summary(row, summary)
+  row.title = display_title(summary) or row.title
+  local cwd, worktree = place_of(summary)
+  row.cwd = cwd or row.cwd
+  row.worktree = worktree
+  row.added = summary.added
+  row.removed = summary.removed
+  if summary.last_ts and summary.last_ts > 0 then
+    row.last_ts = summary.last_ts
+  end
+  note_transcript_interrupt(row.session_id, summary)
+  -- A flag waiting for a reply ends at the reply, and this is where every fresh
+  -- fold passes through. The redraw is asked for rather than assumed: a
+  -- background agent's fold lands after the pass that requested it has painted.
+  if flags.settle(row.session_id, summary.last_reply_ts) then
+    M.request_refresh()
+  end
+  row.folded = true
+end
+
+---Every conversation running in a tab of its own, indexed by session id.
+---
+---`status.all()` allocates a copy of every entry, so asking it per row — twice
+---per row, since `is_live` also falls through to it — rebuilt that table once
+---for every session in the list on every frame. Built once and passed down.
+---@return table<string, { state: string, tab: integer }>
+local function foreign_index()
+  local out = {}
+  local ok, status = pcall(require, "claude_agents.status")
+  if not ok or not status.all then
+    return out
+  end
+  for tab, entry in pairs(status.all()) do
+    if entry.session_id and tab ~= state.tab then
+      out[entry.session_id] = { state = entry.state, tab = tab }
+    end
+  end
+  return out
+end
+
+---@param row table
+---@param foreign table<string, table>|nil Prebuilt index; built on demand if absent.
+---@return boolean
+local function is_live(row, foreign)
+  local registry = require("claude_agents.agents.registry")
+  if registry.is_live(row.session_id) then
+    return true
+  end
+  if not opts().sessions or opts().sessions.foreign ~= false then
+    -- A Claude started the normal way in another tab: it belongs to this project
+    -- just as much, and calling it idle because we did not launch it would be a
+    -- lie the user can see.
+    foreign = foreign or foreign_index()
+    return foreign[row.session_id] ~= nil
+  end
+  return false
+end
+
+---The state of a conversation running outside the agents view, if any.
+---@param session_id string
+---@return string|nil state
+---@return integer|nil tab
+function M.foreign_state(session_id)
+  local entry = foreign_index()[session_id]
+  if not entry then
+    return nil
+  end
+  return entry.state, entry.tab
+end
+
+--------------------------------------------------------------------------------
+-- How far back the list reaches
+--------------------------------------------------------------------------------
+
+--- A day, in seconds. Months are counted as thirty of them: the window is "about
+--- this far back", and a calendar month would make the same setting mean a
+--- different span depending on when it was asked.
+local DAY = 24 * 60 * 60
+
+--- What the `gs` menu offers as a window, in menu order. `seconds = nil` is "no
+--- window at all", which is a choice rather than the absence of one.
+---@type { key: string, accel: string, label: string, seconds: integer|nil }[]
+M.WINDOWS = {
+  { key = "1d", accel = "1", label = "Last day", seconds = DAY },
+  { key = "3d", accel = "3", label = "Last 3 days", seconds = 3 * DAY },
+  { key = "1w", accel = "w", label = "Last week", seconds = 7 * DAY },
+  { key = "2w", accel = "W", label = "Last 2 weeks", seconds = 14 * DAY },
+  { key = "1m", accel = "m", label = "Last month", seconds = 30 * DAY },
+  { key = "all", accel = "a", label = "Everything", seconds = nil },
+}
+
+local UNIT_SECONDS = { d = DAY, w = 7 * DAY, m = 30 * DAY }
+
+--- What the list falls back to when nothing says otherwise: two weeks of work,
+--- and a ceiling no window can lift, so a project with a thousand conversations
+--- cannot be asked to paint a thousand rows.
+local DEFAULT_WINDOW = "2w"
+local DEFAULT_MAX = 200
+
+---Read `agents.sessions.limit`, which is either a count or a span of time.
+---
+---A number is the old meaning — "the newest N" — and still exactly that. A string
+---is a window: `"3d"`, `"2w"`, `"1m"` (thirty days), or `"all"` for no window at
+---all. Anything unparseable is treated as the default rather than as an error;
+---`config.validate` is where a wrong value is reported, and this runs on a timer.
+---@param value any
+---@return { seconds: integer|nil, count: integer|nil, key: string|nil }
+function M.parse_limit(value)
+  if type(value) == "number" then
+    return { count = math.max(1, math.floor(value)) }
+  end
+  if type(value) == "string" then
+    if value == "all" then
+      return { key = "all" }
+    end
+    local n, unit = value:match("^(%d+)%s*([dwm])$")
+    if n and UNIT_SECONDS[unit] then
+      return { seconds = tonumber(n) * UNIT_SECONDS[unit], key = n .. unit }
+    end
+  end
+  return M.parse_limit(DEFAULT_WINDOW)
+end
+
+---The window in force: what `gs` last picked, else what the config asks for.
+---@return { seconds: integer|nil, count: integer|nil, key: string|nil }
+local function window_mode()
+  if state.window then
+    for _, spec in ipairs(M.WINDOWS) do
+      if spec.key == state.window then
+        return { seconds = spec.seconds, key = spec.key }
+      end
+    end
+  end
+  return M.parse_limit(opts().sessions and opts().sessions.limit)
+end
+
+---The ceiling on rows, whatever the window says.
+---@return integer
+local function max_rows()
+  local configured = opts().sessions and opts().sessions.max
+  if type(configured) == "number" and configured >= 1 then
+    return math.floor(configured)
+  end
+  return DEFAULT_MAX
+end
+
+---The window in force, as a copy, plus how it reads in the menu.
+---@return { key: string|nil, seconds: integer|nil, count: integer|nil, label: string }
+function M.window()
+  local mode = window_mode()
+  local label = mode.count and ("newest " .. mode.count) or "everything"
+  for _, spec in ipairs(M.WINDOWS) do
+    if spec.key == mode.key then
+      label = spec.label
+    end
+  end
+  return { key = mode.key, seconds = mode.seconds, count = mode.count, label = label }
+end
+
+---Show conversations from the last `key` (a `WINDOWS` key), for as long as the
+---view is open.
+---@param key string
+---@return { key: string|nil, seconds: integer|nil, count: integer|nil, label: string }
+function M.set_window(key)
+  for _, spec in ipairs(M.WINDOWS) do
+    if spec.key == key then
+      state.window = spec.key
+      M.refresh_list()
+      return M.window()
+    end
+  end
+  return M.window()
+end
+
+---How many of this project's conversations the window and the cap left out.
+---@return integer
+function M.hidden_count()
+  return state.hidden or 0
+end
+
+---Keep a conversation in the list whatever the window says.
+---
+---A search reaches past the window (and past this project), so the conversation
+---you pick may have no row — and a row is what every pane follows, what the
+---cursor sits on, and what `select` reads the launch directory from. Pinning is
+---how such a hit becomes selectable without widening the window for everything
+---else; it lasts as long as the view.
+---@param session_id string
+---@param info { path: string|nil, cwd: string|nil, title: string|nil }|nil
+function M.pin(session_id, info)
+  if type(session_id) ~= "string" or session_id == "" then
+    return
+  end
+  info = info or {}
+  state.pinned[session_id] = {
+    path = info.path or (state.cwd and transcript.session_path(info.cwd or state.cwd, session_id)),
+    cwd = info.cwd or state.cwd,
+    title = info.title,
+  }
+  M.refresh_list()
+end
+
+---Stop holding a conversation in the list.
+---
+---What cancelling a search does to everything it merely looked at: browsing
+---results moves the selection through them, and each one had to be a row for the
+---panes to show it, but none of them was chosen.
+---@param session_id string
+function M.unpin(session_id)
+  if state.pinned[session_id] == nil then
+    return
+  end
+  state.pinned[session_id] = nil
+  M.refresh_list()
+end
+
+---@return table<string, table>
+function M.pinned()
+  return state.pinned
+end
+
+--------------------------------------------------------------------------------
+-- Flags
+--------------------------------------------------------------------------------
+
+---The flag on a conversation, if it has one (`agents/flags.lua`).
+---@param session_id string|nil
+---@return ClaudeCodeAgentsFlag|nil
+function M.flag_of(session_id)
+  return flags.get(session_id)
+end
+
+---Flag a conversation that has none, unflag one that has.
+---
+---The list is re-enumerated either way, because a flag is one of the things that
+---holds a row in it: a conversation older than the window stays for as long as
+---it is flagged and goes with the flag.
+---@param session_id string
+---@return ClaudeCodeAgentsFlag|nil flag The new flag, nil when one was taken off.
+function M.toggle_flag(session_id)
+  local flag = flags.toggle(session_id, M._now_s())
+  M.refresh_list()
+  return flag
+end
+
+---Flag a conversation with a note, or change the note on its flag. An empty note
+---leaves a bare flag, which the next reply takes off.
+---@param session_id string
+---@param note string|nil
+---@return ClaudeCodeAgentsFlag|nil
+function M.set_flag(session_id, note)
+  local flag = flags.set(session_id, note, M._now_s())
+  M.refresh_list()
+  return flag
+end
+
+---@param session_id string
+---@return boolean cleared
+function M.clear_flag(session_id)
+  local cleared = flags.clear(session_id)
+  if cleared then
+    M.refresh_list()
+  end
+  return cleared
+end
+
+---How many of the listed conversations are flagged — what the pane's title says.
+---@return integer
+function M.flag_count()
+  local count = 0
+  for _, row in ipairs(state.rows) do
+    if flags.get(row.session_id) then
+      count = count + 1
+    end
+  end
+  return count
+end
+
+---The fold of a transcript the CLI has moved since the last pass, taken along to
+---where the file is now.
+---
+---A row whose transcript is at another path than a pass ago, with nothing
+---folded there, is the same conversation in another directory of the store —
+---the CLI renames the file when its session enters or leaves a worktree, or is
+---taken elsewhere with `/cd`. Starting its fold over would blank every pane that
+---shows it until the whole transcript had been read again.
+---@param previous table|nil The conversation's row a pass ago.
+---@param path string Where its transcript is now.
+---@return ClaudeCodeAgentsSummary|nil summary nil when there was nothing to carry, or it could not be shown to be the same file.
+local function carried_fold(previous, path)
+  if not previous or not previous.path or previous.path == path then
+    return nil
+  end
+  return transcript.rehome(previous.path, path)
+end
+
+---A row for a conversation the project's enumeration did not list, built from
+---where its transcript is: a search hit pinned from another project, or one of
+---our own agents whose transcript the CLI moved. It folds from there like any
+---other row, so it fills in its own title and counts.
+---@param session_id string
+---@param path string Its transcript.
+---@param known { title: string|nil, cwd: string|nil } What the caller knows before anything is read.
+---@return table row
+local function row_at(session_id, path, known)
+  local previous = state.by_id[session_id]
+  local summary = transcript.get(path) or carried_fold(previous, path)
+  local cwd, worktree = place_of(summary)
+  return {
+    session_id = session_id,
+    path = path,
+    title = display_title(summary) or (previous and previous.title) or known.title or nil,
+    cwd = cwd or known.cwd or state.cwd,
+    worktree = worktree or (not summary and previous and previous.worktree) or nil,
+    added = summary and summary.added or nil,
+    removed = summary and summary.removed or nil,
+    last_ts = (summary and summary.last_ts and summary.last_ts > 0) and summary.last_ts or 0,
+    folded = summary ~= nil and not summary.partial,
+  }
+end
+
+--- How long a running conversation may stay unfound before the store is searched
+--- for it again. The search is a `stat` per project directory, and the usual
+--- reason to come up empty is an agent nobody has typed into yet — which is
+--- listed by the project's own enumeration the moment it is written, not by this.
+local LOCATE_RETRY_S = 10
+
+---Where the transcript of a conversation we are running is, when the project's
+---enumeration did not list it.
+---
+---The CLI keeps a transcript under the directory its session is *in* and moves
+---it when that changes. Worktrees of this repository are enumerated
+---(`transcript.worktree_dirs`); what is left is `/cd` to somewhere else entirely
+---and a worktree a hook made outside the repository, and for those the only rule
+---is the conversation's id. Remembered per conversation, the answer checked with
+---one `stat` a pass and a miss not asked again for `LOCATE_RETRY_S`.
+---@param session_id string
+---@return string|nil path
+local function locate_live(session_id)
+  local known = state.located[session_id]
+  local now = M._now_s()
+  if known and not known.path and (now - known.at) < LOCATE_RETRY_S then
+    return nil
+  end
+  local path = transcript.locate(session_id, known and known.path or nil)
+  state.located[session_id] = { path = path, at = now }
+  return path
+end
+
+---Re-enumerate the project's transcripts and rebuild the rows.
+---
+---Stat-only, so it is cheap enough to run on a timer; the folding that fills in
+---titles and counts happens separately and asynchronously.
+---
+---Two things bound the result. The **window** — the last fortnight by default —
+---is what makes a long-lived project's list readable: a hundred conversations is
+---not a list, it is an archive, and the ones worth resuming are almost always
+---recent. The **cap** is the ceiling that holds however wide the window is opened,
+---so "everything" costs a bounded number of rows and folds.
+---
+---Neither is allowed to take a conversation the user is holding on to: a running
+---agent, the selected row, anything pinned by a search and anything flagged stay
+---listed whatever their age — a flag that aged out of the list would be a
+---reminder nobody is reminded by. Age is read from the file's mtime rather than
+---from the transcript's own newest timestamp, because the enumeration is
+---stat-only — asking for `last_ts` would mean folding every transcript in the
+---project to decide which ones to show, and a row that vanished once it folded
+---would be worse than one that is a bookkeeping write too young.
+function M.refresh_list()
+  if not state.cwd then
+    return
+  end
+  local listed = transcript.list(state.cwd)
+  local window = window_mode()
+  local cap = max_rows()
+  if window.count and window.count < cap then
+    cap = window.count
+  end
+  local cutoff = window.seconds and (M._now_s() - window.seconds) or nil
+
+  -- Rows that are not the window's to drop.
+  local registry = require("claude_agents.agents.registry")
+  local keep = {}
+  for _, session_id in ipairs(registry.live_ids()) do
+    keep[session_id] = true
+  end
+  for session_id in pairs(state.pinned) do
+    keep[session_id] = true
+  end
+  if state.selected then
+    keep[state.selected] = true
+  end
+  -- Another Neovim may have flagged or answered something since the last pass.
+  flags.refresh()
+  for session_id in pairs(flags.all()) do
+    keep[session_id] = true
+  end
+
+  local hidden = 0
+  local rows, by_id = {}, {}
+  -- Rows whose flag is waiting for a reply and whose transcript has grown since
+  -- it was folded. Nothing else re-reads a conversation that is neither selected
+  -- nor running here, and one answered from a bare terminal or another editor is
+  -- exactly that: without this its flag would outlive the reply until the row
+  -- was next selected. The enumeration has already stat'ed the file, so finding
+  -- them costs a comparison.
+  local replied = {}
+  for _, entry in ipairs(listed) do
+    local wanted = keep[entry.id] == true
+    local too_old = cutoff ~= nil and (entry.mtime or 0) < cutoff
+    if not wanted and (too_old or #rows >= cap) then
+      hidden = hidden + 1
+    else
+      -- Kept across the rebuild so a title never goes backwards: a transcript that
+      -- has just appeared is listed before it is folded, and dropping to the id
+      -- prefix in between is a visible flicker on the row the user is watching —
+      -- the one they just started. `apply_summary` keeps it the same way. A row
+      -- with neither is called what its launch says (`launch_name`).
+      local previous = state.by_id[entry.id]
+      local summary = entry.summary or carried_fold(previous, entry.path)
+      local cwd, worktree = place_of(summary)
+      local row = {
+        session_id = entry.id,
+        path = entry.path,
+        title = display_title(summary) or (previous and previous.title) or launch_name(entry.id),
+        cwd = cwd or state.cwd,
+        -- Carried like the title while nothing has been read: a transcript the CLI
+        -- has just moved is a path with no fold yet, and its row is still the
+        -- conversation that was in a worktree a moment ago.
+        worktree = worktree or (not summary and previous and previous.worktree) or nil,
+        -- Kept even for a partial summary: `rows()` gates on `folded`, so a count
+        -- from a half-read transcript is carried but not shown.
+        added = summary and summary.added or nil,
+        removed = summary and summary.removed or nil,
+        last_ts = (summary and summary.last_ts and summary.last_ts > 0) and summary.last_ts or entry.mtime,
+        folded = summary ~= nil and not summary.partial,
+      }
+      rows[#rows + 1] = row
+      by_id[row.session_id] = row
+      local grown = summary and not summary.partial and (summary.size ~= entry.size or summary.mtime ~= entry.mtime)
+      if grown and flags.pending(entry.id) then
+        replied[#replied + 1] = row
+      end
+    end
+  end
+
+  -- A pinned conversation the enumeration cannot see: a search hit from another
+  -- project. It is listed from what the search knew about it — the transcript it
+  -- matched in and the directory that transcript names — and folds from there
+  -- like any other row, so it fills in its own title and counts.
+  for session_id, pin in pairs(state.pinned) do
+    if not by_id[session_id] and pin.path then
+      local row = row_at(session_id, pin.path, pin)
+      row.pinned = true
+      rows[#rows + 1] = row
+      by_id[session_id] = row
+    end
+  end
+
+  -- A conversation we are running that the enumeration cannot see.
+  --
+  -- Usually because it does not exist yet: the CLI writes the transcript on the
+  -- first message, so a brand new agent is in no listing for as long as the user
+  -- takes to type into it — and a list is the only way back to a conversation, so
+  -- moving the selection off it once lost it entirely: still running, still
+  -- holding a port and a terminal buffer, and unreachable. The registry knows
+  -- everything a row needs about it (its id, the directory it runs in, and that
+  -- it is running), so it is listed from there until the enumeration takes over.
+  --
+  -- Or because the CLI took its transcript somewhere this project's enumeration
+  -- does not reach (`locate_live`). Then it is no new session at all, and it is
+  -- listed from where its transcript is — calling it "New session" with nothing
+  -- in any pane is what a moved conversation looked like before.
+  local located = {}
+  for _, session_id in ipairs(registry.live_ids()) do
+    if not by_id[session_id] then
+      local term = registry.get(session_id)
+      local launch_cwd = (term and term.cwd) or state.cwd
+      local path = locate_live(session_id)
+      located[session_id] = state.located[session_id]
+      local row
+      if path then
+        row = row_at(session_id, path, { cwd = launch_cwd, title = term and term.name })
+      else
+        row = {
+          session_id = session_id,
+          -- Where the CLI is about to write it. Nothing depends on the file being
+          -- there — a fold simply finds nothing — but naming it now is what lets
+          -- the panes fill in the moment it appears, rather than on the next scan.
+          path = transcript.session_path(launch_cwd, session_id),
+          -- A launch that named its conversation (`--name`) is called that from
+          -- the start: the CLI shows the name in its prompt box at once, and
+          -- writes it with the first message like everything else.
+          title = (term and term.name) or NEW_SESSION_TITLE,
+          cwd = launch_cwd,
+          -- It has changed nothing yet, and that is a fact rather than a gap: the
+          -- unknown-count placeholder would claim its counts are still being read.
+          added = 0,
+          removed = 0,
+          last_ts = os.time(),
+          folded = true,
+        }
+      end
+      rows[#rows + 1] = row
+      by_id[session_id] = row
+    end
+  end
+  -- Rebuilt from what is running, so a stopped agent's entry goes with it.
+  state.located = located
+
+  local before = state.by_id
+  state.rows = rows
+  state.by_id = by_id
+  state.hidden = hidden
+
+  if state.selected and not by_id[state.selected] then
+    state.selected = nil
+  end
+
+  -- A transcript that is somewhere else than it was a pass ago was moved by the
+  -- CLI under a running conversation: entering or leaving a worktree, or `/cd`.
+  -- Whatever is still kept for the old path describes a file that is gone.
+  for session_id, row in pairs(by_id) do
+    local previous = before[session_id]
+    if previous and previous.path and previous.path ~= row.path then
+      transcript.invalidate(previous.path)
+      if transcript.get(row.path) then
+        -- Its fold came along (`carried_fold`), so the row reads as it did; what
+        -- the CLI has appended since is still to be read, and nothing else would
+        -- read it for a conversation that is neither selected nor running here.
+        M.fold_row(row)
+      elseif session_id == state.selected then
+        -- Read again from the start: the same history arriving, not activity.
+        reset_seen()
+      end
+      if session_id == state.selected then
+        -- Its subagents' transcripts moved with it.
+        M.refresh_subagents()
+      end
+    end
+  end
+  for _, row in ipairs(replied) do
+    M.fold_row(row)
+  end
+  M.fold_pending()
+  notify_change()
+end
+
+---Fold a few unfolded transcripts per call, newest first.
+---
+---A mature project has a hundred of these and folding them all up front would
+---stall the open. The list paints immediately from whatever the cache knows, and
+---this fills in the rest a slice at a time.
+function M.fold_pending()
+  local batch = opts().fold_batch or 2
+  local selected = state.selected
+
+  -- The selected session always folds first: its feed and file list are on screen.
+  if selected and state.by_id[selected] and not state.by_id[selected].folded then
+    M.fold_row(state.by_id[selected])
+    batch = batch - 1
+  end
+
+  for _, row in ipairs(state.rows) do
+    if batch <= 0 then
+      break
+    end
+    if not row.folded and not row.folding then
+      M.fold_row(row)
+      batch = batch - 1
+    end
+  end
+end
+
+---Keep folding until every row has its counts, a batch at a time.
+---
+---Without this the list stops after the first batch and the remaining sessions
+---keep their placeholder counts and no title until something else happens to
+---re-enumerate — which is why the list only appeared to fill in when a session
+---was opened. Self-terminating: it stops scheduling once nothing is left.
+local function schedule_fold()
+  if state.fold_armed then
+    return
+  end
+  for _, row in ipairs(state.rows) do
+    if not row.folded and not row.folding and not row.fold_failed then
+      state.fold_armed = true
+      M._scheduler(function()
+        state.fold_armed = false
+        M.fold_pending()
+      end, 10)
+      return
+    end
+  end
+end
+
+---@param row table
+function M.fold_row(row)
+  if not row or row.folding then
+    return
+  end
+  row.folding = true
+  transcript.summary(row.path, function(summary)
+    row.folding = false
+    if not summary then
+      -- Nothing to read (the file went away mid-scan). Remember, so the drain
+      -- below does not come back to it forever.
+      row.fold_failed = true
+      schedule_fold()
+      return
+    end
+    apply_summary(row, summary)
+    notify_change()
+    schedule_fold()
+  end)
+end
+
+---Session rows for the renderer, decorated with live state and icons.
+--------------------------------------------------------------------------------
+-- Order
+--------------------------------------------------------------------------------
+
+--- What `gs` offers, in menu order.
+---
+--- `accel` is the single key that picks one, `desc` the direction the criterion
+--- starts in, and `down`/`up` name that direction in the words of the thing being
+--- sorted: "newest first" says what descending does to a timestamp without the
+--- reader having to work it out, and it is not the same answer as "Z → A".
+---@type { key: string, accel: string, label: string, desc: boolean, down: string, up: string }[]
+M.SORTS = {
+  { key = "recent", accel = "r", label = "Recent activity", desc = true, down = "newest first", up = "oldest first" },
+  { key = "name", accel = "n", label = "Name", desc = false, down = "Z → A", up = "A → Z" },
+  { key = "changes", accel = "c", label = "Changes", desc = true, down = "most first", up = "fewest first" },
+  { key = "status", accel = "s", label = "Status", desc = true, down = "flagged, then busy first", up = "idle first" },
+}
+
+--- `agents.sessions.sort` predates the menu and named two of these differently.
+local SORT_ALIASES = { added = "changes", title = "name" }
+
+--- Descending status order: what is asking you something outranks what is
+--- working, which outranks what has finished and not been read.
+local STATUS_RANK = { busy = 5, waiting = 4, done = 3, idle = 2, none = 1 }
+
+--- What a flag adds to a row's status rank: more than the whole scale, so every
+--- flagged conversation sorts above every unflagged one and they keep the status
+--- order among themselves. A flag is the user saying this one comes first.
+local FLAG_RANK = 10
+
+---@param key string|nil
+---@return table spec Falls back to the first criterion rather than to nothing.
+function M.sort_spec(key)
+  for _, spec in ipairs(M.SORTS) do
+    if spec.key == key then
+      return spec
+    end
+  end
+  return M.SORTS[1]
+end
+
+---The active criterion, taken from `agents.sessions.sort` the first time it is
+---asked for in an open view's lifetime.
+---@return { key: string, desc: boolean }
+local function sort_mode()
+  if not state.sort then
+    local configured = (opts().sessions and opts().sessions.sort) or "recent"
+    local spec = M.sort_spec(SORT_ALIASES[configured] or configured)
+    state.sort = { key = spec.key, desc = spec.desc }
+  end
+  return state.sort
+end
+
+---@param row table
+---@param key string
+---@return number|string
+local function sort_value(row, key)
+  if key == "name" then
+    return (row.title or ""):lower()
+  elseif key == "changes" then
+    return (row.added or 0) + (row.removed or 0)
+  elseif key == "status" then
+    return (STATUS_RANK[row.state] or 0) + (row.flag and FLAG_RANK or 0)
+  end
+  return row.last_ts or 0
+end
+
+---Does `a` belong above `b`?
+---
+---Ties fall through to the newest first and then to the id, so a criterion that
+---leaves rows equal — a list of sessions that have all changed nothing, sorted
+---by changes — still produces one order rather than whatever `table.sort` made
+---of it that time.
+---@param a table
+---@param b table
+---@param mode { key: string, desc: boolean }
+---@return boolean
+local function before(a, b, mode)
+  local av, bv = sort_value(a, mode.key), sort_value(b, mode.key)
+  if av ~= bv then
+    if mode.desc then
+      return av > bv
+    end
+    return av < bv
+  end
+  local at, bt = a.last_ts or 0, b.last_ts or 0
+  if at ~= bt then
+    return at > bt
+  end
+  return (a.session_id or "") < (b.session_id or "")
+end
+
+---Put the rows back in the order the list is already showing them in.
+---
+---This used to be a `table.sort` on every rebuild, and every criterion worth
+---sorting by moves on its own: a background agent finishing one tool call bumps
+---its `last_ts` and its counts, so with several sessions running the rows shuffle
+---continuously under a stationary cursor and the one you were reaching for is
+---somewhere else by the time you get there. The cursor is already anchored to its
+---conversation rather than to its line, which stops the *selection* being wrong,
+---but it cannot make a moving list readable.
+---
+---So the order is frozen: rows keep the places they were given, and only `gs` or
+---an explicit refresh recomputes them. A session that appears afterwards is
+---**sorted in once** — put where the active criterion says it goes at the moment
+---it arrives — and pinned from then on. Appending instead would file every new
+---agent at the bottom of a list sorted by recency, which is the one place it does
+---not belong.
+---
+---`state.order` is rebuilt from the rows that are actually present, so a deleted
+---conversation drops out of it here rather than needing its own cleanup.
+---@param rows table[]
+---@return table[]
+local function apply_order(rows)
+  local mode = sort_mode()
+  local rank = {}
+  for index, id in ipairs(state.order) do
+    rank[id] = index
+  end
+
+  local known, fresh = {}, {}
+  for _, row in ipairs(rows) do
+    if rank[row.session_id] then
+      known[#known + 1] = row
+    else
+      fresh[#fresh + 1] = row
+    end
+  end
+  table.sort(known, function(a, b)
+    return rank[a.session_id] < rank[b.session_id]
+  end)
+  -- Sorted among themselves first, so that inserting them one at a time leaves
+  -- them in the right order relative to each other as well as to the frozen rows.
+  table.sort(fresh, function(a, b)
+    return before(a, b, mode)
+  end)
+
+  for _, row in ipairs(fresh) do
+    local at = #known + 1
+    for index = 1, #known do
+      if before(row, known[index], mode) then
+        at = index
+        break
+      end
+    end
+    table.insert(known, at, row)
+  end
+
+  state.order = {}
+  for index, row in ipairs(known) do
+    state.order[index] = row.session_id
+  end
+  return known
+end
+
+---The criterion the list is ordered by, as a copy.
+---@return { key: string, desc: boolean }
+function M.sort_mode()
+  local mode = sort_mode()
+  return { key = mode.key, desc = mode.desc }
+end
+
+---Sort the list again from the rows' current values, and freeze it there.
+---
+---What `r` does on top of re-reading the directory: an explicit refresh is the
+---one moment a jumping list is what you asked for.
+function M.resort()
+  state.order = {}
+  notify_change()
+end
+
+---Order by `key`, reversing it when it is already the active criterion — the
+---menu has one entry per criterion, and picking it again is how you turn it
+---round.
+---@param key string
+---@param desc boolean|nil Explicit direction. Omitted means "flip if this is
+---            already the criterion, otherwise its own natural direction".
+---@return { key: string, desc: boolean }
+function M.set_sort(key, desc)
+  local spec = M.sort_spec(SORT_ALIASES[key] or key)
+  local mode = sort_mode()
+  if desc == nil then
+    if mode.key == spec.key then
+      desc = not mode.desc
+    else
+      desc = spec.desc
+    end
+  end
+  state.sort = { key = spec.key, desc = desc == true }
+  state.order = {}
+  notify_change()
+  return M.sort_mode()
+end
+
+---The worktree a row's conversation works in, when that is somewhere other than
+---the directory this view is attached to.
+---
+---The mark it becomes says "not here". A view opened inside a worktree lists
+---that worktree's own conversations, and marking every one of them would say
+---nothing about any.
+---@param row table
+---@return ClaudeCodeAgentsWorktree|nil
+local function worktree_elsewhere(row)
+  local worktree = row.worktree
+  if not worktree then
+    return nil
+  end
+  local utils = require("claude_agents.utils")
+  if utils.path_key(worktree.path) == utils.path_key(state.cwd) then
+    return nil
+  end
+  return worktree
+end
+
+---@return table[]
+function M.rows()
+  local ok_status, status = pcall(require, "claude_agents.status")
+  -- Listing a conversation that edited nothing is the default: asking a question
+  -- and reading the answer is still a session, and it is still resumable.
+  local include_empty = not (opts().sessions and opts().sessions.include_empty == false)
+  local foreign = foreign_index()
+  local out = {}
+
+  for _, row in ipairs(state.rows) do
+    local live = is_live(row, foreign)
+    local touched = (row.added or 0) > 0 or (row.removed or 0) > 0
+    -- `not row.folded` keeps a session listed while its counts are still being
+    -- read. That is only sound because empty sessions are listed by default: with
+    -- `include_empty = false` a row does disappear once it is known to have
+    -- changed nothing, which is exactly what that setting asks for.
+    if include_empty or touched or live or not row.folded then
+      local entry = state.status[row.session_id]
+      -- Our own record of the conversation first; a Claude running in another tab
+      -- next; "it is up but we have heard nothing from it" last.
+      local session_state = (entry and entry.state)
+        or (foreign[row.session_id] and foreign[row.session_id].state)
+        or (live and "idle" or "none")
+
+      local icon, group
+      if ok_status and status.icon_for_state then
+        icon, group = status.icon_for_state(session_state)
+      end
+      -- `status` draws nothing for a tab with no Claude, but a session list still
+      -- needs a bullet in that column or the titles lose their left edge.
+      if icon == "" then
+        icon = nil
+      end
+
+      -- Two different things wear the same hollow bullet here, and `status`'s dim
+      -- was on the wrong one. Dimming `idle` is right in a tabline, where a tab
+      -- with no Claude draws nothing at all; in this list the stopped
+      -- conversations are rows on screen too, and they came out at full strength
+      -- while a live agent waiting for work was the faint one. So the dim marks
+      -- "not running" and a running agent keeps the pane's own colour.
+      if not live and (session_state == "none" or session_state == "idle") then
+        group = require("claude_agents.agents.render").highlight("stopped")
+      elseif live and session_state == "idle" then
+        group = nil
+      end
+
+      local added = row.folded and row.added or nil
+      local removed = row.folded and row.removed or nil
+      local added_age, removed_age = stamp_counts("session\0" .. row.session_id, added, removed)
+
+      out[#out + 1] = {
+        session_id = row.session_id,
+        title = row.title or row.session_id:sub(1, 8),
+        armed = armed[row.session_id] == true and not live,
+        last_ts = row.last_ts,
+        added = added,
+        removed = removed,
+        added_age_ms = added_age,
+        removed_age_ms = removed_age,
+        state = session_state,
+        live = live,
+        icon = icon or (live and "●" or "○"),
+        hl = group,
+        selected = state.selected == row.session_id,
+        -- `{ at, note }` when the user flagged it (`agents/flags.lua`).
+        flag = flags.get(row.session_id),
+        -- `{ name, path, branch }` when it works in a worktree rather than here.
+        worktree = worktree_elsewhere(row),
+      }
+    end
+  end
+
+  return apply_order(out)
+end
+
+--------------------------------------------------------------------------------
+-- Selection
+--------------------------------------------------------------------------------
+
+---@return string|nil
+function M.selected()
+  return state.selected
+end
+
+---@param session_id string|nil
+function M.select(session_id)
+  if state.selected == session_id then
+    return
+  end
+  state.selected = session_id
+  -- Arriving at a conversation is reading it: an answer that finished while you
+  -- were looking elsewhere stops being unread here.
+  if session_id then
+    M.mark_read(session_id)
+  end
+  state.dirty.transcript = true
+  state.dirty.git = true
+  -- A different conversation's history arriving in the panes is not activity.
+  reset_seen()
+  local row = session_id and state.by_id[session_id]
+  if row and not row.folded then
+    M.fold_row(row)
+  end
+  M.refresh_subagents()
+  notify_change()
+end
+
+---@param session_id string
+---@return table|nil
+function M.row(session_id)
+  return state.by_id[session_id]
+end
+
+---The name a conversation was given — by `/rename`, or by the launch that
+---started it — as its transcript records it. Not the generated title: that one
+---describes a conversation, and only a given name is taken into the next one
+---(see `registry.set_name`).
+---@param session_id string
+---@return string|nil name
+---@return boolean known false when nothing of the transcript has been read, so nil is not an answer.
+function M.given_name(session_id)
+  local row = state.by_id[session_id]
+  local summary = row and transcript.get(row.path)
+  if not summary then
+    return nil, false
+  end
+  return summary.name, true
+end
+
+--- The longest run of digits after a name's last dash that is still read as a
+--- counter. `plan-2` and `plan-12` are numbered; `notes-20261009` and
+--- `issue-4521` end in a date and a ticket, and counting those on names a day or
+--- a ticket that has nothing to do with the conversation.
+local COUNTER_DIGITS = 3
+
+---The next name in a numbered series: `plan` → `plan-2`, `plan-2` → `plan-3`.
+---
+---A name somebody already has is stepped over, so asking twice from `plan`
+---gives `plan-2` and then `plan-3` rather than two conversations called the
+---same thing. A counter keeps its width (`part-09` → `part-10`).
+---@param name string
+---@param taken table<string, boolean>|nil Names in use.
+---@return string
+function M._next_name(name, taken)
+  taken = taken or {}
+  name = name:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", "")
+  local stem, digits = name:match("^(.+)%-(%d+)$")
+  local n, width = 1, 1
+  if stem and #digits <= COUNTER_DIGITS then
+    n, width = tonumber(digits) or 1, #digits
+  else
+    stem = name
+  end
+  local candidate
+  repeat
+    n = n + 1
+    candidate = ("%s-%0" .. width .. "d"):format(stem, n)
+  until not taken[candidate]
+  return candidate
+end
+
+---What a new conversation continuing this one would be called: the session's
+---name, numbered on.
+---
+---The name is whatever the row is titled — a `/rename`, else the generated
+---title, else the first prompt — since that is the name the user reads the
+---session by. A session that has said nothing yet is titled with our own
+---placeholder, which is no name to carry on.
+---@param session_id string
+---@return string|nil name nil when the session has no name yet, or is not listed.
+function M.follow_up_name(session_id)
+  local row = state.by_id[session_id]
+  local title = row and row.title
+  if type(title) ~= "string" or title == "" or title == NEW_SESSION_TITLE then
+    return nil
+  end
+  local taken = {}
+  for _, other in ipairs(state.rows) do
+    if other.title then
+      taken[other.title] = true
+    end
+  end
+  return M._next_name(title, taken)
+end
+
+---Delete several conversations, and drop them from the list.
+---
+---The caller confirms; this only refuses what it can see is unsafe. A running
+---agent is left alone because its CLI still has the file open — the view offers
+---stopping it first.
+---
+---One re-enumeration for the whole batch, not one per transcript: the list is
+---derived from a directory listing, so deleting a visual range of thirty rows
+---would otherwise stat the store thirty times to arrive at the same answer.
+---@param session_ids string[]
+---@return string[] deleted The ids that are now gone.
+---@return { session_id: string, err: string }[] failed
+function M.delete_sessions(session_ids)
+  local deleted, failed = {}, {}
+
+  for _, session_id in ipairs(session_ids or {}) do
+    local row = state.by_id[session_id]
+    local err = nil
+    if not row then
+      err = "no such session"
+    elseif is_live(row) then
+      err = "the agent is still running"
+    else
+      local ok, delete_err = transcript.delete(row.path)
+      if not ok then
+        err = delete_err or "could not delete the transcript"
+      end
+    end
+
+    if err then
+      failed[#failed + 1] = { session_id = session_id, err = err }
+    else
+      deleted[#deleted + 1] = session_id
+      checkpoints.forget(session_id)
+      flags.clear(session_id)
+      if state.selected == session_id then
+        state.selected = nil
+        state.dirty.transcript = true
+        state.dirty.git = true
+      end
+    end
+  end
+
+  if #deleted > 0 then
+    -- Re-enumerating is what actually removes the rows: the list is derived from
+    -- what is on disk, so dropping them here as well would only risk disagreeing.
+    M.refresh_list()
+  end
+  return deleted, failed
+end
+
+---Delete one conversation.
+---@param session_id string
+---@return boolean ok
+---@return string|nil err
+function M.delete_session(session_id)
+  local deleted, failed = M.delete_sessions({ session_id })
+  if #deleted == 1 then
+    return true, nil
+  end
+  return false, failed[1] and failed[1].err or "could not delete the session"
+end
+
+---Where a conversation's transcript lives — the only place its history exists.
+---@param session_id string|nil Defaults to the selected session.
+---@return string|nil path
+function M.transcript_path(session_id)
+  local row = state.by_id[session_id or state.selected or ""]
+  return row and row.path or nil
+end
+
+---The rule for one checkpoint, as an Activity row: the same table every time it
+---is asked for, so the pane's fade treats it like any other row (see `dividers`).
+---@param session_id string
+---@param marks number[] The conversation's checkpoints, ascending.
+---@param index integer Which one.
+---@return table
+local function divider_for(session_id, marks, index)
+  local key = session_id .. "\0" .. tostring(marks[index])
+  local row = state.dividers[key]
+  if not row then
+    row = { kind = "checkpoint", ts = marks[index], index = index }
+    state.dividers[key] = row
+  end
+  row.count = #marks
+  row.name = checkpoints.names(session_id)[marks[index]]
+  return row
+end
+
+---How many of a session's events the filter lets through — what `feed` would
+---list with no limit, so it can tell "the walk showed everything" from "it
+---stopped at the pane's height".
+---@param events table[]
+---@param filter string
+---@return integer
+local function count_shown(events, filter)
+  if filter == "all" then
+    return #events
+  end
+  local n = 0
+  for _, event in ipairs(events) do
+    if event.kind == "rewind" or (filter == "tools") == (event.kind == "tool") then
+      n = n + 1
+    end
+  end
+  return n
+end
+
+---Slot a rule into the newest-first feed wherever a checkpoint falls between two
+---events: above every event at or before it, below every event after it. A
+---checkpoint newer than the newest event sits at the top — "nothing since" is
+---worth a row. One older than everything drawn is left out unless the walk drew
+---the whole history: below a pane cut to its height it would sit under events
+---that are not its neighbours.
+---@param out table[] Newest first.
+---@param marks number[] Ascending.
+---@param session_id string
+---@param complete boolean The walk drew every event the filter allows.
+---@return table[]
+local function with_dividers(out, marks, session_id, complete)
+  local rows = {}
+  local next_mark = #marks
+  for _, event in ipairs(out) do
+    local ts = tonumber(event.ts) or 0
+    while next_mark >= 1 and marks[next_mark] >= ts do
+      rows[#rows + 1] = divider_for(session_id, marks, next_mark)
+      next_mark = next_mark - 1
+    end
+    rows[#rows + 1] = event
+  end
+  if complete then
+    while next_mark >= 1 do
+      rows[#rows + 1] = divider_for(session_id, marks, next_mark)
+      next_mark = next_mark - 1
+    end
+  end
+  return rows
+end
+
+---Activity events of the selected session, **newest first**.
+---
+---The store keeps them oldest-first, which is how they happened; the pane shows
+---them the other way up, which is how they are read. What an agent is doing now
+---is the question the pane answers, and appending puts that answer at the bottom
+---edge — scrolled out of sight the moment the session has any history.
+---`visible` is how many rows the pane can actually show. Rows past that are only
+---reached by scrolling down, and the pane is read from the top, so building and
+---stamping them is work thrown away on every frame. On real data that is ~240
+---rows down to ~40. `feed_limit` still bounds what the store keeps; this bounds
+---what is drawn from it.
+---
+---**Except the rows someone is holding on to** (`keep`): the one under the pane's
+---cursor and the ones a float is showing. The view keeps its cursor on a row while
+---new ones land above it, and a row that fell out of the drawn list would take the
+---cursor's place in the list with it — and with it the row `<C-n>` steps from.
+---So the walk goes on past `visible` until each kept row is drawn, and never past
+---`feed_limit`.
+---
+---With checkpoints on the conversation, a `{ kind = "checkpoint", ts, index,
+---count }` row is slotted in wherever one falls (`with_dividers`).
+---@param visible integer|nil Rows the pane can show. Unbounded when omitted.
+---@param keep table<string, true>|nil `transcript.event_key`s to draw however far down they are.
+---@return table[] events The transcript's own tables, newest first.
+---@return number[] ages Milliseconds each has been on screen, by position.
+function M.feed(visible, keep)
+  local row = state.selected and state.by_id[state.selected]
+  if not row then
+    return {}, {}
+  end
+  local events = transcript.events(row.path)
+  local ceiling = opts().feed_limit or 500
+  local limit = ceiling
+  if type(visible) == "number" and visible > 0 and visible < limit then
+    limit = visible
+  end
+  -- A copy, emptied as rows are found, so the walk knows when it may stop.
+  local missing, pending = 0, {}
+  for key in pairs(keep or {}) do
+    pending[key] = true
+    missing = missing + 1
+  end
+  local filter = state.feed_filter
+  local out = {}
+  -- Walked from the newest end and stopped at the limit, rather than sliced and
+  -- then filtered: with a filter on, the rows that fill the pane may come from
+  -- anywhere in the history, and slicing first would show a short list of
+  -- whatever happened to be in the last `limit` events.
+  for index = #events, 1, -1 do
+    local event = events[index]
+    local is_tool = event.kind == "tool"
+    -- A rewind's rule is neither a file nor a command and is shown under every
+    -- filter: whatever the pane is listing, rows above it happened after the
+    -- user took the conversation back.
+    if filter == "all" or event.kind == "rewind" or (filter == "tools") == is_tool then
+      if #out >= limit and (missing == 0 or #out >= ceiling) then
+        break
+      end
+      out[#out + 1] = event
+      if missing > 0 then
+        local key = transcript.event_key(event)
+        if pending[key] then
+          pending[key] = nil
+          missing = missing - 1
+        end
+      end
+    end
+  end
+  local marks = checkpoints.list(row.session_id)
+  if #marks > 0 then
+    out = with_dividers(out, marks, row.session_id, #out == count_shown(events, filter))
+  end
+  return out, stamp_feed(out)
+end
+
+--- The filters, in the order `M.cycle_feed_filter` walks them.
+M.FEED_FILTERS = {
+  { key = "all", desc = "everything the agent did" },
+  { key = "files", desc = "files it read and changed" },
+  { key = "tools", desc = "commands and searches it ran" },
+}
+
+---What the Activity pane is currently showing.
+---@return string filter
+function M.feed_filter()
+  return state.feed_filter
+end
+
+---Show the next kind of Activity row, and say which.
+---
+---A busy session runs nearly as many tools as it touches files — one real
+---session here folds 211 tool calls against 239 file events — so the two halves
+---crowd each other out, and "only what it did to the code" and "only what it
+---ran" are each worth one keypress. Cycled rather than set, since there are three
+---of them and the order is stable.
+---@return table filter The entry from `FEED_FILTERS` now in force.
+function M.cycle_feed_filter()
+  local at = 1
+  for index, entry in ipairs(M.FEED_FILTERS) do
+    if entry.key == state.feed_filter then
+      at = index
+    end
+  end
+  local next_entry = M.FEED_FILTERS[(at % #M.FEED_FILTERS) + 1]
+  state.feed_filter = next_entry.key
+  -- The rows that come next are a different set, not news: without this every one
+  -- of them would arrive lit and the pane would flash on every filter change.
+  state.feed_baseline = true
+  return next_entry
+end
+
+---Files the selected session touched, with git's letter where we have one.
+---
+---The counts come from the transcript rather than git so this pane and the
+---session row can never disagree; git only says what the file looks like on disk
+---now, which is the part the transcript cannot know.
+---@return table[]
+function M.changes()
+  local row = state.selected and state.by_id[state.selected]
+  if not row then
+    return {}
+  end
+  local summary = transcript.get(row.path)
+  if not summary then
+    return {}
+  end
+
+  local utils = require("claude_agents.utils")
+  local entries = {}
+
+  ---One row: a file, with the counts of whichever span of the session is asked
+  ---about — the whole of it, or one era between checkpoints.
+  ---@param path string
+  ---@param counts { added: integer, removed: integer, kind: string }
+  ---@param era { index: integer, count: integer, from: number?, to: number?, note: string }|nil
+  local function push(path, counts, era)
+    -- Keyed the way `git.parse_status` keys it: git answers with `/`
+    -- separators whatever the platform, and this path is the CLI's own.
+    local key = utils.path_key(path)
+    local letter = state.git[key]
+    -- Gone from disk is decided by us as well as by git: a file the session
+    -- created and then removed was never tracked, so git says nothing about it
+    -- and the transcript alone would still call it an add.
+    local deleted = letter == "D" or state.gone[key] == true
+    -- Keyed by session as well as path: the same file under a different
+    -- conversation is a different set of counts, and comparing across the two
+    -- would flash the whole pane on every selection change. An era row is its
+    -- own set of counts too.
+    local counts_key = "file\0" .. row.session_id .. "\0" .. path .. (era and ("\0" .. era.index) or "")
+    local added_age, removed_age = stamp_counts(counts_key, counts.added, counts.removed)
+    entries[#entries + 1] = {
+      path = path,
+      added = counts.added,
+      removed = counts.removed,
+      added_age_ms = added_age,
+      removed_age_ms = removed_age,
+      kind = counts.kind,
+      deleted = deleted,
+      scratchpad = transcript.is_scratchpad(path),
+      status = deleted and "D" or letter or (counts.kind == "add" and "A" or "M"),
+      era = era,
+    }
+  end
+
+  local marks = checkpoints.list(row.session_id)
+  if #marks == 0 then
+    for _, path in ipairs(summary.order or {}) do
+      local file = summary.files[path]
+      if file and file.kind ~= "read" then
+        push(path, file, nil)
+      end
+    end
+    return entries
+  end
+
+  -- With checkpoints, a file is listed once per era it was edited in, with that
+  -- era's own counts, and a rule between the eras. Each era keeps the pane's
+  -- first-touch order within itself; the eras run newest first, the way Activity
+  -- does, so what the agent has done since the checkpoint is at the top and a
+  -- new file lands above the rule rather than under everything.
+  local eras = {}
+  for _, path in ipairs(summary.order or {}) do
+    local file = summary.files[path]
+    local edits = file and file.edits
+    -- A summary with no per-edit record (an old cache, a stub) still has its
+    -- totals; they are dated by the file's last touch rather than dropped.
+    if file and file.kind ~= "read" and (type(edits) ~= "table" or #edits == 0) then
+      edits = { { ts = file.last_ts, added = file.added, removed = file.removed, kind = file.kind } }
+    end
+    for _, edit in ipairs(edits or {}) do
+      local index = checkpoints.era(marks, edit.ts)
+      local era = eras[index]
+      if not era then
+        era = { order = {}, by_path = {} }
+        eras[index] = era
+      end
+      local counts = era.by_path[path]
+      if not counts then
+        counts = { added = 0, removed = 0, kind = edit.kind }
+        era.by_path[path] = counts
+        era.order[#era.order + 1] = path
+      end
+      counts.added = counts.added + (tonumber(edit.added) or 0)
+      counts.removed = counts.removed + (tonumber(edit.removed) or 0)
+      counts.kind = edit.kind or counts.kind
+    end
+  end
+
+  local now = M._now_s()
+  local named = checkpoints.names(row.session_id)
+  for index = #marks + 1, 1, -1 do
+    local era = eras[index]
+    if era then
+      local from, to = checkpoints.bounds(marks, index)
+      local span =
+        { index = index, count = #marks, from = from, to = to, note = checkpoints.era_note(marks, index, now) }
+      for _, path in ipairs(era.order) do
+        push(path, era.by_path[path], span)
+      end
+    end
+    -- The rule below an era is the checkpoint that opened it.
+    if index > 1 then
+      entries[#entries + 1] = {
+        kind = "checkpoint",
+        ts = marks[index - 1],
+        index = index - 1,
+        count = #marks,
+        name = named[marks[index - 1]],
+      }
+    end
+  end
+  return entries
+end
+
+---The selected session's subagents, as a flattened tree.
+---
+---Answered from what is already folded; `refresh_subagents` is what folds more.
+---Also notes whether any of them is running, which is what keeps `poll` asking
+---while a runtime is counting up on screen.
+---@return ClaudeCodeSubagentRow[]
+function M.subagents()
+  local row = state.selected and state.by_id[state.selected]
+  if not row then
+    state.subagents_running = false
+    return {}
+  end
+  local rows = require("claude_agents.agents.subagents").rows(row.path, {
+    live = is_live(row),
+    now = M._now_s(),
+    checkpoints = checkpoints.list(row.session_id),
+  })
+  local running = false
+  local named = nil
+  for _, entry in ipairs(rows) do
+    if entry.state == "running" then
+      running = true
+    elseif entry.kind == "checkpoint" then
+      named = named or checkpoints.names(row.session_id)
+      entry.name = named[entry.ts]
+    end
+  end
+  state.subagents_running = running
+  return rows
+end
+
+---What names a row in the Subagents pane.
+---@return "type"|"description"
+function M.subagent_label()
+  return state.subagent_label
+end
+
+---Switch the Subagents pane between descriptions and agent types.
+---
+---Both answer a glance at the pane, just different ones: the description says
+---what a run was sent to do, the type what kind of worker it is — and three rows
+---of `general-purpose` are told apart only by the first, hence the default.
+---@return "type"|"description" label The one now in force.
+function M.toggle_subagent_label()
+  state.subagent_label = state.subagent_label == "description" and "type" or "description"
+  return state.subagent_label
+end
+
+---Fold the selected session's subagent transcripts, repainting when one grew.
+function M.refresh_subagents()
+  local row = state.selected and state.by_id[state.selected]
+  if row then
+    require("claude_agents.agents.subagents").refresh(row.path, notify_change)
+  end
+end
+
+---The directory the selected session's files are named from: the worktree it
+---works in, else the directory it ran in.
+---
+---Not where it is resumed (`row.cwd`, see `place_of`). In a worktree every file
+---the conversation touches is under `<repo>/.claude/worktrees/<name>/`, and named
+---from the repository that prefix is most of a pane's width on every row. A file
+---it touched outside the worktree — before it entered, say — keeps its whole
+---path, which is right: it is a different checkout's file of the same name.
+---@return string|nil cwd
+function M.selected_cwd()
+  local row = state.selected and state.by_id[state.selected]
+  if row and row.worktree then
+    return row.worktree.path
+  end
+  return (row and row.cwd) or state.cwd
+end
+
+---The worktree a session works in, when it is not the directory this view is
+---attached to — what its row's mark stands for, for a screen with room to name it.
+---@param session_id string|nil Defaults to the selected session.
+---@return ClaudeCodeAgentsWorktree|nil
+function M.worktree_of(session_id)
+  local row = state.by_id[session_id or state.selected or ""]
+  return row and worktree_elsewhere(row) or nil
+end
+
+--------------------------------------------------------------------------------
+-- Live updates
+--------------------------------------------------------------------------------
+
+--- Tools whose completion can change what is on disk.
+local WRITING_TOOLS = { Edit = true, Write = true, MultiEdit = true, NotebookEdit = true }
+
+---Where a finished turn lands: `idle` when the user was looking at that
+---conversation as the answer arrived, `done` — finished but unread — when it
+---landed somewhere they were not.
+---
+---The per-conversation analogue of the tab-level rule in `status`, and it takes
+---all three of the same conditions: the session has to be the selected one (every
+---pane follows the selection, so that is the only conversation on screen), the
+---view's own tab has to be the current one, and Neovim has to have focus. Testing
+---only the selection was wrong in the direction that matters — the agent you are
+---waiting on is usually the selected one, and its answer arriving while you work
+---in another tab is exactly the case the unread dot exists for.
+---@param session_id string
+---@param status table The `claudecode.status` module.
+---@return ClaudeCodeStatusState
+local function finished_state(session_id, status)
+  if state.selected ~= session_id then
+    return "done"
+  end
+  if status.is_focused and not status.is_focused() then
+    return "done"
+  end
+  if state.tab then
+    local ok, current = pcall(vim.api.nvim_get_current_tabpage)
+    if not ok or current ~= state.tab then
+      return "done"
+    end
+  end
+  return "idle"
+end
+
+---Fold one Claude Code hook event into per-conversation state.
+---@param event table Decoded hook payload.
+function M.note(event)
+  if type(event) ~= "table" then
+    return
+  end
+  -- Not attached: nothing on screen is derived from this, `_flush` would early
+  -- return anyway, and `state.status` is keyed by conversation and never pruned
+  -- — so a long session with the view closed grew one entry per Claude it ever
+  -- saw and classified every tool call of every agent for nothing.
+  if not state.cwd then
+    return
+  end
+  local session_id = type(event.session_id) == "string" and event.session_id or nil
+  if not session_id then
+    return
+  end
+
+  local ok, status = pcall(require, "claude_agents.status")
+  if ok and status.advance then
+    -- `advance`, not `classify`: a conversation's subagents report under its
+    -- id, and a background one's tool calls must not read as the answer to a
+    -- question the conversation itself has on screen.
+    local previous = state.status[session_id]
+    local classified, info = status.advance(previous, event, {
+      finished = finished_state(session_id, status),
+      now = now_ms(),
+    })
+    if classified then
+      if not previous or previous.state ~= classified then
+        state.status[session_id] = {
+          state = classified,
+          tool = info.tool,
+          message = info.message,
+          questions = info.questions,
+          since = os.time(),
+        }
+      else
+        previous.tool = info.tool
+        previous.message = info.message
+        previous.questions = info.questions
+      end
+    end
+  end
+
+  local ehn = event.hook_event_name
+  local tool = event.tool_name
+  if ehn == "PostToolUse" then
+    -- PostToolUse, not Pre: the transcript's record of a tool is written when the
+    -- tool returns.
+    state.dirty.transcript = true
+    if WRITING_TOOLS[tool] then
+      state.dirty.git = true
+    end
+  elseif ehn == "Stop" or ehn == "SessionStart" or ehn == "SessionEnd" or ehn == "SubagentStop" then
+    state.dirty.transcript = true
+    state.dirty.list = true
+  end
+
+  M.request_refresh()
+end
+
+---Note that the user interrupted one agent's turn.
+---
+---The per-conversation counterpart of `status.note_interrupt`, and it exists for
+---the same measured reason: pressing `<Esc>` mid-turn fires no Claude Code hook
+---at all, so a conversation stays `busy` until its next prompt and its row spins
+---for ever. Dismissing a question the conversation asked is the same keypress
+---and just as silent. What an interrupt ends is `status.dismiss`'s rule; anything
+---else ignores the key, and a wrong guess is corrected by the next event.
+---@param session_id string
+---@return boolean noted
+function M.note_interrupt(session_id)
+  local entry = type(session_id) == "string" and state.status[session_id]
+  if not entry then
+    return false
+  end
+  local ok, status = pcall(require, "claude_agents.status")
+  if not ok or not status.dismiss then
+    return false
+  end
+  local next_state, questions = status.dismiss(entry)
+  if not next_state then
+    return false
+  end
+  if next_state == entry.state then
+    -- A subagent's question is still up; only the conversation's own went away.
+    entry.questions = questions
+  else
+    entry.state = next_state
+    entry.tool = nil
+    entry.message = nil
+    entry.questions = nil
+    entry.since = os.time()
+  end
+  M.request_refresh()
+  return true
+end
+
+---Mark a conversation's finished answer as read, which turns `done` into `idle`.
+---
+---The per-conversation counterpart of `status.mark_read`, and the other half of
+---the `finished` rule in `note`: a turn that ends while its session is the one on
+---screen lands in `idle` at once, and one that ends anywhere else lands in `done`
+---— "finished, and you have not seen it" — until you come to it. Here, coming to
+---it *is* selecting it: `<CR>` on the row, or cycling onto it with `<C-n>`/
+---`<C-p>`, at which point every pane shows that conversation. Without this the
+---filled dot never cleared, since nothing else in the view ever revisits a status
+---entry. `waiting` is deliberately untouched, as in `status`: looking at a
+---question is not answering it.
+---@param session_id string
+---@return boolean marked Whether a conversation actually went from `done` to `idle`.
+function M.mark_read(session_id)
+  local entry = type(session_id) == "string" and state.status[session_id]
+  if not entry or entry.state ~= "done" then
+    return false
+  end
+  entry.state = "idle"
+  entry.tool = nil
+  entry.message = nil
+  entry.since = os.time()
+  M.request_refresh()
+  return true
+end
+
+---A running agent moved onto a different conversation (`/clear`, or a resume from
+---inside the CLI).
+---
+---Only the state this module keeps *about a conversation* needs moving, and the
+---honest move for the one being left is to forget it: it is not running any more,
+---and whatever it was last doing — mid-tool, waiting on a permission prompt — it
+---is not doing now. Dropping the entry lands its row on "not running" straight
+---away rather than leaving a stale spinner on it until the `SessionEnd` for it
+---arrives (a separate hook process, so its order against the `SessionStart` that
+---brought us here is not guaranteed). The new conversation's own state comes from
+---the same event, through `note`.
+---@param previous string The id it was running until now.
+---@param session_id string The id it reports now.
+---@return boolean selected Whether the selection was pointing at the old id.
+function M.note_session_change(previous, session_id)
+  if type(previous) ~= "string" or type(session_id) ~= "string" then
+    return false
+  end
+  state.status[previous] = nil
+  -- A marker that has already been acted on belongs to the turn it ended, and
+  -- that conversation is over; keeping it would only pin memory to an id nothing
+  -- will report again.
+  state.interrupted[previous] = nil
+  state.dirty.list = true
+  state.dirty.transcript = true
+  return state.selected == previous
+end
+
+---@param session_id string
+---@return table|nil
+function M.status_of(session_id)
+  return state.status[session_id]
+end
+
+---Ask for a redraw, at most one per `refresh_ms`.
+function M.request_refresh()
+  if state.armed then
+    return
+  end
+  state.armed = true
+  M._scheduler(function()
+    state.armed = false
+    M._flush()
+  end, opts().refresh_ms or 150)
+end
+
+---Act on whatever went dirty since the last pass.
+function M._flush()
+  if not state.cwd then
+    return
+  end
+  local dirty = state.dirty
+  state.dirty = {}
+
+  if dirty.list then
+    M.refresh_list()
+  end
+
+  if dirty.transcript then
+    local row = state.selected and state.by_id[state.selected]
+    if row then
+      local last_ts = row.last_ts
+      transcript.summary(row.path, function(summary)
+        if summary then
+          apply_summary(row, summary)
+          -- The conversation said something new, and any of it — a shell `rm`
+          -- included — may have changed the disk. Only the editing tools mark
+          -- git dirty from a hook, and polling marks nothing at all, so without
+          -- this a removed file kept its old letter until the selection moved.
+          if last_ts and row.last_ts ~= last_ts then
+            M.refresh_git()
+          end
+          notify_change()
+        end
+      end)
+    end
+    -- A running agent's counts must move even while another session is selected.
+    for _, other in ipairs(state.rows) do
+      if other ~= row and is_live(other) then
+        transcript.summary(other.path, function(summary)
+          if summary then
+            apply_summary(other, summary)
+          end
+        end)
+      end
+    end
+  end
+
+  if dirty.git then
+    M.refresh_git()
+  end
+
+  -- A subagent's tool calls are hook events of the session's, so a dirty
+  -- transcript covers them; `subagents` is the poll asking on behalf of a runtime
+  -- that is counting up, which in hooks mode nothing else would repaint.
+  if dirty.transcript or dirty.subagents then
+    M.refresh_subagents()
+  end
+
+  notify_change()
+end
+
+---Whether a path is known to be gone from disk.
+---
+---Only an explicit "no such file" counts: a stat that fails for any other reason
+---(permissions, a flaky network mount) says nothing about the file, and calling
+---it deleted would be a lie the pane then draws. Replaceable for tests.
+---@param path string
+---@return boolean
+function M._is_gone(path)
+  local uv = vim.loop
+  if not (uv and uv.fs_stat) then
+    return false
+  end
+  local stat, _, code = uv.fs_stat(path)
+  return stat == nil and code == "ENOENT"
+end
+
+---Ask what the selected session's files look like on disk now: whether each one
+---still exists, and git's letter for it.
+---
+---The existence check does not depend on git, so it runs with `git = false` too.
+---@param force boolean|nil Skip the rate gate (a manual refresh).
+function M.refresh_git(force)
+  if not state.cwd then
+    return
+  end
+  local now = os.time() * 1000
+  local gate = opts().git_refresh_ms or 1500
+  if not force and state.git_at and (now - state.git_at) < gate then
+    -- Answer once the gate opens rather than dropping the request: an edit and
+    -- the `rm` that follows it land well inside one gate, and nothing else would
+    -- ask again until the conversation next moved.
+    if not state.git_trailing then
+      state.git_trailing = true
+      M._scheduler(function()
+        state.git_trailing = false
+        M.refresh_git()
+      end, gate)
+    end
+    return
+  end
+  state.git_at = now
+
+  local entries = M.changes()
+  if #entries == 0 then
+    return
+  end
+  local utils = require("claude_agents.utils")
+  local paths, gone, seen = {}, {}, {}
+  for _, entry in ipairs(entries) do
+    -- A checkpoint rule is a row with no file; a file in several eras is one
+    -- path, asked about once.
+    local path = entry.path
+    if path and not seen[path] then
+      seen[path] = true
+      paths[#paths + 1] = path
+      if M._is_gone(path) then
+        gone[utils.path_key(path)] = true
+      end
+    end
+  end
+  state.gone = gone
+  if #paths == 0 then
+    return
+  end
+
+  if opts().git == false then
+    notify_change()
+    return
+  end
+  local ok, git = pcall(require, "claude_agents.agents.git")
+  if not ok then
+    return
+  end
+  if force then
+    git.forget_roots()
+  end
+  -- Each file is asked of the working copy it is in, not of the project: a
+  -- conversation in a worktree has all of its files there, and the project's
+  -- repository says nothing at all about them.
+  git.status_all(paths, state.cwd, function(result)
+    state.git = result or {}
+    notify_change()
+  end)
+end
+
+---The periodic tick: watch the transcripts, and re-enumerate the project.
+---
+---Re-enumeration is what notices a conversation started somewhere else — another
+---tab, another editor, a bare terminal — and it is rate-limited separately from
+---the content watch, since it is a directory scan rather than a read.
+---@param tick_opts { list_only: boolean? }|nil When hooks already report content
+---       changes, only the enumeration is wanted.
+function M.poll(tick_opts)
+  if not state.cwd then
+    return
+  end
+  if not (tick_opts and tick_opts.list_only) then
+    state.dirty.transcript = true
+  else
+    -- Hooks mode still stats the selected transcript: a hook reports the tool,
+    -- the file is what the panes are drawn from, and the two are not written in
+    -- lockstep. A record that lands after the hook's re-read — or a hook that
+    -- never arrives — otherwise left Changes and Activity behind until the next
+    -- event, which after a long command is the end of the turn.
+    local row = state.selected and state.by_id[state.selected]
+    if row and row.path and transcript.stale(row.path) then
+      state.dirty.transcript = true
+    end
+  end
+  if state.subagents_running then
+    state.dirty.subagents = true
+  end
+
+  local now = (vim.loop and vim.loop.now()) or 0
+  local gate = opts().list_refresh_ms or 2000
+  if not state.list_at or (now - state.list_at) >= gate then
+    state.list_at = now
+    state.dirty.list = true
+  end
+
+  if next(state.dirty) then
+    M.request_refresh()
+  end
+end
+
+---Test/reload helper.
+function M.reset()
+  state = new_state()
+end
+
+---@return table
+function M._state()
+  return state
+end
+
+return M

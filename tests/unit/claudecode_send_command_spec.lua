@@ -11,14 +11,14 @@ describe("ClaudeCodeSend Command Range Functionality", function()
 
   before_each(function()
     -- Reset package cache
-    package.loaded["claudecode"] = nil
-    package.loaded["claudecode.selection"] = nil
-    package.loaded["claudecode.terminal"] = nil
-    package.loaded["claudecode.server.init"] = nil
-    package.loaded["claudecode.lockfile"] = nil
-    package.loaded["claudecode.config"] = nil
-    package.loaded["claudecode.logger"] = nil
-    package.loaded["claudecode.diff"] = nil
+    package.loaded["claude_agents"] = nil
+    package.loaded["claude_agents.selection"] = nil
+    package.loaded["claude_agents.terminal"] = nil
+    package.loaded["claude_agents.server.init"] = nil
+    package.loaded["claude_agents.lockfile"] = nil
+    package.loaded["claude_agents.config"] = nil
+    package.loaded["claude_agents.logger"] = nil
+    package.loaded["claude_agents.diff"] = nil
 
     -- Mock vim API
     _G.vim = {
@@ -126,19 +126,19 @@ describe("ClaudeCodeSend Command Range Functionality", function()
     -- Setup require mocks BEFORE requiring claudecode
     original_require = _G.require
     _G.require = function(module_name)
-      if module_name == "claudecode.selection" then
+      if module_name == "claude_agents.selection" then
         return mock_selection_module
-      elseif module_name == "claudecode.terminal" then
+      elseif module_name == "claude_agents.terminal" then
         return mock_terminal
-      elseif module_name == "claudecode.server.init" then
+      elseif module_name == "claude_agents.server.init" then
         return mock_server
-      elseif module_name == "claudecode.lockfile" then
+      elseif module_name == "claude_agents.lockfile" then
         return mock_lockfile
-      elseif module_name == "claudecode.config" then
+      elseif module_name == "claude_agents.config" then
         return mock_config
-      elseif module_name == "claudecode.logger" then
+      elseif module_name == "claude_agents.logger" then
         return mock_logger
-      elseif module_name == "claudecode.diff" then
+      elseif module_name == "claude_agents.diff" then
         return mock_diff
       else
         return original_require(module_name)
@@ -146,7 +146,7 @@ describe("ClaudeCodeSend Command Range Functionality", function()
     end
 
     -- Load and setup claudecode
-    claudecode = require("claudecode")
+    claudecode = require("claude_agents")
     claudecode.setup({})
 
     -- Manually set server state for testing

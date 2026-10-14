@@ -5,7 +5,7 @@ describe("Tool: save_document", function()
 
   before_each(function()
     -- Clear module cache first
-    package.loaded["claudecode.tools.save_document"] = nil
+    package.loaded["claude_agents.tools.save_document"] = nil
 
     -- Setup mocks and spies BEFORE requiring the module
     _G.vim = _G.vim or {}
@@ -39,11 +39,11 @@ describe("Tool: save_document", function()
     end)
 
     -- Now require the module, it will pick up the spied functions
-    save_document_handler = require("claudecode.tools.save_document").handler
+    save_document_handler = require("claude_agents.tools.save_document").handler
   end)
 
   after_each(function()
-    package.loaded["claudecode.tools.save_document"] = nil
+    package.loaded["claude_agents.tools.save_document"] = nil
     _G.vim.fn.bufnr = nil
     _G.vim.api.nvim_buf_call = nil
     _G.vim.cmd = nil

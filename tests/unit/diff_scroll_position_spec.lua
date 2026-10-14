@@ -9,8 +9,8 @@ describe("Unified diff scroll position", function()
   local diff
 
   before_each(function()
-    package.loaded["claudecode.diff"] = nil
-    diff = require("claudecode.diff")
+    package.loaded["claude_agents.diff"] = nil
+    diff = require("claude_agents.diff")
   end)
 
   it("centers a change that fits the window, deleted lines included", function()

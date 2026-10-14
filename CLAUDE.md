@@ -47,19 +47,19 @@ Available: `netrw`, `nvim-tree`, `oil`, `mini-files`.
 
 ### Core Components
 
-1. **WebSocket Server** (`lua/claudecode/server/`) — pure `vim.loop`, RFC 6455 compliant.
-2. **MCP Tool System** (`lua/claudecode/tools/`) — tools Claude can execute.
-3. **Lock File System** (`lua/claudecode/lockfile.lua`) — discovery files at `~/.claude/ide/`.
-4. **Selection Tracking** (`lua/claudecode/selection.lua`).
-5. **Diff Integration** (`lua/claudecode/diff.lua`).
-6. **Terminal Integration** (`lua/claudecode/terminal.lua`) — internal and external terminals.
-7. **Live Cursor** (`lua/claudecode/live_cursor.lua`) — opt-in ride-along view.
-8. **Plan View** (`lua/claudecode/plan_view.lua`) — opt-in plan-mode rendering.
-9. **Terminal Links** (`lua/claudecode/terminal_links.lua`) — on by default.
-10. **Session Persistence** (`lua/claudecode/session_state.lua`) — opt-in.
-11. **Per-Tab Status** (`lua/claudecode/status.lua`) — opt-in.
-12. **Agents Mode** (`lua/claudecode/agents_view.lua`, `lua/claudecode/agents/*.lua`) — opt-in.
-13. **Floating Windows** (`lua/claudecode/float.lua`).
+1. **WebSocket Server** (`lua/claude_agents/server/`) — pure `vim.loop`, RFC 6455 compliant.
+2. **MCP Tool System** (`lua/claude_agents/tools/`) — tools Claude can execute.
+3. **Lock File System** (`lua/claude_agents/lockfile.lua`) — discovery files at `~/.claude/ide/`.
+4. **Selection Tracking** (`lua/claude_agents/selection.lua`).
+5. **Diff Integration** (`lua/claude_agents/diff.lua`).
+6. **Terminal Integration** (`lua/claude_agents/terminal.lua`) — internal and external terminals.
+7. **Live Cursor** (`lua/claude_agents/live_cursor.lua`) — opt-in ride-along view.
+8. **Plan View** (`lua/claude_agents/plan_view.lua`) — opt-in plan-mode rendering.
+9. **Terminal Links** (`lua/claude_agents/terminal_links.lua`) — on by default.
+10. **Session Persistence** (`lua/claude_agents/session_state.lua`) — opt-in.
+11. **Per-Tab Status** (`lua/claude_agents/status.lua`) — opt-in.
+12. **Agents Mode** (`lua/claude_agents/agents_view.lua`, `lua/claude_agents/agents/*.lua`) — opt-in.
+13. **Floating Windows** (`lua/claude_agents/float.lua`).
 
 ---
 
@@ -173,7 +173,7 @@ Rules:
 - **A turn cancelled with `<Esc>` is reported by no hook at all** — verified against CLI 2.1.221 with hooks on every event: the interrupt fires nothing, not `Stop`, not `StopFailure`. So an interrupted tab stayed `busy` forever.
 - The CLI does write `[Request interrupted by user]` into the conversation as a real `user` entry. `agents.transcript` matches it (`INTERRUPT_MARKER`, prefix-matched because tool interrupts append `for tool use`); `_is_interrupt_line` decodes the entry and requires the marker to be the _whole_ message content, because `toolUseResult` entries are `type:"user"` too and a conversation quoting the string would otherwise read as cancelled. `agents.model` calls `note_interrupt` per conversation.
 - **Dismissing a prompt with `<Esc>` is just as silent** (AskUserQuestion measured on 2.1.284: `[Request interrupted by user for tool use]`, no hook), so an interrupt also ends a question the conversation's own thread asked (`status.dismiss`) — never a subagent's, whose prompt is not recorded in the conversation's transcript.
-- Tab-hosted Claude with agents disabled is covered by `lua/claudecode/interrupt_watch.lua`, which tails the transcript of a tab an interrupt could change (`status.interruptible`: `busy`, or `waiting` on its own question) for the same marker and calls `status.note_interrupt`. Its clock runs only while such a tab exists, it is **armed at end-of-file** on the transition into `busy`/`waiting` from any other state (so any marker it sees belongs to the watched turn, needing no timestamp bookkeeping; not re-armed between the two, which could step over an unread marker), and a tick is one `uv.fs_stat` per watched tab plus a read of only the appended bytes, capped at 256KB. 500ms tick.
+- Tab-hosted Claude with agents disabled is covered by `lua/claude_agents/interrupt_watch.lua`, which tails the transcript of a tab an interrupt could change (`status.interruptible`: `busy`, or `waiting` on its own question) for the same marker and calls `status.note_interrupt`. Its clock runs only while such a tab exists, it is **armed at end-of-file** on the transition into `busy`/`waiting` from any other state (so any marker it sees belongs to the watched turn, needing no timestamp bookkeeping; not re-armed between the two, which could step over an unread marker), and a tick is one `uv.fs_stat` per watched tab plus a read of only the appended bytes, capped at 256KB. 500ms tick.
 - The agents-side equivalent needs two extra rules: the marker is **stamped with its own timestamp** and only ends a turn that started before it (a transcript keeps every interrupt the conversation ever had), and "already acted on" is keyed by **conversation, not the row** (`refresh_list` replaces row tables every 2s).
 - Reading the keypress instead was built and rejected: `<Esc>` means a dozen other things in Claude's TUI, and in a turn with no tool calls there is no later event to correct a wrong guess.
 
@@ -216,7 +216,7 @@ Rules:
 **Concurrency and instances**
 
 - Nothing blocks: reads go through `uv.fs_*` callbacks in `_chunk_size` slices, sessions are folded a `fold_batch` at a time newest-first, and a warm cache under `stdpath("cache")` paints real numbers in frame one. Unknown counts show `+· -·`, never blank.
-- **Each agent gets its own MCP server** (`claudecode.start_agent_instance`) — own port, token, lock file. `M.instances` is keyed by opaque instance id, `M.tab_instance` points at a tab's own Claude, and `_G._claudecode_active_tab_id` is replaced by `claudecode.request_context` (with N Claudes per tab, "which tab" no longer identifies the sender). `close_all_diffs` scopes by instance so one agent's routine `closeAllDiffTabs` cannot reject a sibling's pending diff.
+- **Each agent gets its own MCP server** (`claude_agents.start_agent_instance`) — own port, token, lock file. `M.instances` is keyed by opaque instance id, `M.tab_instance` points at a tab's own Claude, and `_G._claudecode_active_tab_id` is replaced by `claude_agents.request_context` (with N Claudes per tab, "which tab" no longer identifies the sender). `close_all_diffs` scopes by instance so one agent's routine `closeAllDiffTabs` cannot reject a sibling's pending diff.
 - Agents run through `agents/registry.lua`, not the terminal providers (which hold one terminal per tabpage). `bufhidden = "hide"` is what lets a hidden agent keep working; switching is a buffer swap.
 - `session_state.disown_tab` keeps the view's tab out of per-tab session bookkeeping.
 - **Every buffer the plugin rewrites from a timer or hook RPC has `undolevels = -1`** (`render.paint` sets it on whatever it paints; `live_cursor`'s preview buffer and `plan_view`'s plan buffer set it at creation). Neovim closes an undo block only after a typed command, so writes from callbacks all land in **one** block that `undolevels` (a count of blocks) never trims — each full-buffer replace kept a copy of the old lines until the buffer was deleted. A 500ms-polled pane grew ~13KB per paint, 12GB over a week-long session. Measured: 20k repaints of a 26-line buffer, +104MB with undo vs +0.9MB without; `undotree().seq_last` stayed `1` throughout. Buffers the user edits (`diff.lua`'s proposed buffers, the search input) keep undo.
@@ -235,7 +235,7 @@ Rules:
 
 **Floats in agents mode**
 
-- Diffs and file opens land in cascading floats (`agents/float.lua`, a thin wrapper over `lua/claudecode/float.lua` — see 13), tagged and titled per agent so several are answerable at once.
+- Diffs and file opens land in cascading floats (`agents/float.lua`, a thin wrapper over `lua/claude_agents/float.lua` — see 13), tagged and titled per agent so several are answerable at once.
 - A float records what it is _for_, so `float.close_all(session_id, "open")` dismisses the file a plan was shown in (on `PostToolUse(ExitPlanMode)`) without touching a pending diff.
 - The diff float hosts the unified inline provider, so `:w` acceptance and the blocking MCP response are unchanged. The float is recorded on the diff state (`float_window`) so `_cleanup_diff_state` closes it on resolve, **forced** (a rejected diff's buffer is still modified).
 - `diff_opts.layout = "float"` needs unified.nvim and warns once when it resolves to the native provider, which needs two real windows.
@@ -299,7 +299,7 @@ Rules:
 - **`/clear` swaps the conversation id under a running terminal** — verified against CLI 2.1.226: `SessionEnd(reason="clear")` for the old id, then `SessionStart(source="clear")` with a brand new one, same process, terminal and socket. `--fork-session` has the same shape. Nothing on disk attributes the new conversation to an agent, so the CLI has to say so:
   - A **launch** gets its own name (`agent_key`, passed as `CLAUDECODE_AGENT_ID`) — the registry's second index, since the first one moves.
   - `SessionStart` is injected whenever agents mode is enabled, even under polling.
-  - `registry.rekey` moves the agent: this index, its server instance (`claudecode.rekey_agent_instance` **renames rather than replaces** — the client is still connected to that port and `request_context.session_id()` reads the instance), and any float on screen (`float.retag`).
+  - `registry.rekey` moves the agent: this index, its server instance (`claude_agents.rekey_agent_instance` **renames rather than replaces** — the client is still connected to that port and `request_context.session_id()` reads the instance), and any float on screen (`float.retag`).
   - The selection follows the terminal only when it was on the conversation being left.
   - `term.retired` stops an agent drifting back onto a conversation it left: the two events are separate async hook processes, so arrival order is not the CLI's order. `SessionStart` is exempt (`reclaim`) — that is the CLI stating which conversation it is having now.
   - `model.note_session_change` drops the old conversation's per-agent state (otherwise a spinner sits on a row nothing will report about again).
@@ -505,7 +505,7 @@ Where a diff or file goes when there is no editor window: the agents tab (every 
 - Floats **cascade** — each offset from the last, newest on top, title in the border, stack clamped so it never walks off screen. Several agents work at once and diffs arrive faster than you answer them; queueing would block a waiting CLI.
 - Each carries `claudecode_live_preview` and `claudecode_float` so a second diff never targets the first's window.
 - **The title says where the file is** (`utils.path_title`): the path relative to a root — the session's cwd for a pane float, the editor's own directory for a diff float unless a caller passes `root` — `~`-shortened when it is outside that root, with the note (`(vs HEAD)`, `·  <agent>`) after it. Fitted by the caller against `float.title_width()`, since Neovim cuts an over-long title at its **right** edge, which is the filename; `utils.shorten_path` drops interior directories instead. `diff.open_float` resolves the host module first so it fits to that module's geometry, not the global block's.
-- `utils` owns `truncate`/`shorten_path`/`relative_path`/`path_title`; `agents/render.lua` re-exports the first three. They started there, but `claudecode.float` and `claudecode.diff` need the same rules and core modules cannot require an opt-in feature.
+- `utils` owns `truncate`/`shorten_path`/`relative_path`/`path_title`; `agents/render.lua` re-exports the first three. They started there, but `claude_agents.float` and `claude_agents.diff` need the same rules and core modules cannot require an opt-in feature.
 - **The user's own display settings are applied, not inherited.** A float copies window-local options from the _current_ window, usually an agents pane with `wrap`/`number`/`list` off for fixed-width rows, and `style = "minimal"` wipes them again. `apply_user_options` runs after the window opens and puts the globals (`vim.go.*`) back on top. `fillchars` is left to `minimal` (frame chrome, not a reading preference).
 - **A reused float is dressed again after every swap** (`reuse_window` → `apply_window_options`): putting a buffer in a `minimal` float re-applies minimal style (measured, 0.12.2), resetting `number` and `winhighlight`, so `<C-n>`/`<C-p>` stepping lost the line numbers and the border colour on the first step. The border group is kept on the registry entry for the swap.
 - **Every window option this plugin sets goes through `utils.set_win_option`, which passes `scope = "local"`.** `vim.wo[win].x = v` and `nvim_set_option_value(…, {win = w})` behave like `:set`, not `:setlocal`, when `w` is the current window — so they write the user's global. A pane is current while being built, so this leaked `wrap=false number=false list=false` into the user's globals for the rest of the session.
@@ -541,7 +541,7 @@ All tools return MCP-compliant `{content: [{type: "text", text: "JSON-stringifie
 
 **Internal** (not exposed): `close_tab`.
 
-Tools with `schema = nil` are internal-only; see `lua/claudecode/tools/init.lua` for registration.
+Tools with `schema = nil` are internal-only; see `lua/claude_agents/tools/init.lua` for registration.
 
 - JSON payloads are encoded compactly — no `indent`, which only spent tokens.
 - `getDiagnostics` answers in VS Code's shape: one text block holding `[{uri, diagnostics: [{message, severity, range, source, code}]}]`, grouped per file, with **LSP ranges** (0-based lines and characters) and severity **names**, not Neovim's numbers. Claude parses that shape.
@@ -551,7 +551,7 @@ Tools with `schema = nil` are internal-only; see `lua/claudecode/tools/init.lua`
 
 ### Health Check
 
-`:checkhealth claudecode` (`lua/claudecode/health.lua`) reports the prerequisites (Neovim version, `setup()` called, the CLI on `$PATH` and its version, terminal provider, unified.nvim) and then **every running instance** — a tab's own Claude and each agent — with its port, lock file and connected clients. It launches nothing.
+`:checkhealth claude_agents` (`lua/claude_agents/health.lua`) reports the prerequisites (Neovim version, `setup()` called, the CLI on `$PATH` and its version, terminal provider, unified.nvim) and then **every running instance** — a tab's own Claude and each agent — with its port, lock file and connected clients. It launches nothing.
 
 ### Terminal Integration
 
@@ -570,9 +570,10 @@ opts = {
 
 ### Key File Locations
 
-- `lua/claudecode/init.lua` — entry point and setup
-- `lua/claudecode/config.lua` — configuration
-- `plugin/claudecode.lua` — plugin loader with version checks
+- `lua/claude_agents/init.lua` — entry point and setup
+- `lua/claude_agents/config.lua` — configuration
+- `plugin/claudecode.lua` — plugin loader with version checks; installs the `claudecode` alias
+- `lua/claude_agents/compat.lua` + `lua/claudecode/init.lua` — the module's former name. The module was renamed `claudecode` → `claude_agents` so lazy.nvim finds it from the repo name (`claude-agents.nvim` and `claude_agents` both normalise to `claudeagents`; an exact match beats the other top-level modules under `lua/`). A package loader maps `claudecode` and `claudecode.<mod>` onto the same `claude_agents` tables, warning once. Code inside the plugin must only ever require `claude_agents…` (an internal `claudecode` require would fire the warning). User-facing names keep `ClaudeCode`/`claudecode`: commands, highlight groups, `User ClaudeCodeStatusChanged`, `CLAUDECODE_*` env vars, `vim.g.claudecode_*`, window/buffer vars, `stdpath("cache")/claudecode` (users' stored flags and checkpoints), the resession extension name, `plugin/claudecode.lua`
 - `tests/` — unit and integration suites
 
 ## Configuration Options
@@ -587,7 +588,7 @@ opts = {
 - Legacy aliases: `vertical_split` (→ `layout`), `open_in_current_tab` (inverse of `open_in_new_tab`).
 
 ```lua
-require("claudecode").setup({
+require("claude_agents").setup({
   log_level = "debug",
   diff_opts = {
     layout = "vertical",
@@ -666,7 +667,7 @@ Log levels: DEBUG for successful auth/connection/handshake detail, WARN for hand
 
 Update the version in **all** of these:
 
-1. `lua/claudecode/init.lua` — `M.version = { major, minor, patch, prerelease }` (remove `prerelease` for stable)
+1. `lua/claude_agents/init.lua` — `M.version = { major, minor, patch, prerelease }` (remove `prerelease` for stable)
 2. `scripts/claude_interactive.sh` — three client version references (~line 52 handshake, ~223 initialize, ~309 reconnect)
 3. `scripts/lib_claude.sh` — ClaudeCodeNvim version (~line 120, init message)
 4. `CHANGELOG.md` — date, features and fixes with PR references, development improvements
@@ -698,7 +699,7 @@ rg "0\.1\.0" .  # only CHANGELOG.md historical entries should remain
 
 ### Adding an MCP Tool
 
-1. Follow the structure in `lua/claudecode/tools/`
+1. Follow the structure in `lua/claude_agents/tools/`
 2. Return `{content: [{type: "text", text: JSON}]}`
 3. Add a JSON schema if the tool should be MCP-exposed
 4. Unit **and** integration tests required

@@ -71,7 +71,7 @@ if vim.env.DEMO_PERMISSION and vim.env.DEMO_PERMISSION ~= "" then
   claude = claude .. " --permission-mode " .. vim.env.DEMO_PERMISSION
 end
 
-require("claudecode").setup({
+require("claude_agents").setup({
   log_level = "warn",
   terminal_cmd = claude,
   -- snacks titles the terminal window with the buffer name until Claude sets a
@@ -83,7 +83,7 @@ require("claudecode").setup({
   -- working session spins the CLI's own spinner, as Claude Code's prompt does.
   status = {
     enabled = true,
-    icons = { busy = require("claudecode.status").SPINNER, waiting = "‼" },
+    icons = { busy = require("claude_agents.status").SPINNER, waiting = "‼" },
     spinner_ms = 250,
   },
   -- Wide enough sidebars at 1400px that the seeded session titles fit whole.

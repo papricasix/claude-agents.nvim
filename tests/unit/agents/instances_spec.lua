@@ -7,7 +7,7 @@ describe("instance registry", function()
 
   local function stub_server_module()
     started = {}
-    package.loaded["claudecode.server.init"] = {
+    package.loaded["claude_agents.server.init"] = {
       new_instance = function(tab_id, opts)
         local record = { tab_id = tab_id, opts = opts or {}, stopped = false }
         started[#started + 1] = record
@@ -22,7 +22,7 @@ describe("instance registry", function()
         return record
       end,
     }
-    package.loaded["claudecode.lockfile"] = {
+    package.loaded["claude_agents.lockfile"] = {
       generate_auth_token = function()
         return "0123456789abcdef0123456789abcdef"
       end,
@@ -41,8 +41,8 @@ describe("instance registry", function()
       vim._mock.reset()
     end
     stub_server_module()
-    package.loaded["claudecode"] = nil
-    claudecode = require("claudecode")
+    package.loaded["claude_agents"] = nil
+    claudecode = require("claude_agents")
     claudecode.instances = {}
     claudecode.tab_instance = {}
     claudecode.state.config = vim.tbl_deep_extend("force", claudecode.state.config or {}, {
@@ -51,10 +51,10 @@ describe("instance registry", function()
   end)
 
   after_each(function()
-    package.loaded["claudecode.server.init"] = nil
-    package.loaded["claudecode.lockfile"] = nil
-    package.loaded["claudecode"] = nil
-    require("claudecode.request_context").clear()
+    package.loaded["claude_agents.server.init"] = nil
+    package.loaded["claude_agents.lockfile"] = nil
+    package.loaded["claude_agents"] = nil
+    require("claude_agents.request_context").clear()
   end)
 
   describe("tab instances", function()
@@ -186,7 +186,7 @@ describe("instance registry", function()
     local ctx
 
     before_each(function()
-      ctx = require("claudecode.request_context")
+      ctx = require("claude_agents.request_context")
       ctx.clear()
     end)
 

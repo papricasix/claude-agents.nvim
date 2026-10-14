@@ -1,7 +1,7 @@
 -- Tests for claudecode.utils helpers.
 
-describe("claudecode.utils.shell_split", function()
-  local utils = require("claudecode.utils")
+describe("claude_agents.utils.shell_split", function()
+  local utils = require("claude_agents.utils")
 
   it("splits a plain command on whitespace", function()
     assert.are.same({ "claude", "--resume", "--verbose" }, utils.shell_split("claude --resume --verbose"))
@@ -47,8 +47,8 @@ describe("claudecode.utils.shell_split", function()
   end)
 end)
 
-describe("claudecode.utils.shell_quote", function()
-  local utils = require("claudecode.utils")
+describe("claude_agents.utils.shell_quote", function()
+  local utils = require("claude_agents.utils")
 
   it("comes back from shell_split as the one word it was", function()
     for _, word in ipairs({
@@ -75,8 +75,8 @@ describe("claudecode.utils.shell_quote", function()
   end)
 end)
 
-describe("claudecode.utils.expand_tilde", function()
-  local utils = require("claudecode.utils")
+describe("claude_agents.utils.expand_tilde", function()
+  local utils = require("claude_agents.utils")
   local home = os.getenv("HOME")
 
   it("expands a bare tilde to $HOME", function()
@@ -100,8 +100,8 @@ describe("claudecode.utils.expand_tilde", function()
   end)
 end)
 
-describe("claudecode.utils.parse_command", function()
-  local utils = require("claudecode.utils")
+describe("claude_agents.utils.parse_command", function()
+  local utils = require("claude_agents.utils")
   local home = os.getenv("HOME")
 
   it("splits and expands the documented local-install terminal_cmd", function()
@@ -120,8 +120,8 @@ describe("claudecode.utils.parse_command", function()
   end)
 end)
 
-describe("claudecode.utils path comparison", function()
-  local utils = require("claudecode.utils")
+describe("claude_agents.utils path comparison", function()
+  local utils = require("claude_agents.utils")
 
   it("spells a path one way so two of them can be compared", function()
     assert.are.equal("D:/Git/proj", utils.normalize_path("D:\\Git\\proj\\"))

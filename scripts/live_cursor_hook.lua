@@ -81,7 +81,7 @@ local req_ok, req_err = pcall(
   "nvim_exec_lua",
   [[
     local json, source_tab, agent_id = ...
-    return require("claudecode.live_cursor").ingest(json, source_tab, agent_id)
+    return require("claude_agents.live_cursor").ingest(json, source_tab, agent_id)
   ]],
   { data, tab, agent }
 )

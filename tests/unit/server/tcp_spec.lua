@@ -1,14 +1,14 @@
 require("tests.busted_setup")
 
-local client_manager = require("claudecode.server.client")
+local client_manager = require("claude_agents.server.client")
 
 describe("TCP server disconnect handling", function()
   local tcp
   local original_process_data
 
   before_each(function()
-    package.loaded["claudecode.server.tcp"] = nil
-    tcp = require("claudecode.server.tcp")
+    package.loaded["claude_agents.server.tcp"] = nil
+    tcp = require("claude_agents.server.tcp")
     original_process_data = client_manager.process_data
   end)
 
@@ -164,8 +164,8 @@ describe("TCP port selection", function()
   end
 
   before_each(function()
-    package.loaded["claudecode.server.tcp"] = nil
-    tcp = require("claudecode.server.tcp")
+    package.loaded["claude_agents.server.tcp"] = nil
+    tcp = require("claude_agents.server.tcp")
     original_new_tcp = vim.loop.new_tcp
   end)
 

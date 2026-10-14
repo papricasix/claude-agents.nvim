@@ -25,9 +25,9 @@ describe("float", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.float"] = nil
-    package.loaded["claudecode.agents.float"] = nil
-    float = require("claudecode.float")
+    package.loaded["claude_agents.float"] = nil
+    package.loaded["claude_agents.agents.float"] = nil
+    float = require("claude_agents.float")
     float.reset()
   end)
 
@@ -311,13 +311,13 @@ describe("float", function()
     local diff
 
     before_each(function()
-      package.loaded["claudecode.diff"] = nil
-      diff = require("claudecode.diff")
+      package.loaded["claude_agents.diff"] = nil
+      diff = require("claude_agents.diff")
       float.setup(base_config())
     end)
 
     after_each(function()
-      package.loaded["claudecode.diff"] = nil
+      package.loaded["claude_agents.diff"] = nil
     end)
 
     ---@return string|nil
@@ -328,8 +328,8 @@ describe("float", function()
     end
 
     it("says where the file is, not just its tail", function()
-      diff.open_float({ file_path = vim.fn.getcwd() .. "/lua/claudecode/diff.lua" })
-      expect(last_title()).to_be("lua/claudecode/diff.lua")
+      diff.open_float({ file_path = vim.fn.getcwd() .. "/lua/claude_agents/diff.lua" })
+      expect(last_title()).to_be("lua/claude_agents/diff.lua")
     end)
 
     it("shows a file outside the editor's directory as a path", function()
@@ -361,8 +361,8 @@ describe("float", function()
     local config
 
     before_each(function()
-      package.loaded["claudecode.config"] = nil
-      config = require("claudecode.config")
+      package.loaded["claude_agents.config"] = nil
+      config = require("claude_agents.config")
     end)
 
     it("ships a top-level float block", function()

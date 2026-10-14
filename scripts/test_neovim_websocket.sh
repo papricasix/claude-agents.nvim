@@ -153,7 +153,7 @@ EOL
 cat >"$NVIM_INIT_FILE" <<'EOL'
 -- Minimal init.lua for testing the WebSocket server
 vim.cmd('set rtp+=.')
-require('claudecode').setup({
+require('claude_agents').setup({
   auto_start = true,
   log_level = "debug",
   track_selection = true

@@ -6,19 +6,19 @@ describe("mini.files integration", function()
   local mock_vim
 
   local function setup_mocks()
-    package.loaded["claudecode.integrations"] = nil
-    package.loaded["claudecode.logger"] = nil
-    package.loaded["claudecode.visual_commands"] = nil
+    package.loaded["claude_agents.integrations"] = nil
+    package.loaded["claude_agents.logger"] = nil
+    package.loaded["claude_agents.visual_commands"] = nil
 
     -- Mock logger
-    package.loaded["claudecode.logger"] = {
+    package.loaded["claude_agents.logger"] = {
       debug = function() end,
       warn = function() end,
       error = function() end,
     }
 
     -- Mock visual_commands
-    package.loaded["claudecode.visual_commands"] = {
+    package.loaded["claude_agents.visual_commands"] = {
       get_visual_range = function()
         return 1, 3 -- Return lines 1-3 by default
       end,
@@ -55,7 +55,7 @@ describe("mini.files integration", function()
 
   before_each(function()
     setup_mocks()
-    integrations = require("claudecode.integrations")
+    integrations = require("claude_agents.integrations")
   end)
 
   describe("_get_mini_files_selection", function()

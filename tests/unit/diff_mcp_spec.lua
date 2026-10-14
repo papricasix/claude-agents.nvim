@@ -1,6 +1,6 @@
 --- Tests for MCP-compliant openDiff blocking behavior
 require("tests.busted_setup")
-local diff = require("claudecode.diff")
+local diff = require("claude_agents.diff")
 
 describe("MCP-compliant diff operations", function()
   local test_old_file = "/tmp/test_old_file.txt"

@@ -24,7 +24,7 @@ vim.opt.rtp:prepend(repo_root)
 vim.g.mapleader = " "
 vim.g.maplocalleader = "\\"
 
-local ok, claudecode = pcall(require, "claudecode")
+local ok, claudecode = pcall(require, "claude_agents")
 assert(ok, "Failed to load claudecode.nvim from repo root: " .. tostring(claudecode))
 
 claudecode.setup({
@@ -66,7 +66,7 @@ ensure_started()
 -- remote resolution the windows linger and active_diffs never drains.
 local function diff_state()
   local wins = #vim.api.nvim_list_wins()
-  local active = require("claudecode.diff")._get_active_diffs()
+  local active = require("claude_agents.diff")._get_active_diffs()
   local names = {}
   for tab_name, data in pairs(active) do
     names[#names + 1] = ("    [%s] %s"):format(data.status or "?", tab_name)

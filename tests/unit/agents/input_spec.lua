@@ -24,10 +24,10 @@ describe("agents.input", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.agents.input"] = nil
-    package.loaded["claudecode.agents.render"] = nil
-    require("claudecode.agents.render").setup({ agents = { enabled = true } })
-    input = require("claudecode.agents.input")
+    package.loaded["claude_agents.agents.input"] = nil
+    package.loaded["claude_agents.agents.render"] = nil
+    require("claude_agents.agents.render").setup({ agents = { enabled = true } })
+    input = require("claude_agents.agents.input")
     input.reset()
   end)
 

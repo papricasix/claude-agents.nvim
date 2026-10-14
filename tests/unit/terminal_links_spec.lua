@@ -8,8 +8,8 @@ describe("terminal_links", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.terminal_links"] = nil
-    tl = require("claudecode.terminal_links")
+    package.loaded["claude_agents.terminal_links"] = nil
+    tl = require("claude_agents.terminal_links")
   end)
 
   --------------------------------------------------------------------------------
@@ -225,8 +225,8 @@ describe("terminal_links", function()
     end
 
     before_each(function()
-      package.loaded["claudecode.config"] = nil
-      config = require("claudecode.config")
+      package.loaded["claude_agents.config"] = nil
+      config = require("claude_agents.config")
     end)
 
     it("accepts a fully specified terminal_links block", function()

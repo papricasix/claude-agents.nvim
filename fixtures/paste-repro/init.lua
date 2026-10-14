@@ -86,7 +86,7 @@ else
   plugin_fix = false
 end
 
-local ok, claudecode = pcall(require, "claudecode")
+local ok, claudecode = pcall(require, "claude_agents")
 assert(ok, "Failed to load claudecode.nvim from repo root: " .. tostring(claudecode))
 
 claudecode.setup({
@@ -125,7 +125,7 @@ end
 
 vim.keymap.set("n", "<leader>ac", function()
   if ensure_started() then
-    require("claudecode.terminal").simple_toggle({}, nil)
+    require("claude_agents.terminal").simple_toggle({}, nil)
   end
 end, { desc = "Toggle Claude (observer) terminal" })
 
@@ -146,7 +146,7 @@ end)
 if os.getenv("PASTE_REPRO_AUTOOPEN") == "1" then
   vim.schedule(function()
     if ensure_started() then
-      require("claudecode.terminal").simple_toggle({}, nil)
+      require("claude_agents.terminal").simple_toggle({}, nil)
     end
   end)
 end

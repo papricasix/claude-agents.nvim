@@ -160,9 +160,9 @@ describe("Config module", function()
 
   setup(function()
     -- Reset the module to ensure a clean state for each test
-    package.loaded["claudecode.config"] = nil
+    package.loaded["claude_agents.config"] = nil
 
-    config = require("claudecode.config")
+    config = require("claude_agents.config")
   end)
 
   it("should have default values", function()

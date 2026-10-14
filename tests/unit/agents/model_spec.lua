@@ -41,7 +41,7 @@ describe("agents.model", function()
     elsewhere, locates, invalidated, git_roots, rehomed = {}, {}, {}, {}, {}
     launch_names = {}
 
-    package.loaded["claudecode.agents.transcript"] = {
+    package.loaded["claude_agents.agents.transcript"] = {
       setup = function() end,
       cache_load = function() end,
       cache_save = function() end,
@@ -133,7 +133,7 @@ describe("agents.model", function()
       end,
     }
 
-    package.loaded["claudecode.agents.registry"] = {
+    package.loaded["claude_agents.agents.registry"] = {
       is_live = function(id)
         return live[id] == true
       end,
@@ -185,7 +185,7 @@ describe("agents.model", function()
         end)
       end
     end
-    package.loaded["claudecode.agents.git"] = git
+    package.loaded["claude_agents.agents.git"] = git
   end
 
   before_each(function()
@@ -194,15 +194,15 @@ describe("agents.model", function()
     end
     stub_modules()
 
-    package.loaded["claudecode.agents.model"] = nil
-    model = require("claudecode.agents.model")
+    package.loaded["claude_agents.agents.model"] = nil
+    model = require("claude_agents.agents.model")
     model.setup({ agents = { enabled = true, refresh_ms = 10, fold_batch = 10 } })
     model.reset()
     model.setup({ agents = { enabled = true, refresh_ms = 10, fold_batch = 10 } })
 
     -- Checkpoints live in memory here: the store would otherwise be a real file
     -- under the mock's cache directory, shared between tests.
-    checkpoints = require("claudecode.agents.checkpoints")
+    checkpoints = require("claude_agents.agents.checkpoints")
     checkpoints.reset()
     checkpoints._io = {
       read = function()
@@ -215,7 +215,7 @@ describe("agents.model", function()
     -- back before every change, through the decoder the mock only stubs.
     vim.json.decode = _G.json_decode
     local flag_store = nil
-    flags = require("claudecode.agents.flags")
+    flags = require("claude_agents.agents.flags")
     flags.reset()
     flags._io = {
       read = function()
@@ -247,7 +247,7 @@ describe("agents.model", function()
 
   after_each(function()
     for _, name in ipairs({ "transcript", "registry", "git" }) do
-      package.loaded["claudecode.agents." .. name] = nil
+      package.loaded["claude_agents.agents." .. name] = nil
     end
   end)
 
@@ -383,7 +383,7 @@ describe("agents.model", function()
       live.ccc = true
       model.refresh_list()
       -- Listed, but nothing has read it yet.
-      package.loaded["claudecode.agents.transcript"].list = function()
+      package.loaded["claude_agents.agents.transcript"].list = function()
         return { { id = "ccc", path = "/p/ccc.jsonl", size = 1, mtime = 1, summary = nil } }
       end
       model.refresh_list()
@@ -409,7 +409,7 @@ describe("agents.model", function()
       -- the new conversation's transcript is written at once, so it is listed
       -- from the directory with no fold and no row before it.
       local function list_unread(id)
-        package.loaded["claudecode.agents.transcript"].list = function()
+        package.loaded["claude_agents.agents.transcript"].list = function()
           return { { id = id, path = "/p/" .. id .. ".jsonl", size = 1, mtime = os.time(), summary = nil } }
         end
       end
@@ -636,7 +636,7 @@ describe("agents.model", function()
     ---The project's own enumeration lists nothing: whatever is found is found
     ---some other way.
     local function list_nothing()
-      package.loaded["claudecode.agents.transcript"].list = function()
+      package.loaded["claude_agents.agents.transcript"].list = function()
         return {}
       end
     end
@@ -697,7 +697,7 @@ describe("agents.model", function()
       model.attach(1, "/proj")
 
       -- Listed where the CLI moved it, and nothing has folded it there yet.
-      package.loaded["claudecode.agents.transcript"].list = function()
+      package.loaded["claude_agents.agents.transcript"].list = function()
         return { { id = "aaa", path = "/w/aaa.jsonl", size = 1, mtime = os.time(), summary = nil } }
       end
       model.refresh_list()
@@ -714,7 +714,7 @@ describe("agents.model", function()
       model.select("aaa")
       rehomed["/p/aaa.jsonl"] = summaries.aaa
       -- Listed at its new place, where nothing has been folded.
-      package.loaded["claudecode.agents.transcript"].list = function()
+      package.loaded["claude_agents.agents.transcript"].list = function()
         return { { id = "aaa", path = "/w/aaa.jsonl", size = 2, mtime = os.time(), summary = nil } }
       end
       scans = {}
@@ -770,10 +770,10 @@ describe("agents.model", function()
       elsewhere.ccc = "/elsewhere/ccc.jsonl"
       local moved = summary_for("ccc", { path = "/elsewhere/ccc.jsonl", title = "Moved away", added = 4 })
       -- Found, but not folded: the store hands the summary to a fold only.
-      package.loaded["claudecode.agents.transcript"].get = function()
+      package.loaded["claude_agents.agents.transcript"].get = function()
         return nil
       end
-      package.loaded["claudecode.agents.transcript"].summary = function(path, cb)
+      package.loaded["claude_agents.agents.transcript"].summary = function(path, cb)
         cb(path == moved.path and moved or nil)
       end
       model.attach(1, "/proj")
@@ -838,7 +838,7 @@ describe("agents.model", function()
       })
       git_roots[inside] = WORKTREE.path
       local asked = {}
-      package.loaded["claudecode.agents.git"].status = function(root, paths, cb)
+      package.loaded["claude_agents.agents.git"].status = function(root, paths, cb)
         asked[root] = paths
         cb({ [paths[1]] = root == "/proj" and "M" or "A" })
       end
@@ -1845,7 +1845,7 @@ describe("agents.model", function()
     end)
 
     it("counts a finished turn as unread when Neovim itself has no focus", function()
-      local status = require("claudecode.status")
+      local status = require("claude_agents.status")
       model.select("aaa")
       status.set_focused(false)
       model.note({ hook_event_name = "Stop", session_id = "aaa" })
@@ -1890,7 +1890,7 @@ describe("agents.model", function()
       -- The second report: a background Agent and AskUserQuestion issued in one
       -- message. The launch returning is a PostToolUse from the thread that
       -- asked, and it took the question down the instant it went up.
-      local status = require("claudecode.status")
+      local status = require("claude_agents.status")
       local function hook(event)
         event.session_id = "aaa"
         status.identify(event)
@@ -2264,7 +2264,7 @@ describe("agents.model", function()
         stats[#stats + 1] = path
         return false
       end
-      package.loaded["claudecode.agents.git"].status = function(_, paths, cb)
+      package.loaded["claude_agents.agents.git"].status = function(_, paths, cb)
         git_paths = paths
         cb({})
       end

@@ -53,9 +53,9 @@ describe("diff reject on window close (issue #238)", function()
   end
 
   before_each(function()
-    package.loaded["claudecode.diff"] = nil
-    package.loaded["claudecode.logger"] = nil
-    package.loaded["claudecode.logger"] = {
+    package.loaded["claude_agents.diff"] = nil
+    package.loaded["claude_agents.logger"] = nil
+    package.loaded["claude_agents.logger"] = {
       debug = function() end,
       warn = function() end,
       error = function() end,
@@ -68,7 +68,7 @@ describe("diff reject on window close (issue #238)", function()
       return true
     end
 
-    diff = require("claudecode.diff")
+    diff = require("claude_agents.diff")
     diff.setup({ diff_opts = {} })
   end)
 

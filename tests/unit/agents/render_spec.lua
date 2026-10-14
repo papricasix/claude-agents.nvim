@@ -13,8 +13,8 @@ describe("agents.render", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.agents.render"] = nil
-    render = require("claudecode.agents.render")
+    package.loaded["claude_agents.agents.render"] = nil
+    render = require("claude_agents.agents.render")
     render.setup({ agents = { enabled = true } })
     render.reset()
     buf = render.create_buf("sessions")
@@ -165,9 +165,9 @@ describe("agents.render", function()
 
     describe("fitting a path into a narrow pane", function()
       -- A tail cut throws away the one part the row is read for: it turned
-      -- `lua/claudecode/agents/render.lua` into `lua/claudecod…`, so every file
+      -- `lua/claude_agents/agents/render.lua` into `lua/claudecod…`, so every file
       -- in a directory looked alike.
-      local path = "lua/claudecode/agents/render.lua"
+      local path = "lua/claude_agents/agents/render.lua"
 
       it("leaves a path that fits alone", function()
         expect(render.shorten_path(path, 40)).to_be(path)

@@ -2,7 +2,7 @@
 
 ## Project Structure & Module Organization
 
-- `lua/claudecode/`: Core plugin modules (`init.lua`, `config.lua`, `diff.lua`, `terminal/`, `server/`, `tools/`, `logger.lua`, etc.).
+- `lua/claude_agents/`: Core plugin modules (`init.lua`, `config.lua`, `diff.lua`, `terminal/`, `server/`, `tools/`, `logger.lua`, etc.).
 - `plugin/`: Lightweight loader that guards startup and optional auto-setup.
 - `tests/`: Busted test suite (`unit/`, `integration/`, `helpers/`, `mocks/`).
 - `fixtures/`: Minimal Neovim configs for manual and integration testing.

@@ -16,8 +16,8 @@ describe("agents.patch", function()
   end
 
   before_each(function()
-    package.loaded["claudecode.agents.patch"] = nil
-    patch = require("claudecode.agents.patch")
+    package.loaded["claude_agents.agents.patch"] = nil
+    patch = require("claude_agents.agents.patch")
   end)
 
   describe("sides", function()

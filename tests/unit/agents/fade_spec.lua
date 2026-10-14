@@ -26,8 +26,8 @@ describe("agents.fade", function()
     end
     vim._highlights = {}
     vim.o.termguicolors = true
-    package.loaded["claudecode.agents.fade"] = nil
-    fade = require("claudecode.agents.fade")
+    package.loaded["claude_agents.agents.fade"] = nil
+    fade = require("claude_agents.agents.fade")
     fade.setup({ agents = { enabled = true } })
     define({
       Normal = { fg = 0xe0e2ea, bg = BG },
@@ -72,10 +72,10 @@ describe("agents.fade", function()
       -- own become dead code. That happened: two rounds of retuning the timings
       -- changed nothing visible, because the copies kept overriding them. One
       -- source of truth, asserted through the path the plugin actually takes.
-      package.loaded["claudecode.config"] = nil
-      local applied = require("claudecode.config").apply({})
-      require("claudecode.agents.fade").setup(applied)
-      local o = require("claudecode.agents.fade").opts()
+      package.loaded["claude_agents.config"] = nil
+      local applied = require("claude_agents.config").apply({})
+      require("claude_agents.agents.fade").setup(applied)
+      local o = require("claude_agents.agents.fade").opts()
       expect(o.hold_ms).to_be(3000)
       expect(o.steps).to_be(25)
       expect(o.flash_ms).to_be(3000)

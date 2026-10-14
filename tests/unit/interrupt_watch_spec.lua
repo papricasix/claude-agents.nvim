@@ -55,15 +55,15 @@ describe("interrupt_watch", function()
       vim._mock.reset()
     end
     for _, name in ipairs({
-      "claudecode.interrupt_watch",
-      "claudecode.status",
-      "claudecode.agents.transcript",
+      "claude_agents.interrupt_watch",
+      "claude_agents.status",
+      "claude_agents.agents.transcript",
     }) do
       package.loaded[name] = nil
     end
-    watch = require("claudecode.interrupt_watch")
-    status = require("claudecode.status")
-    transcript = require("claudecode.agents.transcript")
+    watch = require("claude_agents.interrupt_watch")
+    status = require("claude_agents.status")
+    transcript = require("claude_agents.agents.transcript")
 
     -- The mock's `vim.json.decode` is a non-functional stub; the busted setup
     -- ships a real one, and `_is_interrupt_line` decodes structurally rather than
@@ -262,7 +262,7 @@ describe("interrupt_watch", function()
       -- against 2.1.291). The lookup remembered the first place for good, so
       -- every interrupt after the move went unseen and the tab stayed busy.
       watch._resolve = real_resolve
-      local projects = require("claudecode.utils").claude_config_dir() .. "/projects"
+      local projects = require("claude_agents.utils").claude_config_dir() .. "/projects"
       vim._mock.add_dir(projects)
       local lookups = 0
       vim.fn.glob = function(pattern)

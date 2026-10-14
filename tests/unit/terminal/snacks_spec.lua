@@ -5,7 +5,7 @@
 -- which glob-expands bracketed model aliases such as "opus[1m]" (zsh aborts with
 -- "no matches found"), preventing Claude from launching. See snacks.lua M.open.
 
-describe("claudecode.terminal.snacks command handling", function()
+describe("claude_agents.terminal.snacks command handling", function()
   local snacks_provider
   local original_vim
   local spy
@@ -103,7 +103,7 @@ describe("claudecode.terminal.snacks command handling", function()
     }
 
     package.loaded["snacks"] = mock_snacks
-    package.loaded["claudecode.logger"] = {
+    package.loaded["claude_agents.logger"] = {
       debug = spy.new(function() end),
       info = spy.new(function() end),
       warn = spy.new(function() end),
@@ -111,18 +111,18 @@ describe("claudecode.terminal.snacks command handling", function()
     }
     -- Use the real utils module: snacks.lua calls utils.shell_split, and utils
     -- is pure Lua (safe under the mocked vim).
-    package.loaded["claudecode.utils"] = nil
-    package.loaded["claudecode.terminal.snacks"] = nil
+    package.loaded["claude_agents.utils"] = nil
+    package.loaded["claude_agents.terminal.snacks"] = nil
 
-    snacks_provider = require("claudecode.terminal.snacks")
+    snacks_provider = require("claude_agents.terminal.snacks")
   end)
 
   after_each(function()
     _G.vim = original_vim
     package.loaded["snacks"] = nil
-    package.loaded["claudecode.utils"] = nil
-    package.loaded["claudecode.logger"] = nil
-    package.loaded["claudecode.terminal.snacks"] = nil
+    package.loaded["claude_agents.utils"] = nil
+    package.loaded["claude_agents.logger"] = nil
+    package.loaded["claude_agents.terminal.snacks"] = nil
   end)
 
   local function base_config()

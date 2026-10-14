@@ -7,20 +7,20 @@ describe("At Mention Functionality", function()
   local mock_vim
 
   local function setup_mocks()
-    package.loaded["claudecode.init"] = nil
-    package.loaded["claudecode.integrations"] = nil
-    package.loaded["claudecode.logger"] = nil
-    package.loaded["claudecode.config"] = nil
+    package.loaded["claude_agents.init"] = nil
+    package.loaded["claude_agents.integrations"] = nil
+    package.loaded["claude_agents.logger"] = nil
+    package.loaded["claude_agents.config"] = nil
 
     -- Mock logger
-    package.loaded["claudecode.logger"] = {
+    package.loaded["claude_agents.logger"] = {
       debug = function() end,
       warn = function() end,
       error = function() end,
     }
 
     -- Mock config
-    package.loaded["claudecode.config"] = {
+    package.loaded["claude_agents.config"] = {
       get = function()
         return {
           debounce_ms = 100,
@@ -72,8 +72,8 @@ describe("At Mention Functionality", function()
 
   describe("file at mention from neo-tree", function()
     before_each(function()
-      integrations = require("claudecode.integrations")
-      init_module = require("claudecode.init")
+      integrations = require("claude_agents.integrations")
+      init_module = require("claude_agents.init")
     end)
 
     it("should format single file path correctly", function()
@@ -148,8 +148,8 @@ describe("At Mention Functionality", function()
 
   describe("file at mention from nvim-tree", function()
     before_each(function()
-      integrations = require("claudecode.integrations")
-      init_module = require("claudecode.init")
+      integrations = require("claude_agents.integrations")
+      init_module = require("claude_agents.init")
     end)
 
     it("should get selected file from nvim-tree", function()
@@ -243,7 +243,7 @@ describe("At Mention Functionality", function()
 
   describe("at mention error handling", function()
     before_each(function()
-      integrations = require("claudecode.integrations")
+      integrations = require("claude_agents.integrations")
     end)
 
     it("should handle unsupported buffer types", function()
@@ -300,8 +300,8 @@ describe("At Mention Functionality", function()
 
   describe("integration with main module", function()
     before_each(function()
-      integrations = require("claudecode.integrations")
-      init_module = require("claudecode.init")
+      integrations = require("claude_agents.integrations")
+      init_module = require("claude_agents.init")
     end)
 
     it("should send files to Claude via at mention", function()

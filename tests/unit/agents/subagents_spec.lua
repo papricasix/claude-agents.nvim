@@ -95,10 +95,10 @@ describe("agents.subagents", function()
     end
     fs, dirs = {}, {}
     vim.json.decode = _G.json_decode
-    package.loaded["claudecode.agents.transcript"] = nil
-    package.loaded["claudecode.agents.subagents"] = nil
-    transcript = require("claudecode.agents.transcript")
-    subagents = require("claudecode.agents.subagents")
+    package.loaded["claude_agents.agents.transcript"] = nil
+    package.loaded["claude_agents.agents.subagents"] = nil
+    transcript = require("claude_agents.agents.transcript")
+    subagents = require("claude_agents.agents.subagents")
     transcript.reset()
     subagents.reset()
     transcript._io = {

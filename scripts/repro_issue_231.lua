@@ -27,7 +27,7 @@ local function out(msg)
   io.stdout:write(msg .. "\n")
 end
 
-local diff = require("claudecode.diff")
+local diff = require("claude_agents.diff")
 
 ---Make a `buftype=terminal` window the ONLY window (the issue #231 layout).
 local function make_terminal_only_window()

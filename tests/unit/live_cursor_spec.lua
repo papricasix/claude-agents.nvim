@@ -26,16 +26,16 @@ describe("live_cursor", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.live_cursor"] = nil
-    live_cursor = require("claudecode.live_cursor")
+    package.loaded["claude_agents.live_cursor"] = nil
+    live_cursor = require("claude_agents.live_cursor")
   end)
 
   describe("config validation", function()
     local config
 
     before_each(function()
-      package.loaded["claudecode.config"] = nil
-      config = require("claudecode.config")
+      package.loaded["claude_agents.config"] = nil
+      config = require("claude_agents.config")
     end)
 
     it("rejects enabled=true without a mode", function()
@@ -166,8 +166,8 @@ describe("live_cursor", function()
     end)
 
     after_each(function()
-      package.loaded["claudecode.agents_view"] = nil
-      package.loaded["claudecode.agents.registry"] = nil
+      package.loaded["claude_agents.agents_view"] = nil
+      package.loaded["claude_agents.agents.registry"] = nil
     end)
 
     it("dismisses a viewed plan file once the plan is answered", function()
@@ -175,7 +175,7 @@ describe("live_cursor", function()
       -- terminal. Answering there is what ends it, so `PostToolUse(ExitPlanMode)`
       -- takes the float away. Scoped to that conversation *and* to floats opened
       -- for viewing: a diff float is a question still waiting for an answer.
-      local float = require("claudecode.float")
+      local float = require("claude_agents.float")
       float.reset()
       float.setup({})
       float.create({ session_id = "s1", title = "plan.md", purpose = "open" })
@@ -230,7 +230,7 @@ describe("live_cursor", function()
       -- Every window in the agents tab is one of its panes, so there is no editor
       -- window to preview into: without this the preview lands in whichever pane
       -- the cursor is in and dismantles the layout.
-      package.loaded["claudecode.agents_view"] = {
+      package.loaded["claude_agents.agents_view"] = {
         note = function() end,
         is_agents_tab = function(tab)
           return tab == 7
@@ -257,7 +257,7 @@ describe("live_cursor", function()
       -- in the same terminal; the launch key is what stays put, so it is the only
       -- thing that says which of several agents this came from afterwards.
       local noted = {}
-      package.loaded["claudecode.agents_view"] = {
+      package.loaded["claude_agents.agents_view"] = {
         note = function(event, tab, agent_id)
           noted[#noted + 1] = { session_id = event.session_id, tab = tab, agent_id = agent_id }
         end,
@@ -273,7 +273,7 @@ describe("live_cursor", function()
 
     it("shows nothing for a conversation the agents registry is running", function()
       -- The tab stamp is where the CLI launched; the registry is the authority.
-      package.loaded["claudecode.agents.registry"] = {
+      package.loaded["claude_agents.agents.registry"] = {
         is_live = function(id)
           return id == "agent-1"
         end,
@@ -288,7 +288,7 @@ describe("live_cursor", function()
     end)
 
     it("suppresses an edit when a review diff owns the file", function()
-      package.loaded["claudecode.diff"] = {
+      package.loaded["claude_agents.diff"] = {
         is_live_for_file = function()
           return true
         end,
@@ -302,7 +302,7 @@ describe("live_cursor", function()
     end)
 
     it("suppresses a read when a review diff owns the file", function()
-      package.loaded["claudecode.diff"] = {
+      package.loaded["claude_agents.diff"] = {
         is_live_for_file = function()
           return true
         end,
@@ -316,7 +316,7 @@ describe("live_cursor", function()
     end)
 
     it("paints an edit, preferring new_string with old_string as fallback", function()
-      package.loaded["claudecode.diff"] = {
+      package.loaded["claude_agents.diff"] = {
         is_live_for_file = function()
           return false
         end,
@@ -332,7 +332,7 @@ describe("live_cursor", function()
     end)
 
     it("previews a Write from the payload content, not the (not-yet-written) file", function()
-      package.loaded["claudecode.diff"] = {
+      package.loaded["claude_agents.diff"] = {
         is_live_for_file = function()
           return false
         end,
@@ -358,7 +358,7 @@ describe("live_cursor", function()
     end)
 
     it("falls back to the line highlight for a Write with no content payload", function()
-      package.loaded["claudecode.diff"] = {
+      package.loaded["claude_agents.diff"] = {
         is_live_for_file = function()
           return false
         end,
@@ -379,7 +379,7 @@ describe("live_cursor", function()
     end)
 
     it("does not take the whole-file path for an Edit", function()
-      package.loaded["claudecode.diff"] = {
+      package.loaded["claude_agents.diff"] = {
         is_live_for_file = function()
           return false
         end,
@@ -450,11 +450,11 @@ describe("live_cursor", function()
     end
 
     after_each(function()
-      package.loaded["claudecode.plan_view"] = nil
+      package.loaded["claude_agents.plan_view"] = nil
     end)
 
     it("injects the hook for the plan view even when live_cursor is disabled", function()
-      package.loaded["claudecode.plan_view"] = {
+      package.loaded["claude_agents.plan_view"] = {
         is_enabled = function()
           return true
         end,
@@ -474,7 +474,7 @@ describe("live_cursor", function()
       -- conversation a running agent is having without touching its terminal or
       -- writing anything that attributes the change to it — so no amount of
       -- polling can see it. This is the second and last hook polling asks for.
-      package.loaded["claudecode.agents_view"] = {
+      package.loaded["claude_agents.agents_view"] = {
         is_enabled = function()
           return true
         end,
@@ -484,7 +484,7 @@ describe("live_cursor", function()
       }
       live_cursor.setup(base_config({ enabled = false }))
       local contents = settings_of(live_cursor.build_launch_injection())
-      package.loaded["claudecode.agents_view"] = nil
+      package.loaded["claude_agents.agents_view"] = nil
 
       assert.is_truthy(contents:match("SessionStart"))
       -- ...and none of the per-tool-call ones that make hooks opt-in.
@@ -493,7 +493,7 @@ describe("live_cursor", function()
     end)
 
     it("combines both matchers when live_cursor and plan view are enabled", function()
-      package.loaded["claudecode.plan_view"] = {
+      package.loaded["claude_agents.plan_view"] = {
         is_enabled = function()
           return true
         end,
@@ -506,7 +506,7 @@ describe("live_cursor", function()
     end)
 
     it("omits PostToolUse when only live_cursor is enabled", function()
-      package.loaded["claudecode.plan_view"] = {
+      package.loaded["claude_agents.plan_view"] = {
         is_enabled = function()
           return false
         end,
@@ -519,7 +519,7 @@ describe("live_cursor", function()
 
     it("routes a PreToolUse ExitPlanMode to plan_view.show with the plan markdown", function()
       local calls = {}
-      package.loaded["claudecode.plan_view"] = {
+      package.loaded["claude_agents.plan_view"] = {
         is_enabled = function()
           return true
         end,
@@ -546,7 +546,7 @@ describe("live_cursor", function()
 
     it("falls back to the longest string when ExitPlanMode lacks a `plan` field", function()
       local got
-      package.loaded["claudecode.plan_view"] = {
+      package.loaded["claude_agents.plan_view"] = {
         is_enabled = function()
           return true
         end,
@@ -569,7 +569,7 @@ describe("live_cursor", function()
 
     it("routes a PostToolUse ExitPlanMode to plan_view.close", function()
       local closed = false
-      package.loaded["claudecode.plan_view"] = {
+      package.loaded["claude_agents.plan_view"] = {
         is_enabled = function()
           return true
         end,
@@ -588,7 +588,7 @@ describe("live_cursor", function()
 
     it("closes an open plan when any other tool event arrives (reject/execute)", function()
       local closed = false
-      package.loaded["claudecode.plan_view"] = {
+      package.loaded["claude_agents.plan_view"] = {
         is_enabled = function()
           return true
         end,
@@ -911,7 +911,7 @@ describe("live_cursor", function()
 
       -- diff module supplies the canonical window finder and reports that no
       -- review diff owns the file (so the edit path is not suppressed here).
-      package.loaded["claudecode.diff"] = {
+      package.loaded["claude_agents.diff"] = {
         find_main_editor_window = function()
           return 1000
         end,
@@ -924,7 +924,7 @@ describe("live_cursor", function()
     after_each(function()
       vim.fn.bufadd = nil
       vim.fn.bufload = nil
-      package.loaded["claudecode.diff"] = nil
+      package.loaded["claude_agents.diff"] = nil
     end)
 
     it("read: opens a dedicated preview split, then the idle handler closes it", function()
@@ -1020,7 +1020,7 @@ describe("live_cursor", function()
 
       vim.fn.bufload = function() end
 
-      package.loaded["claudecode.diff"] = {
+      package.loaded["claude_agents.diff"] = {
         find_main_editor_window = function()
           return 1000
         end,
@@ -1033,7 +1033,7 @@ describe("live_cursor", function()
     after_each(function()
       vim.fn.bufadd = nil
       vim.fn.bufload = nil
-      package.loaded["claudecode.diff"] = nil
+      package.loaded["claude_agents.diff"] = nil
     end)
 
     -- bufadd that lazily materializes a fresh buffer per path (as real bufadd
@@ -1132,7 +1132,7 @@ describe("live_cursor", function()
       end
       vim.fn.bufload = function() end
 
-      package.loaded["claudecode.diff"] = {
+      package.loaded["claude_agents.diff"] = {
         find_window_closest_to_terminal = function()
           return 1500
         end,
@@ -1148,7 +1148,7 @@ describe("live_cursor", function()
     after_each(function()
       vim.fn.bufadd = nil
       vim.fn.bufload = nil
-      package.loaded["claudecode.diff"] = nil
+      package.loaded["claude_agents.diff"] = nil
     end)
 
     it("open mode loads the file into the closest-to-terminal window (focus in terminal)", function()
@@ -1158,7 +1158,7 @@ describe("live_cursor", function()
     end)
 
     it("falls back to find_main_editor_window when no closest finder is available", function()
-      package.loaded["claudecode.diff"].find_window_closest_to_terminal = nil
+      package.loaded["claude_agents.diff"].find_window_closest_to_terminal = nil
       live_cursor.setup(base_config({ enabled = true, mode = "open", clear_delay_ms = 0 }))
       live_cursor.show("/x", { start_line = 1 })
       expect(vim.api.nvim_win_get_buf(1500)).to_be(80)
@@ -1182,8 +1182,8 @@ describe("live_cursor", function()
     local calls
 
     before_each(function()
-      package.loaded["claudecode.diff"] = nil
-      diff = require("claudecode.diff")
+      package.loaded["claude_agents.diff"] = nil
+      diff = require("claude_agents.diff")
       local active = diff._get_active_diffs()
       for k in pairs(active) do
         active[k] = nil
@@ -1206,7 +1206,7 @@ describe("live_cursor", function()
       for k in pairs(active) do
         active[k] = nil
       end
-      package.loaded["claudecode.diff"] = nil
+      package.loaded["claude_agents.diff"] = nil
     end)
 
     it("does NOT trigger a live preview when a pending review diff owns the file", function()
@@ -1244,8 +1244,8 @@ describe("diff.is_live_for_file", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.diff"] = nil
-    diff = require("claudecode.diff")
+    package.loaded["claude_agents.diff"] = nil
+    diff = require("claude_agents.diff")
     local active = diff._get_active_diffs()
     for k in pairs(active) do
       active[k] = nil

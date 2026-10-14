@@ -33,7 +33,7 @@ describe("file routing", function()
     vim.api.nvim_tabpage_set_var(tab, "claudecode_layout_owner", {
       forbids_split = true,
       host = "float",
-      float_module = "claudecode.agents.float",
+      float_module = "claude_agents.agents.float",
       origin = origin,
     })
   end
@@ -42,11 +42,11 @@ describe("file routing", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    for _, name in ipairs({ "claudecode.diff", "claudecode.float", "claudecode.agents.float" }) do
+    for _, name in ipairs({ "claude_agents.diff", "claude_agents.float", "claude_agents.agents.float" }) do
       package.loaded[name] = nil
     end
-    diff = require("claudecode.diff")
-    float = require("claudecode.float")
+    diff = require("claude_agents.diff")
+    float = require("claude_agents.float")
     diff.setup(base_config())
     float.setup(base_config())
     float.reset()

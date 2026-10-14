@@ -13,14 +13,14 @@ describe("ClaudeCodeSend visual selection in tree buffers", function()
 
   before_each(function()
     -- Reset package cache
-    package.loaded["claudecode"] = nil
-    package.loaded["claudecode.visual_commands"] = nil
-    package.loaded["claudecode.integrations"] = nil
-    package.loaded["claudecode.server.init"] = nil
-    package.loaded["claudecode.lockfile"] = nil
-    package.loaded["claudecode.config"] = nil
-    package.loaded["claudecode.logger"] = nil
-    package.loaded["claudecode.diff"] = nil
+    package.loaded["claude_agents"] = nil
+    package.loaded["claude_agents.visual_commands"] = nil
+    package.loaded["claude_agents.integrations"] = nil
+    package.loaded["claude_agents.server.init"] = nil
+    package.loaded["claude_agents.lockfile"] = nil
+    package.loaded["claude_agents.config"] = nil
+    package.loaded["claude_agents.logger"] = nil
+    package.loaded["claude_agents.diff"] = nil
 
     -- Mocks
     mock_server = {
@@ -104,19 +104,19 @@ describe("ClaudeCodeSend visual selection in tree buffers", function()
     -- Mock require
     original_require = _G.require
     _G.require = function(module)
-      if module == "claudecode.logger" then
+      if module == "claude_agents.logger" then
         return mock_logger
-      elseif module == "claudecode.visual_commands" then
+      elseif module == "claude_agents.visual_commands" then
         return mock_visual_commands
-      elseif module == "claudecode.integrations" then
+      elseif module == "claude_agents.integrations" then
         return mock_integrations
-      elseif module == "claudecode.server.init" then
+      elseif module == "claude_agents.server.init" then
         return {
           get_status = function()
             return { running = true, client_count = 1 }
           end,
         }
-      elseif module == "claudecode.lockfile" then
+      elseif module == "claude_agents.lockfile" then
         return {
           create = function()
             return true, "/tmp/mock.lock", "auth"
@@ -128,15 +128,15 @@ describe("ClaudeCodeSend visual selection in tree buffers", function()
             return "auth"
           end,
         }
-      elseif module == "claudecode.config" then
+      elseif module == "claude_agents.config" then
         return {
           apply = function(opts)
             return opts or { log_level = "info" }
           end,
         }
-      elseif module == "claudecode.diff" then
+      elseif module == "claude_agents.diff" then
         return { setup = function() end }
-      elseif module == "claudecode.terminal" then
+      elseif module == "claude_agents.terminal" then
         return {
           setup = function() end,
           open = function() end,
@@ -148,7 +148,7 @@ describe("ClaudeCodeSend visual selection in tree buffers", function()
     end
 
     -- Load plugin and setup
-    claudecode = require("claudecode")
+    claudecode = require("claude_agents")
     claudecode.setup({ auto_start = false })
     claudecode.state.server = mock_server
     claudecode.state.port = 12345

@@ -6,19 +6,19 @@ describe("Visual Delay Timing Validation", function()
   local mock_vim
 
   local function setup_mocks()
-    package.loaded["claudecode.selection"] = nil
-    package.loaded["claudecode.logger"] = nil
-    package.loaded["claudecode.terminal"] = nil
+    package.loaded["claude_agents.selection"] = nil
+    package.loaded["claude_agents.logger"] = nil
+    package.loaded["claude_agents.terminal"] = nil
 
     -- Mock logger
-    package.loaded["claudecode.logger"] = {
+    package.loaded["claude_agents.logger"] = {
       debug = function() end,
       warn = function() end,
       error = function() end,
     }
 
     -- Mock terminal
-    package.loaded["claudecode.terminal"] = {
+    package.loaded["claude_agents.terminal"] = {
       get_active_terminal_bufnr = function()
         return nil -- No active terminal by default
       end,
@@ -105,7 +105,7 @@ describe("Visual Delay Timing Validation", function()
 
   before_each(function()
     setup_mocks()
-    selection_module = require("claudecode.selection")
+    selection_module = require("claude_agents.selection")
   end)
 
   describe("delay timing appropriateness", function()

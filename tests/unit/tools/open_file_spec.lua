@@ -5,8 +5,8 @@ describe("Tool: open_file", function()
 
   before_each(function()
     -- Reset mocks and require the module under test
-    package.loaded["claudecode.tools.open_file"] = nil
-    open_file_handler = require("claudecode.tools.open_file").handler
+    package.loaded["claude_agents.tools.open_file"] = nil
+    open_file_handler = require("claude_agents.tools.open_file").handler
 
     -- Mock Neovim functions used by the handler
     _G.vim = _G.vim or {}
@@ -238,7 +238,7 @@ describe("Tool: open_file", function()
     local ctx
 
     before_each(function()
-      ctx = require("claudecode.request_context")
+      ctx = require("claude_agents.request_context")
       ctx.clear()
       _G.vim.api.nvim_tabpage_is_valid = spy.new(function()
         return true

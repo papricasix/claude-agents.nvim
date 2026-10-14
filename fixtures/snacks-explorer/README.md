@@ -33,7 +33,7 @@ prove it deterministically. With the explorer open and `sample.txt` in the
 editor:
 
 ```vim
-:lua print(vim.bo[vim.api.nvim_win_get_buf(require('claudecode.diff')._find_main_editor_window())].filetype)
+:lua print(vim.bo[vim.api.nvim_win_get_buf(require('claude_agents.diff')._find_main_editor_window())].filetype)
 ```
 
 - **Buggy (before the fix):** prints `snacks_layout_box` — the explorer sidebar.

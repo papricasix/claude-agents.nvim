@@ -158,8 +158,8 @@ describe("agents.transcript", function()
       return real_decode(str)
     end
 
-    package.loaded["claudecode.agents.transcript"] = nil
-    transcript = require("claudecode.agents.transcript")
+    package.loaded["claude_agents.agents.transcript"] = nil
+    transcript = require("claude_agents.agents.transcript")
     transcript.reset()
     install_io()
   end)

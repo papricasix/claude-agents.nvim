@@ -45,18 +45,18 @@ describe("agents_view", function()
     if vim and vim._mock and vim._mock.reset then
       vim._mock.reset()
     end
-    package.loaded["claudecode.agents_view"] = nil
-    package.loaded["claudecode.agents.model"] = nil
-    package.loaded["claudecode.agents.render"] = nil
-    agents_view = require("claudecode.agents_view")
+    package.loaded["claude_agents.agents_view"] = nil
+    package.loaded["claude_agents.agents.model"] = nil
+    package.loaded["claude_agents.agents.render"] = nil
+    agents_view = require("claude_agents.agents_view")
   end)
 
   describe("config validation", function()
     local config
 
     before_each(function()
-      package.loaded["claudecode.config"] = nil
-      config = require("claudecode.config")
+      package.loaded["claude_agents.config"] = nil
+      config = require("claude_agents.config")
     end)
 
     it("accepts the defaults", function()
@@ -163,14 +163,14 @@ describe("agents_view", function()
 
     it("on auto, rides the hooks status already pays for", function()
       local status_config = base_config({ enabled = true, source = "auto" }, { enabled = true })
-      require("claudecode.status").setup(status_config)
+      require("claude_agents.status").setup(status_config)
       agents_view.setup(status_config)
       expect(agents_view.wants_hooks()).to_be_true()
     end)
 
     it("on auto, polls when nothing else is paying for hooks", function()
       local status_config = base_config({ enabled = true, source = "auto" }, { enabled = false })
-      require("claudecode.status").setup(status_config)
+      require("claude_agents.status").setup(status_config)
       agents_view.setup(status_config)
       expect(agents_view.wants_hooks()).to_be(false)
     end)
@@ -257,8 +257,8 @@ describe("agents_view", function()
 
     it("is reached through session_state.prepare_save, which answers nothing", function()
       -- auto-session reads a `false` from a pre-save hook as "abandon the save".
-      package.loaded["claudecode.session_state"] = nil
-      local session_state = require("claudecode.session_state")
+      package.loaded["claude_agents.session_state"] = nil
+      local session_state = require("claude_agents.session_state")
       agents_view.setup(base_config({ enabled = true }))
       expect(agents_view.open()).to_be_true()
 
@@ -275,7 +275,7 @@ describe("agents_view", function()
 
     before_each(function()
       asked = {}
-      package.loaded["claudecode.agents.confirm"] = {
+      package.loaded["claude_agents.agents.confirm"] = {
         ask = function(opts, cb)
           asked[#asked + 1] = opts
           cb(asked.answer ~= false)
@@ -284,7 +284,7 @@ describe("agents_view", function()
     end)
 
     after_each(function()
-      package.loaded["claudecode.agents.confirm"] = nil
+      package.loaded["claude_agents.agents.confirm"] = nil
       if agents_view.is_open() then
         agents_view.close()
       end
@@ -317,7 +317,7 @@ describe("agents_view", function()
 
     it("says running agents are stopped when the view kills them", function()
       -- The view's own copy: it requires the registry once, at load.
-      local registry = require("claudecode.agents.registry")
+      local registry = require("claude_agents.agents.registry")
       local real_live_ids, real_get = registry.live_ids, registry.get
       agents_view.setup(base_config({ enabled = true, kill_on_close = true }))
       expect(agents_view.open()).to_be_true()
@@ -394,8 +394,8 @@ describe("agents_view", function()
     end)
 
     it("rejects a name that is neither a string, a function, nor false", function()
-      package.loaded["claudecode.config"] = nil
-      local config = require("claudecode.config")
+      package.loaded["claude_agents.config"] = nil
+      local config = require("claude_agents.config")
       expect((pcall(config.validate, base_config({ tab_name = "agents" })))).to_be_true()
       expect((pcall(config.validate, base_config({ tab_name = false })))).to_be_true()
       expect((pcall(config.validate, base_config({ tab_name = 42 })))).to_be(false)
@@ -417,7 +417,7 @@ describe("agents_view", function()
     ---drops the module again for the next test.
     local function watch_model()
       marked = {}
-      local model = require("claudecode.agents.model")
+      local model = require("claude_agents.agents.model")
       model.selected = function()
         return "aaa"
       end
@@ -666,7 +666,7 @@ describe("agents_view", function()
     ---Status config whose `busy` icon actually animates.
     ---
     ---The shipped default is a single glyph — the CLI's spinner is **opt-in**
-    ---(`icons = { busy = require("claudecode.status").SPINNER }`) — so a view
+    ---(`icons = { busy = require("claude_agents.status").SPINNER }`) — so a view
     ---showing a busy agent does not animate unless the user asked it to, and the
     ---clock is not held. A spec about *holding* the clock has to ask for it, the
     ---same way a user would.
@@ -683,21 +683,21 @@ describe("agents_view", function()
     ---table at call time, so replacing the one function is enough; the outer
     ---before_each drops the module again for the next test.
     local function with_a_busy_agent()
-      require("claudecode.agents.model").rows = function()
+      require("claude_agents.agents.model").rows = function()
         return { { session_id = "aaa", title = "working", state = "busy", live = true, icon = "*" } }
       end
     end
 
     ---And something that does not.
     local function with_a_finished_agent()
-      require("claudecode.agents.model").rows = function()
+      require("claude_agents.agents.model").rows = function()
         return { { session_id = "aaa", title = "finished", state = "idle", live = false, icon = "o" } }
       end
     end
 
     before_each(function()
-      package.loaded["claudecode.status"] = nil
-      status = require("claudecode.status")
+      package.loaded["claude_agents.status"] = nil
+      status = require("claude_agents.status")
       status.setup(base_config(nil, animated()))
       with_a_busy_agent()
     end)
@@ -799,7 +799,7 @@ describe("agents_view", function()
     it("is held for a fade that is still running, with nothing else moving", function()
       -- A count that just changed walks down a ramp for ~3s. Releasing the clock
       -- because no agent is working would leave it frozen part-way.
-      require("claudecode.agents.model").rows = function()
+      require("claude_agents.agents.model").rows = function()
         return {
           { session_id = "aaa", title = "just finished", state = "idle", live = false, icon = "o", added_age_ms = 0 },
         }
@@ -838,7 +838,7 @@ describe("agents_view", function()
       selected, live, foreign, shown, launched, notify_change, hidden = nil, {}, {}, {}, {}, nil, 0
       rows = { { session_id = "aaa", title = "First" }, { session_id = "bbb", title = "Second" } }
 
-      package.loaded["claudecode.agents.registry"] = {
+      package.loaded["claude_agents.agents.registry"] = {
         is_live = function(id)
           return live[id] == true
         end,
@@ -855,7 +855,7 @@ describe("agents_view", function()
           return {}
         end,
       }
-      package.loaded["claudecode.agents.model"] = {
+      package.loaded["claude_agents.agents.model"] = {
         setup = function() end,
         on_change = function(_, fn)
           notify_change = fn
@@ -908,17 +908,17 @@ describe("agents_view", function()
         refresh_git = function() end,
         set_armed = function() end,
       }
-      package.loaded["claudecode.agents_view"] = nil
-      agents_view = require("claudecode.agents_view")
+      package.loaded["claude_agents.agents_view"] = nil
+      agents_view = require("claude_agents.agents_view")
       agents_view.setup(base_config({ enabled = true }))
     end)
 
     after_each(function()
       agents_view.close()
       for _, name in ipairs({ "registry", "model" }) do
-        package.loaded["claudecode.agents." .. name] = nil
+        package.loaded["claude_agents.agents." .. name] = nil
       end
-      package.loaded["claudecode.agents_view"] = nil
+      package.loaded["claude_agents.agents_view"] = nil
     end)
 
     it("draws more of the activity feed as it is scrolled, down to the store's cap", function()
@@ -929,7 +929,7 @@ describe("agents_view", function()
       for n = 1, 200 do
         events[n] = { ts = n, kind = "tool", tool = "Bash", label = "call " .. n, tool_id = "t" .. n }
       end
-      package.loaded["claudecode.agents.model"].feed = function(visible)
+      package.loaded["claude_agents.agents.model"].feed = function(visible)
         asked[#asked + 1] = visible
         local out = {}
         for n = 1, math.min(visible or #events, #events) do
@@ -1080,12 +1080,12 @@ describe("agents_view", function()
 
       before_each(function()
         launches, next_names = {}, { aaa = "First-2", bbb = "Second-2" }
-        package.loaded["claudecode.agents.registry"].launch = function(id, launch_opts)
+        package.loaded["claude_agents.agents.registry"].launch = function(id, launch_opts)
           launches[#launches + 1] = { id = id, opts = launch_opts }
           live[id] = true
           return { bufnr = vim.api.nvim_create_buf(false, true) }
         end
-        package.loaded["claudecode.agents.model"].follow_up_name = function(id)
+        package.loaded["claude_agents.agents.model"].follow_up_name = function(id)
           return next_names[id]
         end
         -- The key as an applied config carries it; the bare table the other
@@ -1138,7 +1138,7 @@ describe("agents_view", function()
 
       it("starts it where the session it follows is resumed from", function()
         vim._mock.add_dir("/elsewhere")
-        package.loaded["claudecode.agents.model"].row = function(id)
+        package.loaded["claude_agents.agents.model"].row = function(id)
           return { session_id = id, title = "First", cwd = "/elsewhere" }
         end
         open_view()
@@ -1147,7 +1147,7 @@ describe("agents_view", function()
       end)
 
       it("falls back to the view's directory when that one is gone", function()
-        package.loaded["claudecode.agents.model"].row = function(id)
+        package.loaded["claude_agents.agents.model"].row = function(id)
           return { session_id = id, title = "First", cwd = "/moved/away" }
         end
         open_view()
@@ -1204,12 +1204,12 @@ describe("agents_view", function()
     describe("after deleting the selected session", function()
       ---Delete rows the way `dd` does, from the sessions pane, answering yes.
       local function delete_rows(first, last)
-        package.loaded["claudecode.agents.confirm"] = {
+        package.loaded["claude_agents.agents.confirm"] = {
           ask = function(_, cb)
             cb(true)
           end,
         }
-        require("claudecode.agents.model").delete_sessions = function(ids)
+        require("claude_agents.agents.model").delete_sessions = function(ids)
           local gone = {}
           for _, id in ipairs(ids) do
             gone[id] = true
@@ -1225,7 +1225,7 @@ describe("agents_view", function()
         end
         vim.api.nvim_set_current_win(agents_view._state().wins.sessions)
         agents_view.delete_range(first, last)
-        package.loaded["claudecode.agents.confirm"] = nil
+        package.loaded["claude_agents.agents.confirm"] = nil
       end
 
       it("selects the session that took its place, rather than offering the deleted one", function()
@@ -1285,7 +1285,7 @@ describe("agents_view", function()
       -- transcript, so for the first few seconds it is in no listing. The cursor
       -- (and with it `cursorline`) stayed on the previously selected session when
       -- the row finally turned up — it only caught up when the list was cycled.
-      local render = require("claudecode.agents.render")
+      local render = require("claude_agents.agents.render")
       render.sessions = function(buf, drawn)
         local lines = {}
         for _, row in ipairs(drawn) do
@@ -1344,11 +1344,11 @@ describe("agents_view", function()
     it("names the worktree a stopped session works in, and its branch", function()
       -- The row has room for the mark alone; this screen is where a session is
       -- read before it is started again, and starting it goes back to that checkout.
-      package.loaded["claudecode.agents.model"].worktree_of = function(id)
+      package.loaded["claude_agents.agents.model"].worktree_of = function(id)
         return id == "bbb" and { name = "wt1", path = "/proj/.claude/worktrees/wt1", branch = "worktree-wt1" } or nil
       end
       open_view()
-      local mark = require("claudecode.agents.render").WORKTREE_MARK
+      local mark = require("claude_agents.agents.render").WORKTREE_MARK
       expect(center_lines():find(mark, 1, true)).to_be(nil)
 
       agents_view.cycle_session(1)
@@ -1454,7 +1454,7 @@ describe("agents_view", function()
         [4] = { path = "/proj/c.lua" },
       }
 
-      package.loaded["claudecode.agents.model"] = {
+      package.loaded["claude_agents.agents.model"] = {
         setup = function() end,
         on_change = function() end,
         attach = function() end,
@@ -1493,7 +1493,7 @@ describe("agents_view", function()
         refresh_git = function() end,
         set_armed = function() end,
       }
-      package.loaded["claudecode.agents.file_view"] = {
+      package.loaded["claude_agents.agents.file_view"] = {
         open = function(opts, done)
           opened[#opened + 1] = opts.path
           answer(opts, done)
@@ -1504,8 +1504,8 @@ describe("agents_view", function()
         end,
       }
 
-      package.loaded["claudecode.agents_view"] = nil
-      agents_view = require("claudecode.agents_view")
+      package.loaded["claude_agents.agents_view"] = nil
+      agents_view = require("claude_agents.agents_view")
       agents_view.setup(base_config({
         enabled = true,
         -- Spelled out because `setup` takes the config it is given: a bare
@@ -1514,7 +1514,7 @@ describe("agents_view", function()
       }))
       expect(agents_view.open()).to_be_true()
 
-      render = require("claudecode.agents.render")
+      render = require("claude_agents.agents.render")
       render.payload_at = function(_, lnum)
         return payloads[lnum]
       end
@@ -1530,9 +1530,9 @@ describe("agents_view", function()
     after_each(function()
       agents_view.close()
       for _, name in ipairs({ "model", "file_view", "render" }) do
-        package.loaded["claudecode.agents." .. name] = nil
+        package.loaded["claude_agents.agents." .. name] = nil
       end
-      package.loaded["claudecode.agents_view"] = nil
+      package.loaded["claude_agents.agents_view"] = nil
     end)
 
     it("opens the row under the cursor", function()
@@ -1565,7 +1565,7 @@ describe("agents_view", function()
       -- The gap between the two is what leaked held keypresses to the pane, where
       -- they cycled the *session*: `file_view.open` is asynchronous, so focus sat
       -- outside any float for as long as the next one took to build.
-      local float = require("claudecode.agents.float")
+      local float = require("claude_agents.agents.float")
       agents_view.open_under_cursor()
       local before = float.count()
       press("<C-n>")
@@ -1610,7 +1610,7 @@ describe("agents_view", function()
     describe("a row that is a tool call", function()
       before_each(function()
         payloads[3] = { kind = "tool", tool = "Bash", tool_id = "toolu_3", label = "run it", status = "done" }
-        package.loaded["claudecode.agents.tool_view"] = {
+        package.loaded["claude_agents.agents.tool_view"] = {
           open = function(opts, done)
             opened[#opened + 1] = "TOOL:" .. tostring(opts.tool_id)
             answer(opts, done)
@@ -1619,7 +1619,7 @@ describe("agents_view", function()
       end)
 
       after_each(function()
-        package.loaded["claudecode.agents.tool_view"] = nil
+        package.loaded["claude_agents.agents.tool_view"] = nil
       end)
 
       it("opens the call rather than a file", function()
@@ -1648,7 +1648,7 @@ describe("agents_view", function()
 
       it("says so rather than opening nothing when asked for a file", function()
         local warned = {}
-        local logger = require("claudecode.logger")
+        local logger = require("claude_agents.logger")
         local real = logger.warn
         logger.warn = function(_, message)
           warned[#warned + 1] = message
@@ -1699,7 +1699,7 @@ describe("agents_view", function()
       tasks = { task("s1"), task("s3") }
       selected, kept, opened = "aaa", nil, {}
 
-      package.loaded["claudecode.agents.model"] = {
+      package.loaded["claude_agents.agents.model"] = {
         setup = function() end,
         on_change = function() end,
         attach = function() end,
@@ -1745,7 +1745,7 @@ describe("agents_view", function()
         refresh_git = function() end,
         set_armed = function() end,
       }
-      package.loaded["claudecode.agents.tool_view"] = {
+      package.loaded["claude_agents.agents.tool_view"] = {
         open = function(opts, done)
           opened[#opened + 1] = opts.tool_id
           local win = opts.reuse
@@ -1758,14 +1758,14 @@ describe("agents_view", function()
         end,
       }
 
-      package.loaded["claudecode.agents_view"] = nil
-      agents_view = require("claudecode.agents_view")
+      package.loaded["claude_agents.agents_view"] = nil
+      agents_view = require("claude_agents.agents_view")
       agents_view.setup(base_config({
         enabled = true,
         keymaps = { next_session = "<C-n>", prev_session = "<C-p>" },
       }))
       expect(agents_view.open()).to_be_true()
-      render = require("claudecode.agents.render")
+      render = require("claude_agents.agents.render")
       -- The first paint for a session places nothing; rows are held from then on.
       agents_view.redraw()
     end)
@@ -1773,9 +1773,9 @@ describe("agents_view", function()
     after_each(function()
       agents_view.close()
       for _, name in ipairs({ "model", "tool_view" }) do
-        package.loaded["claudecode.agents." .. name] = nil
+        package.loaded["claude_agents.agents." .. name] = nil
       end
-      package.loaded["claudecode.agents_view"] = nil
+      package.loaded["claude_agents.agents_view"] = nil
     end)
 
     it("keeps an Activity row under the cursor as newer events land above it", function()
@@ -1860,7 +1860,7 @@ describe("agents_view", function()
       handle:close()
 
       payload = { path = tmp, line = 2 }
-      render = require("claudecode.agents.render")
+      render = require("claude_agents.agents.render")
       render.payload_at = function()
         return payload
       end
@@ -1869,7 +1869,7 @@ describe("agents_view", function()
 
     after_each(function()
       os.remove(tmp)
-      package.loaded["claudecode.agents.render"] = nil
+      package.loaded["claude_agents.agents.render"] = nil
     end)
 
     it("opens the file itself in a new tab", function()
@@ -1898,8 +1898,8 @@ describe("agents_view", function()
     ---Through `config.apply`, since the help lists whatever `keymaps` resolves
     ---to and a bare table has no defaults to resolve.
     local function setup_with(agents)
-      package.loaded["claudecode.config"] = nil
-      local applied = require("claudecode.config").apply({ agents = agents })
+      package.loaded["claude_agents.config"] = nil
+      local applied = require("claude_agents.config").apply({ agents = agents })
       agents_view.setup(applied)
     end
 
@@ -2029,19 +2029,19 @@ describe("agents_view", function()
 
       -- The action reads the rows the range covers and asks before doing anything,
       -- so both are stubbed: the question is what it decides, not how it draws.
-      package.loaded["claudecode.agents.render"] = {
+      package.loaded["claude_agents.agents.render"] = {
         setup = function() end,
         payload_at = function(_, lnum)
           local id = rows[lnum]
           return id and { session_id = id } or nil
         end,
       }
-      package.loaded["claudecode.agents.registry"] = {
+      package.loaded["claude_agents.agents.registry"] = {
         is_live = function(id)
           return live[id] == true
         end,
       }
-      package.loaded["claudecode.agents.model"] = {
+      package.loaded["claude_agents.agents.model"] = {
         setup = function() end,
         on_change = function() end,
         row = function(id)
@@ -2059,23 +2059,23 @@ describe("agents_view", function()
           return ids, {}
         end,
       }
-      package.loaded["claudecode.agents.confirm"] = {
+      package.loaded["claude_agents.agents.confirm"] = {
         ask = function(opts, cb)
           asked[#asked + 1] = opts
           cb(asked.answer ~= false)
         end,
       }
 
-      package.loaded["claudecode.agents_view"] = nil
-      agents_view = require("claudecode.agents_view")
+      package.loaded["claude_agents.agents_view"] = nil
+      agents_view = require("claude_agents.agents_view")
       agents_view.setup(base_config({ enabled = true }))
     end)
 
     after_each(function()
       for _, name in ipairs({ "render", "registry", "model", "confirm" }) do
-        package.loaded["claudecode.agents." .. name] = nil
+        package.loaded["claude_agents.agents." .. name] = nil
       end
-      package.loaded["claudecode.agents_view"] = nil
+      package.loaded["claude_agents.agents_view"] = nil
     end)
 
     it("asks first, then deletes", function()
@@ -2169,14 +2169,14 @@ describe("agents_view", function()
       rows = { "aaa", "bbb" }
       selected, existing = "bbb", nil
 
-      package.loaded["claudecode.agents.render"] = {
+      package.loaded["claude_agents.agents.render"] = {
         setup = function() end,
         payload_at = function(_, lnum)
           local id = rows[lnum]
           return id and { session_id = id } or nil
         end,
       }
-      package.loaded["claudecode.agents.model"] = {
+      package.loaded["claude_agents.agents.model"] = {
         setup = function() end,
         on_change = function() end,
         rows = function()
@@ -2199,7 +2199,7 @@ describe("agents_view", function()
         end,
       }
       -- Answers at once with whatever the test left in `asked.answer`.
-      package.loaded["claudecode.agents.input"] = {
+      package.loaded["claude_agents.agents.input"] = {
         ask = function(opts, cb)
           asked[#asked + 1] = opts
           cb(asked.answer)
@@ -2210,17 +2210,17 @@ describe("agents_view", function()
         notified[#notified + 1] = message
       end
 
-      package.loaded["claudecode.agents_view"] = nil
-      agents_view = require("claudecode.agents_view")
+      package.loaded["claude_agents.agents_view"] = nil
+      agents_view = require("claude_agents.agents_view")
       agents_view.setup(base_config({ enabled = true }))
     end)
 
     after_each(function()
       vim.notify = notify
       for _, name in ipairs({ "render", "model", "input" }) do
-        package.loaded["claudecode.agents." .. name] = nil
+        package.loaded["claude_agents.agents." .. name] = nil
       end
-      package.loaded["claudecode.agents_view"] = nil
+      package.loaded["claude_agents.agents_view"] = nil
     end)
 
     it("flags the row under the cursor, not the selection", function()
@@ -2314,7 +2314,7 @@ describe("agents_view", function()
       rekeyed, changed, selected, refreshed = {}, {}, {}, 0
       given, named = { nil, false }, {}
 
-      package.loaded["claudecode.agents.registry"] = {
+      package.loaded["claude_agents.agents.registry"] = {
         -- The launch key is what stays put; the conversation is what moves.
         rekey = function(agent_key, session_id, opts)
           rekeyed[#rekeyed + 1] = { agent_key, session_id, opts and opts.reclaim }
@@ -2330,7 +2330,7 @@ describe("agents_view", function()
           return {}
         end,
       }
-      package.loaded["claudecode.agents.model"] = {
+      package.loaded["claude_agents.agents.model"] = {
         setup = function() end,
         on_change = function() end,
         note = function() end,
@@ -2350,15 +2350,15 @@ describe("agents_view", function()
         set_armed = function() end,
       }
 
-      package.loaded["claudecode.agents_view"] = nil
-      agents_view = require("claudecode.agents_view")
+      package.loaded["claude_agents.agents_view"] = nil
+      agents_view = require("claude_agents.agents_view")
       agents_view.setup(base_config({ enabled = true }))
     end)
 
     after_each(function()
-      package.loaded["claudecode.agents.registry"] = nil
-      package.loaded["claudecode.agents.model"] = nil
-      package.loaded["claudecode.agents_view"] = nil
+      package.loaded["claude_agents.agents.registry"] = nil
+      package.loaded["claude_agents.agents.model"] = nil
+      package.loaded["claude_agents.agents_view"] = nil
     end)
 
     it("moves the agent onto the conversation the hook reports", function()
@@ -2400,7 +2400,7 @@ describe("agents_view", function()
 
       it("tells it before the list is rebuilt, which is where the name is read", function()
         given = { "renamed-here", true }
-        package.loaded["claudecode.agents.model"].refresh_list = function()
+        package.loaded["claude_agents.agents.model"].refresh_list = function()
           refreshed = #named
         end
         cleared()

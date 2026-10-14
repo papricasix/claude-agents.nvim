@@ -26,8 +26,8 @@ describe("Diff keep_terminal_focus with floating terminal", function()
     vim._current_tabpage = 1
 
     -- Reload diff module cleanly
-    package.loaded["claudecode.diff"] = nil
-    diff = require("claudecode.diff")
+    package.loaded["claude_agents.diff"] = nil
+    diff = require("claude_agents.diff")
 
     -- Create a normal, non-floating editor window
     local editor_buf = vim.api.nvim_create_buf(true, false)
@@ -59,7 +59,7 @@ describe("Diff keep_terminal_focus with floating terminal", function()
     })
 
     -- Stub terminal provider with a valid terminal buffer
-    package.loaded["claudecode.terminal"] = {
+    package.loaded["claude_agents.terminal"] = {
       get_active_terminal_bufnr = function()
         return terminal_buf
       end,
@@ -79,7 +79,7 @@ describe("Diff keep_terminal_focus with floating terminal", function()
     os.remove(test_old_file)
     os.remove(test_new_file)
 
-    package.loaded["claudecode.terminal"] = nil
+    package.loaded["claude_agents.terminal"] = nil
 
     if diff then
       diff._cleanup_all_active_diffs("test_teardown")

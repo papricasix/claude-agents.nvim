@@ -8,12 +8,12 @@ describe("terminal no_proxy handling", function()
   local terminal
 
   before_each(function()
-    package.loaded["claudecode.terminal"] = nil
-    terminal = require("claudecode.terminal")
+    package.loaded["claude_agents.terminal"] = nil
+    terminal = require("claude_agents.terminal")
   end)
 
   after_each(function()
-    package.loaded["claudecode.terminal"] = nil
+    package.loaded["claude_agents.terminal"] = nil
   end)
 
   local function entries(value)

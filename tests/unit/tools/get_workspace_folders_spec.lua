@@ -4,8 +4,8 @@ describe("Tool: get_workspace_folders", function()
   local get_workspace_folders_handler
 
   before_each(function()
-    package.loaded["claudecode.tools.get_workspace_folders"] = nil
-    get_workspace_folders_handler = require("claudecode.tools.get_workspace_folders").handler
+    package.loaded["claude_agents.tools.get_workspace_folders"] = nil
+    get_workspace_folders_handler = require("claude_agents.tools.get_workspace_folders").handler
 
     _G.vim = _G.vim or {}
     _G.vim.fn = _G.vim.fn or {}
@@ -33,7 +33,7 @@ describe("Tool: get_workspace_folders", function()
   end)
 
   after_each(function()
-    package.loaded["claudecode.tools.get_workspace_folders"] = nil
+    package.loaded["claude_agents.tools.get_workspace_folders"] = nil
     _G.vim.fn.getcwd = nil
     _G.vim.fn.fnamemodify = nil
     _G.vim.json.encode = nil

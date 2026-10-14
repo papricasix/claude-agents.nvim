@@ -61,7 +61,7 @@ if not should_load and os.getenv("CLAUDECODE_INTEGRATION_TEST") == "true" then
 end
 
 if not vim.g.loaded_claudecode and should_load then
-  require("claudecode").setup({
+  require("claude_agents").setup({
     auto_start = false,
     log_level = "trace", -- More verbose for tests
   })
@@ -75,9 +75,9 @@ _G.claudecode_test_cleanup = function()
   end
 
   -- Stop claudecode if running
-  local ok, claudecode = pcall(require, "claudecode")
+  local ok, claudecode = pcall(require, "claude_agents")
   if ok and claudecode.state and claudecode.state.server then
-    local selection_ok, selection = pcall(require, "claudecode.selection")
+    local selection_ok, selection = pcall(require, "claude_agents.selection")
     if selection_ok and selection.disable then
       selection.disable()
     end

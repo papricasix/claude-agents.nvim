@@ -136,13 +136,13 @@ describe("ClaudeCode command arguments integration", function()
 
     original_require = _G.require
     _G.require = function(mod)
-      if mod == "claudecode.server.init" then
+      if mod == "claude_agents.server.init" then
         return mock_server
-      elseif mod == "claudecode.lockfile" then
+      elseif mod == "claude_agents.lockfile" then
         return mock_lockfile
-      elseif mod == "claudecode.selection" then
+      elseif mod == "claude_agents.selection" then
         return mock_selection
-      elseif mod == "claudecode.config" then
+      elseif mod == "claude_agents.config" then
         return {
           apply = function(opts)
             return vim.tbl_deep_extend("force", {
@@ -160,11 +160,11 @@ describe("ClaudeCode command arguments integration", function()
             }, opts or {})
           end,
         }
-      elseif mod == "claudecode.diff" then
+      elseif mod == "claude_agents.diff" then
         return {
           setup = function() end,
         }
-      elseif mod == "claudecode.logger" then
+      elseif mod == "claude_agents.logger" then
         return {
           setup = function() end,
           debug = function() end,
@@ -177,11 +177,11 @@ describe("ClaudeCode command arguments integration", function()
     end
 
     -- Clear package cache to ensure fresh requires
-    package.loaded["claudecode"] = nil
-    package.loaded["claudecode.terminal"] = nil
-    package.loaded["claudecode.terminal.snacks"] = nil
-    package.loaded["claudecode.terminal.native"] = nil
-    claudecode = require("claudecode")
+    package.loaded["claude_agents"] = nil
+    package.loaded["claude_agents.terminal"] = nil
+    package.loaded["claude_agents.terminal.snacks"] = nil
+    package.loaded["claude_agents.terminal.native"] = nil
+    claudecode = require("claude_agents")
   end)
 
   after_each(function()
@@ -193,7 +193,7 @@ describe("ClaudeCode command arguments integration", function()
       end
 
       -- Stop the server and selection tracking explicitly
-      local selection_ok, selection = pcall(require, "claudecode.selection")
+      local selection_ok, selection = pcall(require, "claude_agents.selection")
       if selection_ok and selection.disable then
         selection.disable()
       end
@@ -204,10 +204,10 @@ describe("ClaudeCode command arguments integration", function()
     end
 
     _G.require = original_require
-    package.loaded["claudecode"] = nil
-    package.loaded["claudecode.terminal"] = nil
-    package.loaded["claudecode.terminal.snacks"] = nil
-    package.loaded["claudecode.terminal.native"] = nil
+    package.loaded["claude_agents"] = nil
+    package.loaded["claude_agents.terminal"] = nil
+    package.loaded["claude_agents.terminal.snacks"] = nil
+    package.loaded["claude_agents.terminal.native"] = nil
   end)
 
   describe("with native terminal provider", function()

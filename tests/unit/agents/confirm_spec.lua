@@ -36,8 +36,8 @@ describe("agents.confirm", function()
       vim._mock.reset()
     end
     package.loaded["snacks.win"] = nil
-    package.loaded["claudecode.agents.confirm"] = nil
-    confirm = require("claudecode.agents.confirm")
+    package.loaded["claude_agents.agents.confirm"] = nil
+    confirm = require("claude_agents.agents.confirm")
   end)
 
   after_each(function()

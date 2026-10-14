@@ -65,7 +65,7 @@ describe("ClaudeCodeAdd command", function()
     vim.notify = spy.new(function() end)
 
     _G.require = function(mod)
-      if mod == "claudecode.utils" then
+      if mod == "claude_agents.utils" then
         -- Tilde-only expansion, which is what a plain path now goes through. The
         -- point of the real one is that it leaves a literal `$` alone.
         return {
@@ -76,25 +76,25 @@ describe("ClaudeCodeAdd command", function()
             return path
           end,
         }
-      elseif mod == "claudecode.logger" then
+      elseif mod == "claude_agents.logger" then
         return mock_logger
-      elseif mod == "claudecode.config" then
+      elseif mod == "claude_agents.config" then
         return {
           apply = function(opts)
             return opts or {}
           end,
         }
-      elseif mod == "claudecode.diff" then
+      elseif mod == "claude_agents.diff" then
         return {
           setup = function() end,
         }
-      elseif mod == "claudecode.server.init" then
+      elseif mod == "claude_agents.server.init" then
         return {
           get_status = function()
             return { running = true, client_count = 1 }
           end,
         }
-      elseif mod == "claudecode.terminal" then
+      elseif mod == "claude_agents.terminal" then
         return {
           setup = function() end,
           open = spy.new(function() end),
@@ -105,7 +105,7 @@ describe("ClaudeCodeAdd command", function()
           end,
           simple_toggle = spy.new(function() end),
         }
-      elseif mod == "claudecode.visual_commands" then
+      elseif mod == "claude_agents.visual_commands" then
         return {
           create_visual_command_wrapper = function(normal_handler, visual_handler)
             return normal_handler
@@ -121,14 +121,14 @@ describe("ClaudeCodeAdd command", function()
     setup_mocks()
 
     -- Clear package cache to ensure fresh require
-    package.loaded["claudecode"] = nil
-    package.loaded["claudecode.config"] = nil
-    package.loaded["claudecode.logger"] = nil
-    package.loaded["claudecode.diff"] = nil
-    package.loaded["claudecode.visual_commands"] = nil
-    package.loaded["claudecode.terminal"] = nil
+    package.loaded["claude_agents"] = nil
+    package.loaded["claude_agents.config"] = nil
+    package.loaded["claude_agents.logger"] = nil
+    package.loaded["claude_agents.diff"] = nil
+    package.loaded["claude_agents.visual_commands"] = nil
+    package.loaded["claude_agents.terminal"] = nil
 
-    claudecode = require("claudecode")
+    claudecode = require("claude_agents")
 
     -- Set up the server instance for the current tab (tabpage 1 in mock)
     claudecode.register_tab_instance(1, { server = mock_server, port = 12345, mention_queue = {} })
@@ -136,7 +136,7 @@ describe("ClaudeCodeAdd command", function()
 
   after_each(function()
     _G.require = saved_require
-    package.loaded["claudecode"] = nil
+    package.loaded["claude_agents"] = nil
   end)
 
   describe("command registration", function()

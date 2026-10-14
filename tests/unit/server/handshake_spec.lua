@@ -4,11 +4,11 @@ describe("WebSocket handshake authentication", function()
   local handshake
 
   before_each(function()
-    handshake = require("claudecode.server.handshake")
+    handshake = require("claude_agents.server.handshake")
   end)
 
   after_each(function()
-    package.loaded["claudecode.server.handshake"] = nil
+    package.loaded["claude_agents.server.handshake"] = nil
   end)
 
   describe("validate_upgrade_request with authentication", function()
@@ -278,7 +278,7 @@ describe("WebSocket handshake authentication", function()
   end)
 
   describe("constant_time_compare", function()
-    local utils = require("claudecode.server.utils")
+    local utils = require("claude_agents.server.utils")
 
     it("returns true for identical strings", function()
       assert.is_true(utils.constant_time_compare("abcdef0123456789", "abcdef0123456789"))

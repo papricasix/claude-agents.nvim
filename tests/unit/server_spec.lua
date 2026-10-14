@@ -8,10 +8,10 @@ describe("WebSocket Server", function()
   -- Set up before each test
   local function setup()
     -- Reset loaded modules
-    package.loaded["claudecode.server.init"] = nil -- Also update package.loaded key
+    package.loaded["claude_agents.server.init"] = nil -- Also update package.loaded key
 
     -- Load the module under test
-    server = require("claudecode.server.init")
+    server = require("claude_agents.server.init")
   end
 
   -- Clean up after each test
@@ -240,7 +240,7 @@ describe("WebSocket Server", function()
       local auth_token = "550e8400-e29b-41d4-a716-446655440000"
 
       -- Mock the TCP server module to verify auth token is passed
-      local tcp_server = require("claudecode.server.tcp")
+      local tcp_server = require("claude_agents.server.tcp")
       local original_create_server = tcp_server.create_server
       local captured_auth_token = nil
 

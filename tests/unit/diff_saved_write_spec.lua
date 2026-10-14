@@ -17,7 +17,7 @@ describe("Accepted diff waiting for Claude's write", function()
   -- nothing leaks into the next spec file in this busted process.
   local saved_modules = {}
   local real_cmd, real_buf_call
-  local MODULES = { "claudecode.diff", "claudecode.logger", "claudecode.terminal" }
+  local MODULES = { "claude_agents.diff", "claude_agents.logger", "claude_agents.terminal" }
 
   local function write_file(text)
     local f = assert(io.open(path, "wb"))
@@ -91,20 +91,20 @@ describe("Accepted diff waiting for Claude's write", function()
     vim._current_window = WIN
     vim._next_winid = 1001
 
-    package.loaded["claudecode.logger"] = {
+    package.loaded["claude_agents.logger"] = {
       debug = function() end,
       error = function() end,
       info = function() end,
       warn = function() end,
     }
     -- No Claude terminal on screen, so the teardown moves focus nowhere.
-    package.loaded["claudecode.terminal"] = {
+    package.loaded["claude_agents.terminal"] = {
       get_active_terminal_bufnr = function()
         return nil
       end,
     }
-    package.loaded["claudecode.diff"] = nil
-    diff = require("claudecode.diff")
+    package.loaded["claude_agents.diff"] = nil
+    diff = require("claude_agents.diff")
     diff.setup({ diff_opts = { layout = "vertical", open_in_new_tab = false }, terminal = {} })
 
     clock = 0

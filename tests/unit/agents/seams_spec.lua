@@ -12,8 +12,8 @@ describe("agents seams", function()
     local status
 
     before_each(function()
-      package.loaded["claudecode.status"] = nil
-      status = require("claudecode.status")
+      package.loaded["claude_agents.status"] = nil
+      status = require("claude_agents.status")
     end)
 
     local function classify(event, finished)
@@ -86,8 +86,8 @@ describe("agents seams", function()
     local status
 
     before_each(function()
-      package.loaded["claudecode.status"] = nil
-      status = require("claudecode.status")
+      package.loaded["claude_agents.status"] = nil
+      status = require("claude_agents.status")
     end)
 
     ---Feed events through `advance` the way a caller keeps its record.
@@ -151,8 +151,8 @@ describe("agents seams", function()
     end
 
     before_each(function()
-      package.loaded["claudecode.session_state"] = nil
-      session_state = require("claudecode.session_state")
+      package.loaded["claude_agents.session_state"] = nil
+      session_state = require("claude_agents.session_state")
       session_state.setup(base_config("global"))
       session_state.reset()
       vim._tabs[1] = true
@@ -209,8 +209,8 @@ describe("agents seams", function()
     local terminal
 
     before_each(function()
-      package.loaded["claudecode.terminal"] = nil
-      terminal = require("claudecode.terminal")
+      package.loaded["claude_agents.terminal"] = nil
+      terminal = require("claude_agents.terminal")
       terminal.setup({ provider = "native" }, "claude", {})
     end)
 
@@ -258,8 +258,8 @@ describe("agents seams", function()
     local diff
 
     before_each(function()
-      package.loaded["claudecode.diff"] = nil
-      diff = require("claudecode.diff")
+      package.loaded["claude_agents.diff"] = nil
+      diff = require("claude_agents.diff")
     end)
 
     it("reports a tab that owns its layout", function()
@@ -284,13 +284,13 @@ describe("agents seams", function()
       vim.api.nvim_tabpage_set_var(5, "claudecode_layout_owner", {
         forbids_split = true,
         host = "float",
-        float_module = "claudecode.agents.float",
+        float_module = "claude_agents.agents.float",
         origin = 6,
       })
       local owner = diff._layout_owner(5)
       expect(owner).not_to_be_nil()
       expect(owner.host).to_be("float")
-      expect(owner.float_module).to_be("claudecode.agents.float")
+      expect(owner.float_module).to_be("claude_agents.agents.float")
       expect(diff._redirect_tab_for_diff(5)).to_be(6)
     end)
 

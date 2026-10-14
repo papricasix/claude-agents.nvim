@@ -52,8 +52,8 @@ describe("agents.subagent_view", function()
       vim._mock.reset()
     end
     vim.json.decode = _G.json_decode
-    package.loaded["claudecode.agents.subagent_view"] = nil
-    view = require("claudecode.agents.subagent_view")
+    package.loaded["claude_agents.agents.subagent_view"] = nil
+    view = require("claude_agents.agents.subagent_view")
   end)
 
   describe("folding", function()
@@ -273,13 +273,13 @@ describe("agents.subagent_view", function()
       expect(calls[bash_line].shell).to_be(shell)
 
       local opened
-      package.loaded["claudecode.agents.shell_view"] = {
+      package.loaded["claude_agents.agents.shell_view"] = {
         open = function(opts)
           opened = opts
         end,
       }
       view.open_call("sess", { path = "/agent.jsonl", opts = {} }, calls[bash_line])
-      package.loaded["claudecode.agents.shell_view"] = nil
+      package.loaded["claude_agents.agents.shell_view"] = nil
       expect(opened.task_id).to_be("b3")
       expect(opened.tool_id).to_be("t3")
       expect(opened.transcript).to_be("/t")
@@ -318,12 +318,12 @@ describe("agents.subagent_view", function()
 
     it("opens a call the way the Activity pane opens its row", function()
       local opened = {}
-      package.loaded["claudecode.agents.file_view"] = {
+      package.loaded["claude_agents.agents.file_view"] = {
         open = function(opts)
           opened[#opened + 1] = { kind = "file", opts = opts }
         end,
       }
-      package.loaded["claudecode.agents.tool_view"] = {
+      package.loaded["claude_agents.agents.tool_view"] = {
         open = function(opts)
           opened[#opened + 1] = { kind = "tool", opts = opts }
         end,
@@ -336,8 +336,8 @@ describe("agents.subagent_view", function()
       )
       view.open_call("s1", run, { tool_id = "t2", tool = "Bash", label = "Fail", status = "error" })
       view.open_call("s1", run, { tool_id = "t3", tool = "Edit", path = "/proj/b.lua", status = "done" })
-      package.loaded["claudecode.agents.file_view"] = nil
-      package.loaded["claudecode.agents.tool_view"] = nil
+      package.loaded["claude_agents.agents.file_view"] = nil
+      package.loaded["claude_agents.agents.tool_view"] = nil
 
       expect(opened[1].kind).to_be("file")
       expect(opened[1].opts.transcript).to_be(run.path)

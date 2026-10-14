@@ -4,8 +4,8 @@
 -- with no Neovim at all; these rules are about display width and need one.
 require("tests.busted_setup")
 
-describe("claudecode.utils.path_title", function()
-  local utils = require("claudecode.utils")
+describe("claude_agents.utils.path_title", function()
+  local utils = require("claude_agents.utils")
 
   it("names a file by where it is, not by its tail alone", function()
     expect(utils.path_title("/proj/lua/agents/init.lua", "/proj", nil, 60)).to_be("lua/agents/init.lua")
@@ -24,14 +24,14 @@ describe("claudecode.utils.path_title", function()
   it("cuts from the inside so the filename survives a narrow border", function()
     -- Neovim cuts a title that does not fit at its right edge, which is the one
     -- part the title exists to show.
-    local title = utils.path_title("/proj/lua/claudecode/agents/deep/file_view.lua", "/proj", nil, 22)
+    local title = utils.path_title("/proj/lua/claude_agents/agents/deep/file_view.lua", "/proj", nil, 22)
     expect(title:find("…", 1, true) ~= nil).to_be_true()
     expect(title:sub(-13)).to_be("file_view.lua")
     expect(vim.fn.strdisplaywidth(title) <= 22).to_be_true()
   end)
 
   it("makes room for the note before fitting the path", function()
-    local title = utils.path_title("/proj/lua/claudecode/agents/deep/file_view.lua", "/proj", "(read)", 22)
+    local title = utils.path_title("/proj/lua/claude_agents/agents/deep/file_view.lua", "/proj", "(read)", 22)
     expect(title:sub(-8)).to_be("  (read)")
     expect(vim.fn.strdisplaywidth(title) <= 22).to_be_true()
   end)

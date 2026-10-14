@@ -33,7 +33,7 @@ return function()
   end
 
   -- Load the plugin under test
-  package.loaded["claudecode"] = nil
+  package.loaded["claude_agents"] = nil
 
   -- Return true to indicate setup was successful
   return true

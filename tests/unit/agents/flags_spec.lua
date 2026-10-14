@@ -20,8 +20,8 @@ describe("agents.flags", function()
     store, writes, reads, unreadable = nil, 0, 0, false
     -- The mock's decoder is a stub; the store is read back through a real one.
     vim.json.decode = _G.json_decode
-    package.loaded["claudecode.agents.flags"] = nil
-    flags = require("claudecode.agents.flags")
+    package.loaded["claude_agents.agents.flags"] = nil
+    flags = require("claude_agents.agents.flags")
     flags.reset()
     flags._io = {
       read = function()
@@ -213,8 +213,8 @@ describe("agents.flags", function()
       vim.in_fast_event = function()
         return true
       end
-      package.loaded["claudecode.agents.flags"] = nil
-      local fresh = require("claudecode.agents.flags")
+      package.loaded["claude_agents.agents.flags"] = nil
+      local fresh = require("claude_agents.agents.flags")
       fresh._io = flags._io
 
       local ok, cleared = pcall(fresh.settle, "a", 500)
@@ -286,8 +286,8 @@ describe("agents.flags", function()
       }
 
       vim.loop, vim.uv = fake, fake
-      package.loaded["claudecode.agents.flags"] = nil
-      local real = require("claudecode.agents.flags") -- resolves its path now, as on the main loop
+      package.loaded["claude_agents.agents.flags"] = nil
+      local real = require("claude_agents.agents.flags") -- resolves its path now, as on the main loop
       local path = real.path()
       vim.fn = setmetatable({}, {
         __index = function(_, name)
@@ -305,7 +305,7 @@ describe("agents.flags", function()
       end)
 
       vim.fn, vim.loop, vim.uv = real_fn, real_loop, real_uv
-      package.loaded["claudecode.agents.flags"] = nil
+      package.loaded["claude_agents.agents.flags"] = nil
       assert.is_true(ok, tostring(err))
 
       -- Written through a temporary file of this process's own, then renamed.

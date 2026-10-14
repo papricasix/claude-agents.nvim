@@ -30,7 +30,7 @@ local function test_opendiff_directly()
     .. "\n\n## License\n\nThis project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.\n"
 
   -- Load the openDiff tool
-  local success, open_diff_tool = pcall(require, "claudecode.tools.open_diff")
+  local success, open_diff_tool = pcall(require, "claude_agents.tools.open_diff")
   if not success then
     print("❌ Failed to load openDiff tool:", open_diff_tool)
     return

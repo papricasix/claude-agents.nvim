@@ -1,0 +1,1899 @@
+---@brief [[
+--- Claude Code Neovim Integration
+--- This plugin integrates Claude Code CLI with Neovim, enabling
+--- seamless AI-assisted coding experiences directly in Neovim.
+---@brief ]]
+
+---@module 'claude_agents'
+local M = {}
+
+local logger = require("claude_agents.logger")
+
+--- Current plugin version
+---@type ClaudeCodeVersion
+M.version = {
+  major = 1,
+  minor = 0,
+  patch = 0,
+  prerelease = nil,
+  string = function(self)
+    local version = string.format("%d.%d.%d", self.major, self.minor, self.patch)
+    if self.prerelease then
+      version = version .. "-" .. self.prerelease
+    end
+    return version
+  end,
+}
+
+-- Global config state (shared across all tab instances)
+---@type ClaudeCodeState
+M.state = {
+  config = require("claude_agents.config").defaults,
+  initialized = false,
+}
+
+-- Instance registry. Key = opaque instance id (string), because a tabpage no
+-- longer implies a single Claude: agents mode runs several in one tab, each with
+-- its own server, port, auth token and lock file. `tab_instances` maps a tab back
+-- to the ids living in it, and `M.tab_instance` singles out the tab's *own*
+-- Claude — the one every pre-agents code path means when it says "this tab's".
+--
+-- Each entry: { id, kind, tab, session_id, server, port, auth_token,
+--               mention_queue, mention_timer, connection_timer }
+M.instances = {}
+
+--- [tabpage handle] = instance id of that tab's own Claude.
+M.tab_instance = {}
+
+---@param tab_id integer
+---@return string
+local function tab_instance_id(tab_id)
+  return "tab:" .. tostring(tab_id)
+end
+
+---@param session_id string
+---@return string
+local function agent_instance_id(session_id)
+  return "agent:" .. session_id
+end
+
+---Return the instance for a specific (or current) tabpage. Returns nil if not started.
+---@param tab_id number|nil
+---@return table|nil
+local function get_instance(tab_id)
+  tab_id = tab_id or vim.api.nvim_get_current_tabpage()
+  local id = M.tab_instance[tab_id]
+  return id and M.instances[id] or nil
+end
+
+---Public accessor used by other modules (terminal.lua, selection.lua).
+---@param tab_id number|nil
+---@return table instance (may have server=nil if not running for this tab)
+function M.get_instance(tab_id)
+  return get_instance(tab_id) or { server = nil, port = nil, auth_token = nil }
+end
+
+---Every instance living in a tab: its own Claude plus any agents.
+---@param tab_id number
+---@return table[] instances
+function M.instances_in_tab(tab_id)
+  local found = {}
+  for _, inst in pairs(M.instances) do
+    if inst.tab == tab_id then
+      found[#found + 1] = inst
+    end
+  end
+  return found
+end
+
+---The instance serving a given conversation, if one is running.
+---@param session_id string
+---@return table|nil
+function M.instance_for_session(session_id)
+  return M.instances[agent_instance_id(session_id)]
+end
+
+---Register an already-built instance as a tab's own Claude.
+---
+---The registry is keyed by instance id, so an entry has to be filed under that id
+---*and* pointed at from its tab. Callers that assemble an instance themselves
+---(tests, mostly) should go through here rather than writing both tables.
+---@param tab_id integer
+---@param inst table
+---@return table inst
+function M.register_tab_instance(tab_id, inst)
+  inst.id = inst.id or tab_instance_id(tab_id)
+  inst.tab = inst.tab or tab_id
+  inst.kind = inst.kind or "tab"
+  M.instances[inst.id] = inst
+  M.tab_instance[tab_id] = inst.id
+  return inst
+end
+
+---Forget a tab's own Claude without stopping it (the inverse of registering).
+---@param tab_id integer
+function M.unregister_tab_instance(tab_id)
+  local id = M.tab_instance[tab_id]
+  if id then
+    M.instances[id] = nil
+    M.tab_instance[tab_id] = nil
+  end
+end
+
+---Check if Claude Code is connected for a specific instance.
+---@param inst table
+---@return boolean
+local function is_connected(inst)
+  if not inst or not inst.server then
+    return false
+  end
+
+  local status = inst.server.get_status()
+  if not status.running then
+    return false
+  end
+
+  if status.clients and #status.clients > 0 then
+    for _, info in ipairs(status.clients) do
+      if info.handshake_complete == true then
+        return true
+      end
+    end
+    return false
+  else
+    return status.client_count and status.client_count > 0
+  end
+end
+
+---Check if Claude Code is connected to the current tab's WebSocket server.
+---@return boolean connected Whether Claude Code has active connections
+function M.is_claude_connected()
+  return is_connected(get_instance())
+end
+
+---Clear the mention queue and stop any pending timer for a specific instance.
+---@param inst table
+local function clear_mention_queue_for(inst)
+  if not inst then
+    return
+  end
+  if inst.mention_queue and #inst.mention_queue > 0 then
+    logger.debug("queue", "Clearing " .. #inst.mention_queue .. " queued @ mentions")
+  end
+  inst.mention_queue = {}
+
+  if inst.mention_timer then
+    inst.mention_timer:stop()
+    inst.mention_timer:close()
+    inst.mention_timer = nil
+  end
+end
+
+-- Forward declaration
+local process_mention_queue_for_inst
+
+---Process mentions when Claude is connected (debounced mode) for a specific instance.
+---@param inst table
+local function process_connected_mentions_for(inst)
+  if inst.mention_timer then
+    inst.mention_timer:stop()
+    inst.mention_timer:close()
+  end
+
+  local debounce_delay = math.max(10, 50)
+  inst.mention_timer = vim.loop.new_timer()
+
+  local wrapped = vim.schedule_wrap
+      and vim.schedule_wrap(function()
+        process_mention_queue_for_inst(inst, false)
+      end)
+    or function()
+      vim.schedule(function()
+        process_mention_queue_for_inst(inst, false)
+      end)
+    end
+
+  inst.mention_timer:start(debounce_delay, 0, wrapped)
+end
+
+---Start connection timeout timer if not already started for a specific instance.
+---@param inst table
+local function start_connection_timeout_for(inst)
+  if not inst.connection_timer then
+    inst.connection_timer = vim.loop.new_timer()
+    inst.connection_timer:start(M.state.config.connection_timeout, 0, function()
+      vim.schedule(function()
+        if inst.mention_queue and #inst.mention_queue > 0 then
+          logger.error("queue", "Connection timeout - clearing " .. #inst.mention_queue .. " queued @ mentions")
+          clear_mention_queue_for(inst)
+        end
+      end)
+    end)
+  end
+end
+
+---Add @ mention to queue for a specific instance.
+---@param inst table
+---@param file_path string
+---@param start_line number|nil
+---@param end_line number|nil
+local function queue_mention_for(inst, file_path, start_line, end_line)
+  if not inst.mention_queue then
+    inst.mention_queue = {}
+  end
+
+  local mention_data = {
+    file_path = file_path,
+    start_line = start_line,
+    end_line = end_line,
+    timestamp = vim.loop.now(),
+  }
+
+  table.insert(inst.mention_queue, mention_data)
+  logger.debug("queue", "Queued @ mention: " .. file_path .. " (queue size: " .. #inst.mention_queue .. ")")
+
+  if is_connected(inst) then
+    process_connected_mentions_for(inst)
+  else
+    start_connection_timeout_for(inst)
+  end
+end
+
+---Process the mention queue for a specific instance.
+---@param inst table
+---@param from_new_connection boolean|nil
+process_mention_queue_for_inst = function(inst, from_new_connection)
+  if not inst or not inst.mention_queue then
+    return
+  end
+
+  if #inst.mention_queue == 0 then
+    return
+  end
+
+  if not is_connected(inst) then
+    logger.debug("queue", "Claude not ready (no handshake). Keeping ", #inst.mention_queue, " mentions queued")
+
+    if from_new_connection then
+      local retry_delay = math.max(50, math.floor((M.state.config.connection_wait_delay or 200) / 4))
+      vim.defer_fn(function()
+        process_mention_queue_for_inst(inst, true)
+      end, retry_delay)
+    end
+    return
+  end
+
+  local mentions_to_send = vim.deepcopy(inst.mention_queue)
+  inst.mention_queue = {}
+
+  if inst.mention_timer then
+    inst.mention_timer:stop()
+    inst.mention_timer:close()
+    inst.mention_timer = nil
+  end
+
+  if inst.connection_timer then
+    inst.connection_timer:stop()
+    inst.connection_timer:close()
+    inst.connection_timer = nil
+  end
+
+  logger.debug("queue", "Processing " .. #mentions_to_send .. " queued @ mentions")
+
+  local function send_mention_sequential(index)
+    if index > #mentions_to_send then
+      logger.debug("queue", "All queued mentions sent successfully")
+      return
+    end
+
+    local mention = mentions_to_send[index]
+    local current_time = vim.loop.now()
+    if (current_time - mention.timestamp) > M.state.config.queue_timeout then
+      logger.debug("queue", "Skipped expired @ mention: " .. mention.file_path)
+    else
+      local params = {
+        filePath = mention.file_path,
+        lineStart = mention.start_line,
+        lineEnd = mention.end_line,
+      }
+
+      local broadcast_success = inst.server.broadcast("at_mentioned", params)
+      if broadcast_success then
+        logger.debug("queue", "Sent queued @ mention: " .. mention.file_path)
+      else
+        logger.error("queue", "Failed to send queued @ mention: " .. mention.file_path)
+      end
+    end
+
+    if index < #mentions_to_send then
+      vim.defer_fn(function()
+        send_mention_sequential(index + 1)
+      end, 25)
+    end
+  end
+
+  if #mentions_to_send > 0 then
+    if from_new_connection then
+      local initial_delay = (M.state.config and M.state.config.connection_wait_delay) or 200
+      logger.debug("queue", "Waiting ", initial_delay, "ms after connect before flushing queue")
+      vim.defer_fn(function()
+        send_mention_sequential(1)
+      end, initial_delay)
+    else
+      send_mention_sequential(1)
+    end
+  end
+end
+
+---Process the mention queue for the current tab (called by on_connect handlers).
+---@param from_new_connection boolean|nil
+function M.process_mention_queue(from_new_connection)
+  process_mention_queue_for_inst(get_instance(), from_new_connection)
+end
+
+---Process the mention queue for a specific tab (called by per-instance on_connect).
+---@param tab_id number|nil
+---@param from_new_connection boolean|nil
+function M.process_mention_queue_for_tab(tab_id, from_new_connection)
+  local inst = tab_id and get_instance(tab_id) or get_instance()
+  process_mention_queue_for_inst(inst, from_new_connection)
+end
+
+---Show terminal if Claude is connected and it's not already visible.
+---@return boolean success
+function M._ensure_terminal_visible_if_connected()
+  if not M.is_claude_connected() then
+    return false
+  end
+
+  local terminal = require("claude_agents.terminal")
+  local active_bufnr = terminal.get_active_terminal_bufnr and terminal.get_active_terminal_bufnr()
+
+  if not active_bufnr then
+    return false
+  end
+
+  local bufinfo = vim.fn.getbufinfo(active_bufnr)[1]
+  local is_visible = bufinfo and #bufinfo.windows > 0
+
+  if not is_visible then
+    terminal.simple_toggle()
+  end
+
+  return true
+end
+
+---Send @ mention to Claude Code, handling connection state automatically.
+---@param file_path string
+---@param start_line number|nil
+---@param end_line number|nil
+---@param context string|nil
+---@return boolean success
+---@return string|nil error
+function M.send_at_mention(file_path, start_line, end_line, context)
+  context = context or "command"
+
+  local inst = get_instance()
+  if not inst or not inst.server then
+    logger.error(context, "Claude Code integration is not running")
+    return false, "Claude Code integration is not running"
+  end
+
+  if is_connected(inst) then
+    local success, error_msg = M._broadcast_at_mention(file_path, start_line, end_line)
+    if success then
+      local terminal = require("claude_agents.terminal")
+      if M.state.config and M.state.config.focus_after_send then
+        terminal.open()
+      else
+        terminal.ensure_visible()
+      end
+    end
+    return success, error_msg
+  else
+    queue_mention_for(inst, file_path, start_line, end_line)
+
+    local terminal = require("claude_agents.terminal")
+    terminal.open()
+
+    logger.debug(context, "Queued @ mention and launched Claude Code: " .. file_path)
+
+    return true, nil
+  end
+end
+
+---Set up the plugin with user configuration.
+---@param opts PartialClaudeCodeConfig|nil
+---@return table module
+function M.setup(opts)
+  opts = opts or {}
+
+  local config = require("claude_agents.config")
+  M.state.config = config.apply(opts)
+
+  logger.setup(M.state.config)
+
+  -- Map top-level cwd-related aliases into terminal config
+  do
+    local t = opts.terminal or {}
+    local had_alias = false
+    if opts.git_repo_cwd ~= nil then
+      t.git_repo_cwd = opts.git_repo_cwd
+      had_alias = true
+    end
+    if opts.cwd ~= nil then
+      t.cwd = opts.cwd
+      had_alias = true
+    end
+    if opts.cwd_provider ~= nil then
+      t.cwd_provider = opts.cwd_provider
+      had_alias = true
+    end
+    if had_alias then
+      opts.terminal = t
+    end
+  end
+
+  local terminal_setup_ok, terminal_module = pcall(require, "claude_agents.terminal")
+  if terminal_setup_ok then
+    if type(terminal_module.setup) == "function" then
+      terminal_module.setup(opts.terminal, M.state.config.terminal_cmd, M.state.config.env)
+    end
+  else
+    logger.error("init", "Failed to load claudecode.terminal module for setup.")
+  end
+
+  local diff = require("claude_agents.diff")
+  diff.setup(M.state.config)
+
+  -- Before anything that can open one: `diff_opts.layout = "float"` reaches it
+  -- without agents mode being enabled at all.
+  require("claude_agents.float").setup(M.state.config)
+  require("claude_agents.live_cursor").setup(M.state.config)
+  require("claude_agents.plan_view").setup(M.state.config)
+  require("claude_agents.terminal_links").setup(M.state.config)
+  require("claude_agents.session_state").setup(M.state.config)
+  require("claude_agents.status").setup(M.state.config)
+  require("claude_agents.agents_view").setup(M.state.config)
+
+  -- Sweep lock files left behind by editors that died without running their exit
+  -- hook. Once per Neovim, before any server of ours claims a port.
+  pcall(function()
+    local removed = require("claude_agents.lockfile").cleanup_stale()
+    if removed > 0 then
+      logger.debug("init", "removed " .. removed .. " stale lock file(s)")
+    end
+  end)
+
+  if M.state.config.auto_start then
+    M.start(false)
+  end
+
+  M._create_commands()
+
+  -- Stop all instances on Neovim exit
+  vim.api.nvim_create_autocmd("VimLeavePre", {
+    group = vim.api.nvim_create_augroup("ClaudeCodeShutdown", { clear = true }),
+    callback = function()
+      -- Marks every TermClose from here on as "Neovim is exiting", not "the user
+      -- closed this chat" (see the ClaudeCodeSessionClose autocmd).
+      M.state.shutting_down = true
+      -- Snapshot first: stopping an instance removes it from the registry, and
+      -- mutating a table while iterating it may skip entries.
+      local all = {}
+      for _, inst in pairs(M.instances) do
+        all[#all + 1] = inst
+      end
+      for _, inst in ipairs(all) do
+        if inst.server then
+          M._stop_instance_record(inst)
+        else
+          clear_mention_queue_for(inst)
+        end
+      end
+      pcall(function()
+        require("claude_agents.live_cursor").cleanup()
+      end)
+      pcall(function()
+        require("claude_agents.plan_view").cleanup()
+      end)
+      pcall(function()
+        require("claude_agents.interrupt_watch").stop()
+      end)
+      pcall(function()
+        require("claude_agents.terminal_links").cleanup()
+      end)
+      pcall(function()
+        require("claude_agents.agents_view").cleanup()
+      end)
+    end,
+    desc = "Automatically stop Claude Code integration when exiting Neovim",
+  })
+
+  -- Restore the per-tab Claude session ids a saved Neovim session brought back.
+  -- Runs after the tabs are up, which is what the payload is keyed by. No-op
+  -- unless session_persistence = "global"; the "external" mode is driven by the
+  -- session manager itself (see claudecode.session_state).
+  vim.api.nvim_create_autocmd("SessionLoadPost", {
+    group = vim.api.nvim_create_augroup("ClaudeCodeSessionRestore", { clear = true }),
+    callback = function()
+      pcall(function()
+        require("claude_agents.session_state").restore_from_global()
+      end)
+    end,
+    desc = "Resume each tab's Claude conversation from the restored Neovim session",
+  })
+
+  -- A Claude that ends while Neovim is still running was ended by the user, and
+  -- a conversation they closed should not come back. Neovim quitting also kills
+  -- the terminal, but the ordering tells the two apart: on exit Neovim fires
+  -- VimLeavePre (and VimLeave) *before* TermClose, so a TermClose that arrives
+  -- with the shutdown flag unset is the user's doing. Verified empirically —
+  -- during shutdown the job's own on_exit never runs at all, which is why this
+  -- watches TermClose rather than the providers' exit hooks.
+  --
+  -- Status tracking rides the same watcher: a Claude that ended has no activity
+  -- to report, so its tab goes back to "none".
+  if
+    require("claude_agents.session_state").is_enabled()
+    or require("claude_agents.status").is_enabled()
+    or require("claude_agents.agents_view").is_enabled()
+  then
+    vim.api.nvim_create_autocmd("TermClose", {
+      group = vim.api.nvim_create_augroup("ClaudeCodeSessionClose", { clear = true }),
+      callback = function(args)
+        -- An agent's terminal is the agents view's business: its conversations
+        -- are tracked per session, not per tab, so the tab-level bookkeeping
+        -- below would clear the whole tab because one of N agents ended.
+        local agent_session
+        pcall(function()
+          agent_session = vim.b[args.buf].claudecode_agent_session
+        end)
+        if agent_session then
+          pcall(function()
+            require("claude_agents.agents_view").note_terminal_closed(args.buf)
+          end)
+          return
+        end
+
+        local tab
+        pcall(function()
+          tab = vim.b[args.buf].claudecode_tab
+        end)
+        if not tab then
+          return
+        end
+        pcall(function()
+          require("claude_agents.status").clear(tab)
+        end)
+        if M.state.shutting_down then
+          return
+        end
+        pcall(function()
+          require("claude_agents.session_state").forget(tab)
+        end)
+      end,
+      desc = "Forget a Claude conversation the user closed, so it is not restored",
+    })
+  end
+
+  -- Clean up instance when a tab is closed
+  vim.api.nvim_create_autocmd("TabClosed", {
+    group = vim.api.nvim_create_augroup("ClaudeCodeTabLifecycle", { clear = true }),
+    callback = function()
+      pcall(function()
+        require("claude_agents.session_state").forget_closed_tabs()
+      end)
+      pcall(function()
+        require("claude_agents.status").forget_closed_tabs()
+      end)
+      pcall(function()
+        require("claude_agents.agents_view").forget_closed_tabs()
+      end)
+      -- Snapshot before stopping: _stop_instance_record mutates the registry.
+      local orphaned = {}
+      for _, inst in pairs(M.instances) do
+        if not inst.tab or not vim.api.nvim_tabpage_is_valid(inst.tab) then
+          orphaned[#orphaned + 1] = inst
+        end
+      end
+      for _, inst in ipairs(orphaned) do
+        if inst.server then
+          M._stop_instance_record(inst)
+        else
+          clear_mention_queue_for(inst)
+          M.instances[inst.id] = nil
+        end
+      end
+      for tab_id in pairs(M.tab_instance) do
+        if not vim.api.nvim_tabpage_is_valid(tab_id) then
+          M.tab_instance[tab_id] = nil
+        end
+      end
+    end,
+    desc = "Stop Claude Code instances when their tab is closed",
+  })
+
+  -- Auto-start in new tabs if configured.
+  -- Run synchronously (no vim.schedule): otherwise a user toggling the Claude terminal
+  -- in the new tab before the schedule fires would launch the CLI without a SSE port,
+  -- causing it to connect to whichever lock file it finds (usually another tab's server)
+  -- and routing all of that tab's messages — including openDiff — to the wrong server.
+  if M.state.config.auto_start then
+    vim.api.nvim_create_autocmd("TabNew", {
+      group = vim.api.nvim_create_augroup("ClaudeCodeTabAutoStart", { clear = true }),
+      callback = function()
+        M.start(false)
+      end,
+      desc = "Auto-start Claude Code integration in new tabs",
+    })
+  end
+
+  vim.keymap.set("n", "<leader>aF", "<cmd>ClaudeCodeToggleFileTracking<cr>", {
+    desc = "Toggle Claude Code file tracking",
+    silent = true,
+  })
+
+  -- Only bound when there are sessions to restore: with session_persistence off
+  -- the command has nothing to do, and an inert mapping just occupies the key.
+  if require("claude_agents.agents_view").is_enabled() then
+    vim.keymap.set("n", "<leader>aA", "<cmd>ClaudeCodeAgents<cr>", {
+      desc = "Toggle the Claude agents view",
+      silent = true,
+    })
+  end
+
+  if require("claude_agents.session_state").is_enabled() then
+    vim.keymap.set("n", "<leader>aR", "<cmd>ClaudeCodeSessionRestore!<cr>", {
+      desc = "Restore Claude sessions in every tab",
+      silent = true,
+    })
+  end
+
+  M.state.initialized = true
+  return M
+end
+
+---Stop one instance, whichever tab or agent it belongs to.
+---@param inst table|nil
+function M._stop_instance_record(inst)
+  if not inst then
+    return
+  end
+
+  local lockfile = require("claude_agents.lockfile")
+  lockfile.remove(inst.port)
+
+  -- Disable selection tracking only if this was the last running instance
+  if M.state.config.track_selection then
+    local any_remaining = false
+    for id, other in pairs(M.instances) do
+      if id ~= inst.id and other.server then
+        any_remaining = true
+        break
+      end
+    end
+    if not any_remaining then
+      local selection = require("claude_agents.selection")
+      selection.disable()
+    end
+  end
+
+  inst.server.stop()
+
+  clear_mention_queue_for(inst)
+
+  if inst.connection_timer then
+    inst.connection_timer:stop()
+    inst.connection_timer:close()
+    inst.connection_timer = nil
+  end
+
+  M.instances[inst.id] = nil
+  if inst.tab and M.tab_instance[inst.tab] == inst.id then
+    M.tab_instance[inst.tab] = nil
+  end
+  -- Debug, not info: with auto_start every tab gets an instance, so closing any
+  -- tab retires one. That is routine bookkeeping, and the matching start is
+  -- silent too (TabNew starts without the startup notification), so announcing
+  -- only the stop made every tab the user opened and closed print a message.
+  -- A user-invoked :ClaudeCodeStop still says so, from M.stop.
+  logger.debug("init", "Claude Code integration stopped (" .. tostring(inst.id) .. ")")
+end
+
+---Stop the Claude Code integration for a specific tab (internal helper).
+---Stops that tab's own Claude; agents in the tab are stopped separately, since
+---closing a tab's chat is not the same as ending the agents running in it.
+---@param tab_id number
+function M._stop_instance(tab_id)
+  M._stop_instance_record(get_instance(tab_id))
+end
+
+---Bring up one server instance: auth token, WebSocket server, lock file.
+---
+---Shared by a tab's own Claude and by each agents-mode agent, so both get the
+---same isolation — their own port, token and lock file — and a request can always
+---be traced back to the instance that received it.
+---@param opts { id: string, tab: integer, kind: "tab"|"agent", session_id: string? }
+---@return table|nil inst
+---@return string|nil error
+local function start_instance(opts)
+  local server_module = require("claude_agents.server.init")
+  local lockfile = require("claude_agents.lockfile")
+
+  local auth_success, auth_result = pcall(function()
+    return lockfile.generate_auth_token()
+  end)
+
+  if not auth_success then
+    return nil, "Failed to generate authentication token: " .. (auth_result or "unknown error")
+  end
+
+  local auth_token = auth_result
+  if not auth_token or type(auth_token) ~= "string" or #auth_token < 10 then
+    return nil, "Invalid authentication token generated"
+  end
+
+  local srv = server_module.new_instance(opts.tab, {
+    instance_id = opts.id,
+    session_id = opts.session_id,
+    kind = opts.kind,
+  })
+  local success, result = srv.start(M.state.config, auth_token)
+
+  if not success then
+    local error_msg = "Failed to start Claude Code server: " .. (result or "unknown error")
+    if result and result:find("auth") then
+      error_msg = error_msg .. " (authentication related)"
+    end
+    return nil, error_msg
+  end
+
+  local port = tonumber(result)
+
+  local lock_success, lock_result, returned_auth_token = lockfile.create(port, auth_token)
+
+  if not lock_success then
+    srv.stop()
+    local error_msg = "Failed to create lock file: " .. (lock_result or "unknown error")
+    if lock_result and lock_result:find("auth") then
+      error_msg = error_msg .. " (authentication token issue)"
+    end
+    return nil, error_msg
+  end
+
+  if returned_auth_token ~= auth_token then
+    srv.stop()
+    return nil, "Authentication token mismatch between server and lock file"
+  end
+
+  local inst = {
+    id = opts.id,
+    kind = opts.kind,
+    tab = opts.tab,
+    session_id = opts.session_id,
+    server = srv,
+    port = port,
+    auth_token = auth_token,
+    mention_queue = {},
+    mention_timer = nil,
+    connection_timer = nil,
+  }
+  M.instances[opts.id] = inst
+
+  if M.state.config.track_selection then
+    local selection = require("claude_agents.selection")
+    selection.enable(nil, M.state.config.visual_demotion_delay_ms)
+  end
+
+  return inst, nil
+end
+
+---Start the Claude Code integration for the current tab.
+---@param show_startup_notification? boolean
+---@return boolean success
+---@return number|string port_or_error
+function M.start(show_startup_notification)
+  if show_startup_notification == nil then
+    show_startup_notification = true
+  end
+
+  local tab_id = vim.api.nvim_get_current_tabpage()
+
+  local existing = get_instance(tab_id)
+  if existing and existing.server then
+    local msg = "Claude Code integration is already running on port " .. tostring(existing.port)
+    logger.warn("init", msg)
+    return false, "Already running"
+  end
+
+  local inst, err = start_instance({ id = tab_instance_id(tab_id), tab = tab_id, kind = "tab" })
+  if not inst then
+    logger.error("init", err)
+    return false, err
+  end
+
+  M.tab_instance[tab_id] = inst.id
+
+  if show_startup_notification then
+    logger.info(
+      "init",
+      "Claude Code integration started on port " .. tostring(inst.port) .. " (tab " .. tostring(tab_id) .. ")"
+    )
+  end
+
+  return true, inst.port
+end
+
+---Start a server dedicated to one agents-mode conversation.
+---
+---Agents share a tabpage but not a server: with one instance each, a diff, an
+---@ mention or a `closeAllDiffTabs` reaches exactly the agent it belongs to,
+---rather than every Claude that happens to sit in the same tab.
+---@param session_id string Conversation id the agent was launched with.
+---@param tab_id integer|nil Tabpage hosting the agents view.
+---@return table|nil inst
+---@return string|nil error
+function M.start_agent_instance(session_id, tab_id)
+  if type(session_id) ~= "string" or session_id == "" then
+    return nil, "session_id is required"
+  end
+  tab_id = tab_id or vim.api.nvim_get_current_tabpage()
+
+  local id = agent_instance_id(session_id)
+  local existing = M.instances[id]
+  if existing and existing.server then
+    return existing, nil
+  end
+
+  local inst, err = start_instance({ id = id, tab = tab_id, kind = "agent", session_id = session_id })
+  if not inst then
+    logger.error("init", "agent instance failed: " .. tostring(err))
+    return nil, err
+  end
+  logger.debug("init", "agent instance started on port", tostring(inst.port), "for session", session_id)
+  return inst, nil
+end
+
+---Point an agent's server at a different conversation, without restarting it.
+---
+---The CLI keeps its socket across a `/clear`; only the conversation on the other
+---end of it changes. The instance is what names that conversation to everything
+---downstream — `request_context.session_id()` reads it, and diffs and file opens
+---tag their floats with it — so it is renamed rather than replaced. The server,
+---the port and the lock file are untouched, which is the point: the client is
+---still connected to them.
+---@param inst table|nil The agent's instance record.
+---@param session_id string The conversation it is having now.
+function M.rekey_agent_instance(inst, session_id)
+  if type(inst) ~= "table" or type(session_id) ~= "string" or session_id == "" then
+    return
+  end
+  local next_id = agent_instance_id(session_id)
+  if inst.id == next_id then
+    return
+  end
+  if inst.id then
+    M.instances[inst.id] = nil
+  end
+  inst.id = next_id
+  inst.session_id = session_id
+  M.instances[next_id] = inst
+end
+
+---Stop the server dedicated to one agents-mode conversation.
+---@param session_id string
+function M.stop_agent_instance(session_id)
+  M._stop_instance_record(M.instances[agent_instance_id(session_id)])
+end
+
+---Stop the Claude Code integration for the current tab.
+---@return boolean success
+---@return string|nil error
+function M.stop()
+  local tab_id = vim.api.nvim_get_current_tabpage()
+  local inst = get_instance(tab_id)
+
+  if not inst or not inst.server then
+    logger.warn("init", "Claude Code integration is not running on current tab")
+    return false, "Not running"
+  end
+
+  M._stop_instance(tab_id)
+
+  logger.info("init", "Claude Code integration stopped")
+  return true
+end
+
+---Toggle automatic file/selection tracking at runtime.
+---@return boolean tracking Whether tracking is now enabled
+function M.toggle_file_tracking()
+  if not M.state.config then
+    logger.warn("init", "ClaudeCodeToggleFileTracking: plugin not initialized")
+    return false
+  end
+
+  local selection = require("claude_agents.selection")
+  local enabled = not M.state.config.track_selection
+  M.state.config.track_selection = enabled
+
+  local inst = get_instance()
+  if inst and inst.server then
+    if enabled then
+      selection.enable(nil, M.state.config.visual_demotion_delay_ms)
+    else
+      selection.disable()
+    end
+  end
+
+  logger.info("init", "File tracking " .. (enabled and "enabled" or "disabled"))
+  return enabled
+end
+
+---Set up user commands.
+---@private
+function M._create_commands()
+  vim.api.nvim_create_user_command("ClaudeCodeStart", function()
+    M.start()
+  end, {
+    desc = "Start Claude Code integration for current tab",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeStop", function()
+    M.stop()
+  end, {
+    desc = "Stop Claude Code integration for current tab",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeLiveCursor", function(opts)
+    require("claude_agents.live_cursor").toggle(opts.args ~= "" and opts.args or nil)
+  end, {
+    nargs = "?",
+    complete = function()
+      return { "preview", "open", "off" }
+    end,
+    desc = "Toggle the live Claude cursor (optionally: preview | open | off)",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodePlanView", function(opts)
+    require("claude_agents.plan_view").toggle(opts.args ~= "" and opts.args or nil)
+  end, {
+    nargs = "?",
+    complete = function()
+      return { "on", "off" }
+    end,
+    desc = "Toggle showing Claude's plan-mode plan in an editor split (optionally: on | off)",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeAgents", function(opts)
+    require("claude_agents.agents_view").toggle(opts.args ~= "" and opts.args or nil)
+  end, {
+    nargs = "?",
+    complete = function()
+      return { "on", "off" }
+    end,
+    desc = "Toggle the Claude agents view: several agents on this project, side by side (optionally: on | off)",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeAgentsCheckpoint", function(opts)
+    local agents = require("claude_agents.agents_view")
+    if opts.bang then
+      agents.drop_checkpoint()
+    else
+      agents.checkpoint()
+    end
+  end, {
+    bang = true,
+    desc = "Draw a line through the selected agent session's history: what it does from now on is listed apart from what it did before (with !: drop its newest checkpoint)",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeAgentsFlag", function(opts)
+    require("claude_agents.agents_view").flag({ note = opts.args, clear = opts.bang })
+  end, {
+    bang = true,
+    nargs = "*",
+    desc = "Flag the selected agent session so it is not forgotten, or unflag it; your next reply takes the flag off. With text: flag it with that note, which stays until removed (with !: unflag)",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeAgentNew", function()
+    local agents = require("claude_agents.agents_view")
+    if not agents.is_open() then
+      agents.open()
+    end
+    agents.new_agent()
+  end, {
+    desc = "Start a new Claude agent in the agents view",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeAgentFollowUp", function()
+    require("claude_agents.agents_view").new_follow_up()
+  end, {
+    desc = "Start a new Claude agent named after the selected agent session, numbered on (plan → plan-2 → plan-3)",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeStatus", function()
+    local inst = get_instance()
+    if inst and inst.server and inst.port then
+      logger.info(
+        "command",
+        "Claude Code integration is running on port "
+          .. tostring(inst.port)
+          .. " (tab "
+          .. tostring(vim.api.nvim_get_current_tabpage())
+          .. ")"
+      )
+    else
+      logger.info("command", "Claude Code integration is not running on current tab")
+    end
+    local session_state = require("claude_agents.session_state")
+    if session_state.is_enabled() then
+      local record = session_state.get()
+      logger.info(
+        "command",
+        record and ("Claude session for this tab: " .. record.session_id) or "No Claude session recorded for this tab"
+      )
+    end
+    local status = require("claude_agents.status")
+    if status.is_enabled() then
+      local lines = {}
+      for tab, entry in pairs(status.all()) do
+        local label = "tab " .. tostring(entry.tabnr or tab) .. ": " .. entry.state
+        if entry.tool then
+          label = label .. " (" .. entry.tool .. ")"
+        end
+        table.insert(lines, label)
+      end
+      table.sort(lines)
+      logger.info(
+        "command",
+        #lines > 0 and ("Claude activity - " .. table.concat(lines, ", ")) or "No Claude activity tracked in any tab"
+      )
+    end
+  end, {
+    desc = "Show Claude Code integration status for current tab",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeSessionRestore", function(opts)
+    local session_state = require("claude_agents.session_state")
+    if not session_state.is_enabled() then
+      logger.warn("command", "ClaudeCodeSessionRestore: session_persistence is 'off'")
+      return
+    end
+    -- Re-read the payload we own. A no-op in "external" mode, where the session
+    -- manager has already handed us the ids — so never gate the rest on it.
+    session_state.restore_from_global()
+
+    -- With `!`, walk the tabs and open each armed Claude right away instead of
+    -- waiting for that tab's first toggle (that is N Claude processes at once —
+    -- the lazy default exists for a reason).
+    if opts.bang then
+      local opened = session_state.open_pending()
+      logger.info(
+        "command",
+        opened > 0 and ("Resumed Claude in " .. opened .. " tab(s)") or "No tab is waiting on a saved Claude session"
+      )
+      return
+    end
+
+    local armed = session_state.pending_count()
+    logger.info(
+      "command",
+      armed > 0 and (armed .. " tab(s) will resume their Claude session on the next toggle")
+        or "No Claude sessions to restore"
+    )
+  end, {
+    bang = true,
+    desc = "Re-arm each tab's saved Claude conversation (! also opens the terminals)",
+  })
+
+  ---@param file_paths table
+  ---@param options table|nil
+  ---@return number success_count
+  ---@return number total_count
+  local function add_paths_to_claude(file_paths, options)
+    options = options or {}
+    local delay = options.delay or 0
+    local show_summary = options.show_summary ~= false
+    local context = options.context or "command"
+
+    if not file_paths or #file_paths == 0 then
+      return 0, 0
+    end
+
+    local success_count = 0
+    local total_count = #file_paths
+
+    if delay > 0 then
+      local function send_files_sequentially(index)
+        if index > total_count then
+          if show_summary then
+            local message = success_count == 1 and "Added 1 file to Claude context"
+              or string.format("Added %d files to Claude context", success_count)
+            if total_count > success_count then
+              message = message .. string.format(" (%d failed)", total_count - success_count)
+            end
+
+            if total_count > success_count then
+              if success_count > 0 then
+                logger.warn(context, message)
+              else
+                logger.error(context, message)
+              end
+            elseif success_count > 0 then
+              logger.info(context, message)
+            else
+              logger.debug(context, message)
+            end
+          end
+          return
+        end
+
+        local file_path = file_paths[index]
+        local success, error_msg = M.send_at_mention(file_path, nil, nil, context)
+        if success then
+          success_count = success_count + 1
+        else
+          logger.error(context, "Failed to add file: " .. file_path .. " - " .. (error_msg or "unknown error"))
+        end
+
+        if index < total_count then
+          vim.defer_fn(function()
+            send_files_sequentially(index + 1)
+          end, delay)
+        else
+          if show_summary then
+            local message = success_count == 1 and "Added 1 file to Claude context"
+              or string.format("Added %d files to Claude context", success_count)
+            if total_count > success_count then
+              message = message .. string.format(" (%d failed)", total_count - success_count)
+            end
+
+            if total_count > success_count then
+              if success_count > 0 then
+                logger.warn(context, message)
+              else
+                logger.error(context, message)
+              end
+            elseif success_count > 0 then
+              logger.info(context, message)
+            else
+              logger.debug(context, message)
+            end
+          end
+        end
+      end
+
+      send_files_sequentially(1)
+    else
+      for _, file_path in ipairs(file_paths) do
+        local success, error_msg = M.send_at_mention(file_path, nil, nil, context)
+        if success then
+          success_count = success_count + 1
+        else
+          logger.error(context, "Failed to add file: " .. file_path .. " - " .. (error_msg or "unknown error"))
+        end
+      end
+
+      if show_summary and success_count > 0 then
+        local message = success_count == 1 and "Added 1 file to Claude context"
+          or string.format("Added %d files to Claude context", success_count)
+        if total_count > success_count then
+          message = message .. string.format(" (%d failed)", total_count - success_count)
+        end
+        logger.debug(context, message)
+      end
+    end
+
+    return success_count, total_count
+  end
+
+  local function handle_send_normal(opts)
+    -- A file explorer is recognised by its filetype alone. Matching the buffer
+    -- name -- an absolute path -- called an ordinary file a tree whenever its
+    -- path merely contained "neo-tree" or "NvimTree" (upstream issue #289), and
+    -- the extractors below (integrations.get_selected_files_from_tree,
+    -- visual_commands.get_tree_state) are filetype-keyed anyway, so a name-only
+    -- match could never have extracted anything.
+    local current_ft = (vim.bo and vim.bo.filetype) or ""
+
+    local is_tree_buffer = current_ft == "NvimTree"
+      or current_ft == "neo-tree"
+      or current_ft == "oil"
+      or current_ft == "minifiles"
+      or current_ft == "netrw"
+
+    if is_tree_buffer then
+      local integrations = require("claude_agents.integrations")
+      local files, error = integrations.get_selected_files_from_tree()
+
+      if error then
+        logger.error("command", "ClaudeCodeSend->TreeAdd: " .. error)
+        return
+      end
+
+      if not files or #files == 0 then
+        logger.warn("command", "ClaudeCodeSend->TreeAdd: No files selected")
+        return
+      end
+
+      add_paths_to_claude(files, { context = "ClaudeCodeSend->TreeAdd" })
+
+      return
+    end
+
+    local selection_module_ok, selection_module = pcall(require, "claude_agents.selection")
+    if selection_module_ok then
+      local line1, line2 = nil, nil
+      if opts and opts.range and opts.range > 0 then
+        line1, line2 = opts.line1, opts.line2
+      end
+      local sent_successfully = selection_module.send_at_mention_for_visual_selection(line1, line2)
+      if sent_successfully then
+        pcall(function()
+          if vim.api and vim.api.nvim_feedkeys then
+            local esc = vim.api.nvim_replace_termcodes("<Esc>", true, false, true)
+            vim.api.nvim_feedkeys(esc, "i", true)
+          end
+        end)
+      end
+    else
+      logger.error("command", "ClaudeCodeSend: Failed to load selection module.")
+    end
+  end
+
+  local function handle_send_visual(visual_data, opts)
+    -- Filetype only, for the reason given in handle_send_normal.
+    local current_ft = (vim.bo and vim.bo.filetype) or ""
+
+    local is_tree_buffer = current_ft == "NvimTree"
+      or current_ft == "neo-tree"
+      or current_ft == "oil"
+      or current_ft == "minifiles"
+      or current_ft == "netrw"
+
+    if is_tree_buffer then
+      local integrations = require("claude_agents.integrations")
+      local visual_cmd_module = require("claude_agents.visual_commands")
+      local files, error
+
+      if current_ft == "minifiles" then
+        local start_line = vim.fn.line("'<")
+        local end_line = vim.fn.line("'>")
+
+        if start_line > 0 and end_line > 0 and start_line <= end_line then
+          files, error = integrations._get_mini_files_selection_with_range(start_line, end_line)
+        else
+          files, error = visual_cmd_module.get_files_from_visual_selection(visual_data)
+        end
+      else
+        files, error = visual_cmd_module.get_files_from_visual_selection(visual_data)
+        if (not files or #files == 0) and not error then
+          files, error = integrations.get_selected_files_from_tree()
+        end
+      end
+
+      if error then
+        logger.error("command", "ClaudeCodeSend_visual->TreeAdd: " .. error)
+        return
+      end
+
+      if not files or #files == 0 then
+        logger.warn("command", "ClaudeCodeSend_visual->TreeAdd: No files selected")
+        return
+      end
+
+      add_paths_to_claude(files, { context = "ClaudeCodeSend_visual->TreeAdd" })
+      return
+    end
+
+    if visual_data then
+      local visual_commands = require("claude_agents.visual_commands")
+      local files, error = visual_commands.get_files_from_visual_selection(visual_data)
+
+      if not error and files and #files > 0 then
+        local success_count = add_paths_to_claude(files, {
+          delay = 10,
+          context = "ClaudeCodeSend_visual",
+          show_summary = false,
+        })
+        if success_count > 0 then
+          local message = success_count == 1 and "Added 1 file to Claude context from visual selection"
+            or string.format("Added %d files to Claude context from visual selection", success_count)
+          logger.debug("command", message)
+        end
+        return
+      end
+    end
+
+    local selection_module_ok, selection_module = pcall(require, "claude_agents.selection")
+    if not selection_module_ok then
+      return
+    end
+
+    local line1, line2 = vim.fn.line("'<"), vim.fn.line("'>")
+    if line1 and line2 and line1 > 0 and line2 > 0 then
+      selection_module.send_at_mention_for_visual_selection(line1, line2)
+    else
+      selection_module.send_at_mention_for_visual_selection()
+    end
+  end
+
+  local visual_commands = require("claude_agents.visual_commands")
+  local unified_send_handler = visual_commands.create_visual_command_wrapper(handle_send_normal, handle_send_visual)
+
+  vim.api.nvim_create_user_command("ClaudeCodeSend", unified_send_handler, {
+    desc = "Send current visual selection as an at_mention to Claude Code (supports tree visual selection)",
+    range = true,
+  })
+
+  local function handle_tree_add_normal()
+    local inst = get_instance()
+    if not inst or not inst.server then
+      logger.error("command", "ClaudeCodeTreeAdd: Claude Code integration is not running.")
+      return
+    end
+
+    local integrations = require("claude_agents.integrations")
+    local files, error = integrations.get_selected_files_from_tree()
+
+    if error then
+      logger.error("command", "ClaudeCodeTreeAdd: " .. error)
+      return
+    end
+
+    if not files or #files == 0 then
+      logger.warn("command", "ClaudeCodeTreeAdd: No files selected")
+      return
+    end
+
+    local success_count = 0
+    local total_count = #files
+
+    for _, file_path in ipairs(files) do
+      local success, error_msg = M.send_at_mention(file_path, nil, nil, "ClaudeCodeTreeAdd")
+      if success then
+        success_count = success_count + 1
+      else
+        logger.error(
+          "command",
+          "ClaudeCodeTreeAdd: Failed to add file: " .. file_path .. " - " .. (error_msg or "unknown error")
+        )
+      end
+    end
+
+    if success_count == 0 then
+      logger.error("command", "ClaudeCodeTreeAdd: Failed to add any files")
+    elseif success_count < total_count then
+      local message = string.format("Added %d/%d files to Claude context", success_count, total_count)
+      logger.debug("command", message)
+    else
+      local message = success_count == 1 and "Added 1 file to Claude context"
+        or string.format("Added %d files to Claude context", success_count)
+      logger.debug("command", message)
+    end
+  end
+
+  local function handle_tree_add_visual(visual_data)
+    local inst = get_instance()
+    if not inst or not inst.server then
+      logger.error("command", "ClaudeCodeTreeAdd_visual: Claude Code integration is not running.")
+      return
+    end
+
+    local visual_cmd_module = require("claude_agents.visual_commands")
+    local files, error = visual_cmd_module.get_files_from_visual_selection(visual_data)
+
+    if error then
+      logger.error("command", "ClaudeCodeTreeAdd_visual: " .. error)
+      return
+    end
+
+    if not files or #files == 0 then
+      logger.warn("command", "ClaudeCodeTreeAdd_visual: No files selected in visual range")
+      return
+    end
+
+    local success_count = 0
+    local total_count = #files
+
+    for _, file_path in ipairs(files) do
+      local success, error_msg = M.send_at_mention(file_path, nil, nil, "ClaudeCodeTreeAdd_visual")
+      if success then
+        success_count = success_count + 1
+      else
+        logger.error(
+          "command",
+          "ClaudeCodeTreeAdd_visual: Failed to add file: " .. file_path .. " - " .. (error_msg or "unknown error")
+        )
+      end
+    end
+
+    if success_count > 0 then
+      local message = success_count == 1 and "Added 1 file to Claude context from visual selection"
+        or string.format("Added %d files to Claude context from visual selection", success_count)
+      logger.debug("command", message)
+
+      if success_count < total_count then
+        logger.warn("command", string.format("Added %d/%d files from visual selection", success_count, total_count))
+      end
+    else
+      logger.error("command", "ClaudeCodeTreeAdd_visual: Failed to add any files from visual selection")
+    end
+  end
+
+  local unified_tree_add_handler =
+    visual_commands.create_visual_command_wrapper(handle_tree_add_normal, handle_tree_add_visual)
+
+  vim.api.nvim_create_user_command("ClaudeCodeTreeAdd", unified_tree_add_handler, {
+    desc = "Add selected file(s) from tree explorer to Claude Code context (supports visual selection)",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeAdd", function(opts)
+    local inst = get_instance()
+    if not inst or not inst.server then
+      logger.error("command", "ClaudeCodeAdd: Claude Code integration is not running.")
+      return
+    end
+
+    if not opts.args or opts.args == "" then
+      logger.error("command", "ClaudeCodeAdd: No file path provided")
+      return
+    end
+
+    local args = vim.split(opts.args, "%s+")
+    local file_path = args[1]
+    local start_line = args[2] and tonumber(args[2]) or nil
+    local end_line = args[3] and tonumber(args[3]) or nil
+
+    if #args > 3 then
+      logger.error(
+        "command",
+        "ClaudeCodeAdd: Too many arguments. Usage: ClaudeCodeAdd <file-path> [start-line] [end-line]"
+      )
+      return
+    end
+
+    if args[2] and not start_line then
+      logger.error("command", "ClaudeCodeAdd: Invalid start line number: " .. args[2])
+      return
+    end
+
+    if args[3] and not end_line then
+      logger.error("command", "ClaudeCodeAdd: Invalid end line number: " .. args[3])
+      return
+    end
+
+    if start_line and start_line < 1 then
+      logger.error("command", "ClaudeCodeAdd: Start line must be positive: " .. start_line)
+      return
+    end
+
+    if end_line and end_line < 1 then
+      logger.error("command", "ClaudeCodeAdd: End line must be positive: " .. end_line)
+      return
+    end
+
+    if start_line and end_line and start_line > end_line then
+      logger.error(
+        "command",
+        "ClaudeCodeAdd: Start line (" .. start_line .. ") must be <= end line (" .. end_line .. ")"
+      )
+      return
+    end
+
+    -- Vim's current/alternate-file tokens (`%`, `%:p`, `#`, `<cfile>`) still have
+    -- to be expanded -- `:ClaudeCodeAdd %` is the documented "add this buffer"
+    -- keymap. A plain filesystem path must not be, because `vim.fn.expand` reads
+    -- `$name` as an environment variable and drops undefined ones, mangling a
+    -- literal `$` in a path (TanStack Router's `src/routes/$post.tsx` and the
+    -- like) so the existence check below fails. So expand only the token forms,
+    -- and otherwise just the leading `~`.
+    if file_path:match("^[%%#<]") then
+      file_path = vim.fn.expand(file_path)
+    else
+      file_path = require("claude_agents.utils").expand_tilde(file_path)
+    end
+    if vim.fn.filereadable(file_path) == 0 and vim.fn.isdirectory(file_path) == 0 then
+      logger.error("command", "ClaudeCodeAdd: File or directory does not exist: " .. file_path)
+      return
+    end
+
+    local claude_start_line = start_line and (start_line - 1) or nil
+    local claude_end_line = end_line and (end_line - 1) or nil
+
+    local success, error_msg = M.send_at_mention(file_path, claude_start_line, claude_end_line, "ClaudeCodeAdd")
+    if not success then
+      logger.error("command", "ClaudeCodeAdd: " .. (error_msg or "Failed to add file"))
+    else
+      local message = "ClaudeCodeAdd: Successfully added " .. file_path
+      if start_line or end_line then
+        if start_line and end_line then
+          message = message .. " (lines " .. start_line .. "-" .. end_line .. ")"
+        elseif start_line then
+          message = message .. " (from line " .. start_line .. ")"
+        end
+      end
+      logger.debug("command", message)
+    end
+  end, {
+    nargs = "+",
+    complete = "file",
+    desc = "Add specified file or directory to Claude Code context with optional line range",
+  })
+
+  local terminal_ok, terminal = pcall(require, "claude_agents.terminal")
+  if terminal_ok then
+    vim.api.nvim_create_user_command("ClaudeCode", function(opts)
+      local current_mode = vim.fn.mode()
+      if current_mode == "v" or current_mode == "V" or current_mode == "\22" then
+        vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
+      end
+      local cmd_args = opts.args and opts.args ~= "" and opts.args or nil
+      terminal.simple_toggle({}, cmd_args)
+    end, {
+      nargs = "*",
+      desc = "Toggle the Claude Code terminal window for current tab",
+    })
+
+    vim.api.nvim_create_user_command("ClaudeCodeFocus", function(opts)
+      local current_mode = vim.fn.mode()
+      if current_mode == "v" or current_mode == "V" or current_mode == "\22" then
+        vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<Esc>", true, false, true), "n", false)
+      end
+      local cmd_args = opts.args and opts.args ~= "" and opts.args or nil
+      terminal.focus_toggle({}, cmd_args)
+    end, {
+      nargs = "*",
+      desc = "Smart focus/toggle Claude Code terminal (switches to terminal if not focused, hides if focused)",
+    })
+
+    vim.api.nvim_create_user_command("ClaudeCodeOpen", function(opts)
+      local cmd_args = opts.args and opts.args ~= "" and opts.args or nil
+      terminal.open({}, cmd_args)
+    end, {
+      nargs = "*",
+      desc = "Open the Claude Code terminal window with optional arguments",
+    })
+
+    vim.api.nvim_create_user_command("ClaudeCodeClose", function()
+      terminal.close()
+    end, {
+      desc = "Close the Claude Code terminal window",
+    })
+  else
+    logger.error(
+      "init",
+      "Terminal module not found. Terminal commands (ClaudeCode, ClaudeCodeOpen, ClaudeCodeClose) not registered."
+    )
+  end
+
+  vim.api.nvim_create_user_command("ClaudeCodeDiffAccept", function()
+    local diff = require("claude_agents.diff")
+    diff.accept_current_diff()
+  end, {
+    desc = "Accept the current diff changes",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeDiffDeny", function()
+    local diff = require("claude_agents.diff")
+    diff.deny_current_diff()
+  end, {
+    desc = "Deny/reject the current diff changes",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeDiffToggleProvider", function()
+    local diff = require("claude_agents.diff")
+    diff.toggle_provider()
+  end, {
+    desc = "Toggle the diff provider between native and unified.nvim (affects next diff)",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeCloseAllDiffs", function()
+    -- Pending only: a status="saved" diff holds the user's :w'd edits in its
+    -- proposed buffer until Claude writes the file, and closing it would discard
+    -- them (same data-loss branch the auto-cleanup avoids). So this clears
+    -- orphaned proposals but leaves accepted diffs for the user to handle.
+    local diff = require("claude_agents.diff")
+    local count = diff.close_pending_diffs("user command")
+    if count > 0 then
+      vim.notify(("Closed %d pending Claude diff(s)"):format(count), vim.log.levels.INFO)
+    else
+      vim.notify("No pending Claude diffs to close", vim.log.levels.WARN)
+    end
+  end, {
+    desc = "Close pending Claude Code diffs (leaves accepted/saved diffs intact)",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeSelectModel", function(opts)
+    local cmd_args = opts.args and opts.args ~= "" and opts.args or nil
+    M.open_with_model(cmd_args)
+  end, {
+    nargs = "*",
+    desc = "Select and open Claude terminal with chosen model and optional arguments",
+  })
+
+  vim.api.nvim_create_user_command("ClaudeCodeToggleFileTracking", function()
+    M.toggle_file_tracking()
+  end, {
+    desc = "Toggle automatic file/selection tracking sent to Claude Code",
+  })
+end
+
+M.open_with_model = function(additional_args)
+  local models = M.state.config.models
+
+  if not models or #models == 0 then
+    logger.error("command", "No models configured for selection")
+    return
+  end
+
+  vim.ui.select(models, {
+    prompt = "Select Claude model:",
+    format_item = function(item)
+      return item.name
+    end,
+  }, function(choice)
+    if not choice then
+      return
+    end
+
+    if not choice.value or type(choice.value) ~= "string" then
+      logger.error("command", "Invalid model value selected")
+      return
+    end
+
+    local model_arg = "--model " .. choice.value
+    local final_args = additional_args and (model_arg .. " " .. additional_args) or model_arg
+    vim.cmd("ClaudeCode " .. final_args)
+  end)
+end
+
+---Get version information.
+---@return { version: string, major: integer, minor: integer, patch: integer, prerelease: string|nil }
+function M.get_version()
+  return {
+    version = M.version:string(),
+    major = M.version.major,
+    minor = M.version.minor,
+    patch = M.version.patch,
+    prerelease = M.version.prerelease,
+  }
+end
+
+---Format file path for at mention (exposed for testing).
+---@param file_path string
+---@return string formatted_path
+---@return boolean is_directory
+function M._format_path_for_at_mention(file_path)
+  if not file_path or type(file_path) ~= "string" or file_path == "" then
+    error("format_path_for_at_mention: file_path must be a non-empty string")
+  end
+
+  if not package.loaded["busted"] then
+    if vim.fn.filereadable(file_path) == 0 and vim.fn.isdirectory(file_path) == 0 then
+      error("format_path_for_at_mention: path does not exist: " .. file_path)
+    end
+  end
+
+  local is_directory = vim.fn.isdirectory(file_path) == 1
+  local formatted_path = file_path
+
+  if is_directory then
+    local cwd = vim.fn.getcwd()
+    if string.find(file_path, cwd, 1, true) == 1 then
+      local relative_path = string.sub(file_path, #cwd + 2)
+      if relative_path ~= "" then
+        formatted_path = relative_path
+      else
+        formatted_path = "./"
+      end
+    end
+    if not string.match(formatted_path, "/$") then
+      formatted_path = formatted_path .. "/"
+    end
+  else
+    local cwd = vim.fn.getcwd()
+    if string.find(file_path, cwd, 1, true) == 1 then
+      local relative_path = string.sub(file_path, #cwd + 2)
+      if relative_path ~= "" then
+        formatted_path = relative_path
+      end
+    end
+  end
+
+  return formatted_path, is_directory
+end
+
+---Broadcast an at_mention for a file path (exposed for testing).
+---@param file_path string
+---@param start_line number|nil
+---@param end_line number|nil
+function M._broadcast_at_mention(file_path, start_line, end_line)
+  local inst = get_instance()
+  if not inst or not inst.server then
+    return false, "Claude Code integration is not running"
+  end
+
+  local formatted_path, is_directory
+  local format_success, format_result, is_dir_result = pcall(M._format_path_for_at_mention, file_path)
+  if not format_success then
+    return false, format_result
+  end
+  formatted_path, is_directory = format_result, is_dir_result
+
+  if is_directory and (start_line or end_line) then
+    logger.debug("command", "Line numbers ignored for directory: " .. formatted_path)
+    start_line = nil
+    end_line = nil
+  end
+
+  local params = {
+    filePath = formatted_path,
+    lineStart = start_line,
+    lineEnd = end_line,
+  }
+
+  if
+    (M.state.config and M.state.config.disable_broadcast_debouncing)
+    or (package.loaded["busted"] and not (M.state.config and M.state.config.enable_broadcast_debouncing_in_tests))
+  then
+    local broadcast_success = inst.server.broadcast("at_mentioned", params)
+    if broadcast_success then
+      return true, nil
+    else
+      local error_msg = "Failed to broadcast " .. (is_directory and "directory" or "file") .. " " .. formatted_path
+      logger.error("command", error_msg)
+      return false, error_msg
+    end
+  end
+
+  queue_mention_for(inst, formatted_path, start_line, end_line)
+  return true, nil
+end
+
+function M._add_paths_to_claude(file_paths, options)
+  options = options or {}
+  local delay = options.delay or 0
+  local show_summary = options.show_summary ~= false
+  local context = options.context or "command"
+  local batch_size = options.batch_size or 10
+  local max_files = options.max_files or 100
+
+  if not file_paths or #file_paths == 0 then
+    return 0, 0
+  end
+
+  if #file_paths > max_files then
+    logger.warn(context, string.format("Too many files selected (%d), limiting to %d", #file_paths, max_files))
+    local limited_paths = {}
+    for i = 1, max_files do
+      limited_paths[i] = file_paths[i]
+    end
+    file_paths = limited_paths
+  end
+
+  local success_count = 0
+  local total_count = #file_paths
+
+  if delay > 0 then
+    local function send_batch(start_index)
+      if start_index > total_count then
+        if show_summary then
+          local message = success_count == 1 and "Added 1 file to Claude context"
+            or string.format("Added %d files to Claude context", success_count)
+          if total_count > success_count then
+            message = message .. string.format(" (%d failed)", total_count - success_count)
+          end
+
+          if total_count > success_count then
+            if success_count > 0 then
+              logger.warn(context, message)
+            else
+              logger.error(context, message)
+            end
+          elseif success_count > 0 then
+            logger.info(context, message)
+          else
+            logger.debug(context, message)
+          end
+        end
+        return
+      end
+
+      local end_index = math.min(start_index + batch_size - 1, total_count)
+      local batch_success = 0
+
+      for i = start_index, end_index do
+        local file_path = file_paths[i]
+        local success, error_msg = M._broadcast_at_mention(file_path)
+        if success then
+          success_count = success_count + 1
+          batch_success = batch_success + 1
+        else
+          logger.error(context, "Failed to add file: " .. file_path .. " - " .. (error_msg or "unknown error"))
+        end
+      end
+
+      logger.debug(
+        context,
+        string.format(
+          "Processed batch %d-%d: %d/%d successful",
+          start_index,
+          end_index,
+          batch_success,
+          end_index - start_index + 1
+        )
+      )
+
+      if end_index < total_count then
+        vim.defer_fn(function()
+          send_batch(end_index + 1)
+        end, delay)
+      else
+        if show_summary then
+          local message = success_count == 1 and "Added 1 file to Claude context"
+            or string.format("Added %d files to Claude context", success_count)
+          if total_count > success_count then
+            message = message .. string.format(" (%d failed)", total_count - success_count)
+          end
+
+          if total_count > success_count then
+            if success_count > 0 then
+              logger.warn(context, message)
+            else
+              logger.error(context, message)
+            end
+          elseif success_count > 0 then
+            logger.info(context, message)
+          else
+            logger.debug(context, message)
+          end
+        end
+      end
+    end
+
+    send_batch(1)
+  else
+    local progress_interval = math.max(1, math.floor(total_count / 10))
+
+    for i, file_path in ipairs(file_paths) do
+      local success, error_msg = M._broadcast_at_mention(file_path)
+      if success then
+        success_count = success_count + 1
+      else
+        logger.error(context, "Failed to add file: " .. file_path .. " - " .. (error_msg or "unknown error"))
+      end
+
+      if total_count > 20 and i % progress_interval == 0 then
+        logger.debug(
+          context,
+          string.format("Progress: %d/%d files processed (%d successful)", i, total_count, success_count)
+        )
+      end
+    end
+
+    if show_summary then
+      local message = success_count == 1 and "Added 1 file to Claude context"
+        or string.format("Added %d files to Claude context", success_count)
+      if total_count > success_count then
+        message = message .. string.format(" (%d failed)", total_count - success_count)
+      end
+
+      if total_count > success_count then
+        if success_count > 0 then
+          logger.warn(context, message)
+        else
+          logger.error(context, message)
+        end
+      elseif success_count > 0 then
+        logger.info(context, message)
+      else
+        logger.debug(context, message)
+      end
+    end
+  end
+
+  return success_count, total_count
+end
+
+return M

@@ -56,15 +56,15 @@ describe("focus_after_send behavior", function()
 
     saved_require = _G.require
     _G.require = function(mod)
-      if mod == "claudecode.config" then
+      if mod == "claude_agents.config" then
         return mock_config
-      elseif mod == "claudecode.logger" then
+      elseif mod == "claude_agents.logger" then
         return mock_logger
-      elseif mod == "claudecode.diff" then
+      elseif mod == "claude_agents.diff" then
         return { setup = function() end }
-      elseif mod == "claudecode.terminal" then
+      elseif mod == "claude_agents.terminal" then
         return mock_terminal
-      elseif mod == "claudecode.server.init" then
+      elseif mod == "claude_agents.server.init" then
         return {
           get_status = function()
             return { running = true, client_count = 1 }
@@ -78,12 +78,12 @@ describe("focus_after_send behavior", function()
 
   local function teardown_mocks()
     _G.require = saved_require
-    package.loaded["claudecode"] = nil
-    package.loaded["claudecode.config"] = nil
-    package.loaded["claudecode.logger"] = nil
-    package.loaded["claudecode.diff"] = nil
-    package.loaded["claudecode.terminal"] = nil
-    package.loaded["claudecode.server.init"] = nil
+    package.loaded["claude_agents"] = nil
+    package.loaded["claude_agents.config"] = nil
+    package.loaded["claude_agents.logger"] = nil
+    package.loaded["claude_agents.diff"] = nil
+    package.loaded["claude_agents.terminal"] = nil
+    package.loaded["claude_agents.server.init"] = nil
   end
 
   after_each(function()
@@ -93,7 +93,7 @@ describe("focus_after_send behavior", function()
   it("focuses terminal with open() when enabled", function()
     setup_mocks(true)
 
-    claudecode = require("claudecode")
+    claudecode = require("claude_agents")
     claudecode.setup({})
 
     -- Mark server as present and stub low-level broadcast to succeed
@@ -115,7 +115,7 @@ describe("focus_after_send behavior", function()
   it("only ensures visibility when disabled (default)", function()
     setup_mocks(false)
 
-    claudecode = require("claudecode")
+    claudecode = require("claude_agents")
     claudecode.setup({})
 
     claudecode.register_tab_instance(1, { server = mock_server_facade, port = 12345, mention_queue = {} })
