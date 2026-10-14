@@ -12,8 +12,8 @@ local logger = require("claudecode.logger")
 --- Current plugin version
 ---@type ClaudeCodeVersion
 M.version = {
-  major = 0,
-  minor = 2,
+  major = 1,
+  minor = 0,
   patch = 0,
   prerelease = nil,
   string = function(self)

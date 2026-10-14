@@ -2,27 +2,54 @@
 
 ## [Unreleased]
 
-### Features
+## [1.0.0] - 2026-10-15
 
-- Agents mode (`agents = { enabled = true }`, `<leader>aA`, `:ClaudeCodeAgents`): a tabpage running several Claudes on one project side by side, with the project's past and present sessions, each one's line counts and file activity, and the files it touched. Counts and titles come from Claude Code's own transcripts, so they cover conversations started outside the view and stay accurate while an agent is still working. Switching agents leaves the previous one running.
-- Each agents-mode agent gets its own connection to Neovim, so a diff, a file open or an `@` mention reaches the agent it belongs to rather than every Claude sharing a tab.
-- In agents mode, `<C-n>`/`<C-p>` select a session without starting it, so you can read what it did — its counts, files and activity all follow the selection — before deciding to reopen it. The centre pane names the conversation you landed on and the key that resumes it (`i`, the same key that puts you in a running agent, or `<CR>`), and the view opens already pointed at your newest session rather than at an empty pane. Inside a file float those keys step through the next and previous file of the pane the float came from instead, swapping the float's content in place and keeping the baseline you opened with; holding the key scrolls through the list and opens the row you settle on.
-- The agents-mode session list no longer re-sorts itself. Every criterion worth sorting by moves while you are reading — one background agent finishing a tool call bumps its timestamp and its counts — so with several agents running, the session you were reaching for had moved by the time you got there. The order is now fixed once and rows keep their places; a session that starts later is sorted into its place once and pinned too. `gs` in any of the three list panes opens a menu to re-order by recent activity, name, changes or status (picking the criterion already in force reverses it), and `r` re-sorts as part of refreshing. The choice lasts as long as the view is open; `agents.sessions.sort` still sets what it opens with, and now takes `"name"`/`"changes"`/`"status"` alongside the older `"title"`/`"added"`.
-- In agents mode, `A` (`agents.keymaps.follow_up`, `:ClaudeCodeAgentFollowUp`) starts a new agent named after a session, numbered on — `plan` → `plan-2`, `plan-2` → `plan-3`, stepping over a number another session already has — and selects it. The row under the cursor in the sessions pane, the selected session everywhere else. The name is passed to the CLI at launch (`claude --name`), so the session is called that from the start, in Claude's own prompt box and in the list, before anything has been said in it.
-- `diff_opts.layout = "float"` opens diffs in a floating window (requires unified.nvim; warns once and falls back to a split otherwise). Agents mode uses floats regardless, cascading and titled per agent so several are answerable at once.
+The first release of claude-agents.nvim, a fork of [claudecode.nvim](https://github.com/coder/claudecode.nvim) 0.3.0. The Lua module, the commands and the options are unchanged: point the plugin spec at `papricasix/claude-agents.nvim` and add `main = "claudecode"`.
 
-- `:ClaudeCodeCloseAllDiffs` command to close pending Claude diffs at once (e.g. proposals orphaned by resolving them via Claude remote control). Diffs you have already accepted but whose file has not been written yet are left intact so saved edits are never discarded. ([#248](https://github.com/coder/claudecode.nvim/issues/248))
+### Added
 
-### Bug Fixes
+- **Agents view** (`agents = { enabled = true }`, `<leader>aA`, `:ClaudeCodeAgents`): several Claudes on one project in one tab, each with its own connection to Neovim, so a diff or a file reaches the agent that asked. Every conversation the project has had, read from Claude Code's own transcripts, with what it changed (Changes), everything it did (Activity) and the subagents, background shells, monitors and workflow runs it started (Tasks). `<CR>` opens an edit, a file as the session changed it, a command's output or a subagent's transcript; `.` diffs against git `HEAD` or svn `BASE`. Search across conversations, checkpoints, flags, numbered follow-ups, git worktrees and rewinds. See [docs/agents.md](docs/agents.md).
+- **Live cursor** (`live_cursor`): follows Claude through the files it reads and edits, showing each edit as an inline diff.
+- **Plan view** (`plan`): plan mode's plan opens as a document in the editor.
+- **Terminal links**, on by default: file paths in Claude's terminal open in Neovim when clicked, or with `gf`.
+- **Per-tab status** (`status`): busy, waiting, done or idle for each tab's Claude, for tablines, with the CLI's own spinner and a `User ClaudeCodeStatusChanged` event.
+- **Session persistence** (`session_persistence`): restoring a Neovim session resumes each tab's conversation; works with `:mksession`, persistence.nvim, mini.sessions, auto-session and resession.
+- **Inline diffs** with [unified.nvim](https://github.com/papricasix/unified.nvim) (`diff_opts.provider`, `:ClaudeCodeDiffToggleProvider`), and diffs in a floating window (`diff_opts.layout = "float"`).
+- `:checkhealth claudecode`: the prerequisites, and every running instance with its port, lock file and clients.
+- `:ClaudeCodeToggleFileTracking` (`<leader>aF`) stops or resumes sending your file and selection.
+- Claude Fable in the model picker.
 
-- In agents mode, `/clear` in a named session (one you `/rename`d, or started with a name) showed the new conversation's row under its id for a moment before its name was read. Claude Code takes the name along through `/clear`, and the row now reads it from the first paint.
-- `openFile` could open a file in a tab that had nothing to do with the Claude that asked: it scanned every window in every tab and took the first suitable one, ignoring the plugin's own "not an editor window" marker. It is now scoped to the requesting Claude's tab and shares the window-picking rules with the diff module instead of keeping a second, drifted copy.
-- A `cwd` passed to the terminal (`terminal.cwd`, `cwd_provider`) was silently dropped, because overrides were only applied to settings that already had a value and both of these default to unset.
-- `closeAllDiffTabs` from one Claude could reject a pending diff belonging to another Claude in the same tab, which that Claude received as the user declining its edit. Diffs now record which connection opened them and are only closed for that one.
+### Changed
 
-- Diffs opened via `openDiff` no longer linger forever when they are resolved outside this Neovim or their Claude session goes away. Pending diffs are now automatically closed when the client that opened them disconnects or the integration is stopped, and `closeAllDiffTabs` now also resolves/cleans the diff module's tracked state instead of only closing windows. ([#248](https://github.com/coder/claudecode.nvim/issues/248))
-- Show diffs when the Claude Code terminal is the only window (no other splits). Previously `openDiff` failed with "No suitable editor window found"; now a split is created to host the diff, matching the behavior of the `openFile` tool. ([#231](https://github.com/coder/claudecode.nvim/issues/231))
-- Work around a Neovim core bug (< 0.12.2) that fragmented large bracketed pastes into the terminal across `vim.paste` phases, making Cmd+V appear to truncate content. Added a scoped, version-gated `vim.paste` shim controlled by `terminal.fix_streamed_paste` (`"auto"` by default; no-op on Neovim >= 0.12.2). ([#161](https://github.com/coder/claudecode.nvim/issues/161))
+- Neovim 0.10 or newer is required (clickable terminal links need 0.11).
+- Diffs open next to the Claude terminal, in the tab that owns it, and give the window back when they close. An accepted diff stays on screen until Claude has written the file, so the old text never flashes back.
+- The MCP tools answer in the shapes the VS Code extension sends (`getDiagnostics` with LSP ranges and severity names), and a diff's proposal buffer is reported to Claude as the file it changes.
+- Launch hooks run through Neovim's own binary, so they need no `nvim` on `PATH` and behave the same on macOS, Linux and native Windows.
+
+### Fixed
+
+- `openFile` opened files in whichever tab came first; it now uses the requesting Claude's tab. `closeAllDiffTabs` from one Claude no longer closes another Claude's pending diff.
+- `terminal.cwd` and `cwd_provider` were ignored.
+- A `$` in a path added with `:ClaudeCodeAdd` was expanded as an environment variable.
+- Starting failed when another editor held the chosen port; lock files left by crashed editors are now swept.
+- Windows: hook quoting, CRLF files in diffs, `file://` links, finding a project's conversations, and the spinner drawn with the emoji font.
+
+### Removed
+
+- The AI release-notes workflow and its configuration (`.github/workflows/release-notes.yaml`, `communique.toml`); release notes are written by hand.
+
+### From upstream claudecode.nvim, after 0.3.0
+
+By [Coder](https://github.com/coder/claudecode.nvim) and its contributors, merged into this fork:
+
+- `:ClaudeCodeCloseAllDiffs`, and pending diffs closed when the Claude that opened them disconnects ([#248](https://github.com/coder/claudecode.nvim/issues/248))
+- Diffs open when the Claude terminal is the only window ([#231](https://github.com/coder/claudecode.nvim/issues/231))
+- `terminal.fix_streamed_paste`, a workaround for Neovim < 0.12.2 truncating large pastes into the terminal ([#161](https://github.com/coder/claudecode.nvim/issues/161))
+- Auth tokens from the OS random source, lock files readable only by you, malformed WebSocket frames closing the connection, the Snacks Explorer excluded from editor windows, and a modernised model picker
+
+---
+
+Releases before 1.0.0 are upstream claudecode.nvim's own.
 
 ## [0.3.0] - 2025-09-15
 
