@@ -624,6 +624,22 @@ describe("agents_view", function()
       agents_view.close()
     end)
 
+    it("keeps the editor's gutter off every buffer the centre pane shows", function()
+      -- The same per-(window, buffer) memory hands a newly shown buffer the
+      -- user's global `number`: the notice screens drew line numbers.
+      agents_view.setup(base_config({ enabled = true }))
+      expect(agents_view.open()).to_be_true()
+      local center = agents_view._state().wins.center
+
+      vim.wo[center].number = true
+      vim.wo[center].signcolumn = "yes"
+      fire_autocmd("BufWinEnter", { buf = vim.api.nvim_win_get_buf(center) })
+
+      expect(vim.wo[center].number).to_be_false()
+      expect(vim.wo[center].signcolumn).to_be("no")
+      agents_view.close()
+    end)
+
     it("keeps what a terminal buffer added to the pane's highlights", function()
       -- `termopen` appends `StatusLine:StatusLineTerm` as the buffer becomes a
       -- terminal. Overwriting rather than merging would restyle the pane's
@@ -1036,6 +1052,18 @@ describe("agents_view", function()
       expect(center_lines():find("start a new agent", 1, true) ~= nil).to_be_true()
       new_key().callback()
       expect(#launched).to_be(1)
+    end)
+
+    it("leaves <CR> unbound on a notice screen when the select key is turned off", function()
+      agents_view.setup(base_config({ enabled = true, keymaps = { select = false } }))
+      open_view()
+      expect(agents_view._state().notice_kind).to_be("offer")
+
+      local has_cr = false
+      for _, keymap in ipairs(vim.api.nvim_buf_get_keymap(agents_view._state().notice_buf, "n")) do
+        has_cr = has_cr or keymap.lhs == "<CR>"
+      end
+      expect(has_cr).to_be_false()
     end)
 
     it("starts a new agent when the terminal is focused in an empty project", function()

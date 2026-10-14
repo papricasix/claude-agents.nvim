@@ -314,6 +314,38 @@ local bind_keys
 ---@type fun(buf: integer, terminal: boolean|nil)
 local map_cycle
 
+---The window options every pane wears: none of the editor's gutter or text
+---decorations, which mean nothing on a pane's rows.
+---@param win integer
+---@param pane string
+local function apply_chrome(win, pane)
+  -- The sidebars hold their size; the terminal absorbs whatever is left. Fixing
+  -- the centre as well leaves Neovim no window it may take space from, and it
+  -- takes it from a sidebar instead: widening Changes shrank the right column,
+  -- widening that shrank Changes back, and a pane lost to a dead terminal healed
+  -- into a **one-cell** Changes pane. All three were the same missing degree of
+  -- freedom (measured).
+  local fixed = pane ~= "center"
+  local chrome = {
+    number = false,
+    relativenumber = false,
+    signcolumn = "no",
+    foldcolumn = "0",
+    wrap = false,
+    list = false,
+    spell = false,
+    cursorline = pane ~= "center",
+    winfixwidth = fixed,
+    winfixheight = fixed,
+  }
+  for name, value in pairs(chrome) do
+    -- Local scope, or configuring a pane rewrites the user's own global: a pane
+    -- is the current window while it is being built, and there `vim.wo` means
+    -- `:set` rather than `:setlocal`. See `utils.set_win_option`.
+    utils.set_win_option(win, name, value)
+  end
+end
+
 ---Paint the centre pane with the raised background snacks gives its own
 ---terminals, which sets the conversation apart from the panes describing it. The
 ---sidebars keep the editor's own `Normal`, so they read as part of the editor
@@ -351,6 +383,10 @@ local function paint_center(win)
   end
 
   utils.set_win_option(win, "winhighlight", table.concat(entries, ","))
+  -- The same per-(window, buffer) memory hands a newly shown buffer the user's
+  -- global `number`, `signcolumn` and the rest: the notice screens drew the
+  -- editor's line numbers beside their text.
+  apply_chrome(win, "center")
 end
 
 ---Mark a window as belonging to the view: not an editor window, and named.
@@ -365,32 +401,8 @@ local function tag_window(win, pane)
   end)
   if pane == "center" then
     paint_center(win)
-  end
-
-  -- The sidebars hold their size; the terminal absorbs whatever is left. Fixing
-  -- the centre as well leaves Neovim no window it may take space from, and it
-  -- takes it from a sidebar instead: widening Changes shrank the right column,
-  -- widening that shrank Changes back, and a pane lost to a dead terminal healed
-  -- into a **one-cell** Changes pane. All three were the same missing degree of
-  -- freedom (measured).
-  local fixed = pane ~= "center"
-  local chrome = {
-    number = false,
-    relativenumber = false,
-    signcolumn = "no",
-    foldcolumn = "0",
-    wrap = false,
-    list = false,
-    spell = false,
-    cursorline = pane ~= "center",
-    winfixwidth = fixed,
-    winfixheight = fixed,
-  }
-  for name, value in pairs(chrome) do
-    -- Local scope, or configuring a pane rewrites the user's own global: a pane
-    -- is the current window while it is being built, and there `vim.wo` means
-    -- `:set` rather than `:setlocal`. See `utils.set_win_option`.
-    utils.set_win_option(win, name, value)
+  else
+    apply_chrome(win, pane)
   end
 end
 
@@ -1022,9 +1034,16 @@ local function notice_buf()
   -- offered conversation before focusing — "put me in this session" is one
   -- intent whether the CLI is running or not. `<CR>` is added because that is
   -- what opens a session in the pane next door, and this screen is about one.
-  map(buf, keymaps().select or "<CR>", function()
-    M.focus_terminal()
-  end, "Claude agents: start this session")
+  -- Unset means a bare config (default `<CR>`); `false` or `""` means turned off.
+  local select_key = keymaps().select
+  if select_key == nil then
+    select_key = "<CR>"
+  end
+  if type(select_key) == "string" and select_key ~= "" then
+    map(buf, select_key, function()
+      M.focus_terminal()
+    end, "Claude agents: start this session")
+  end
   return buf
 end
 
