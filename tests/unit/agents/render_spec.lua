@@ -33,6 +33,61 @@ describe("agents.render", function()
     end)
   end)
 
+  describe("a pane with nothing in it", function()
+    it("cuts its message to the pane with an ellipsis, like any row", function()
+      -- Neovim clips a line at the window edge and shows nothing of it, so an
+      -- uncut message read as a sentence that simply stopped.
+      local panes = {
+        { render.sessions, "no sessions for this project" },
+        { render.feed, "no activity yet" },
+        { render.changes, "no files changed" },
+        { render.subagents, "no subagents, shells or monitors" },
+      }
+      for _, pane in ipairs(panes) do
+        local draw, message = pane[1], pane[2]
+        draw(buf, {}, { width = 12 })
+        local line = lines_of(buf)[1]
+        expect(vim.fn.strdisplaywidth(line)).to_be(12)
+        expect(line:sub(1, 2)).to_be("  ")
+        expect(line:sub(-#"…")).to_be("…")
+
+        draw(buf, {}, { width = 60 })
+        expect(lines_of(buf)[1]).to_be("  " .. message)
+      end
+    end)
+  end)
+
+  describe("a pane narrower than its rows want", function()
+    it("cuts the text rather than pushing what is on the right past the edge", function()
+      -- The text's room used to floor at 8 cells, so below that a row outgrew its
+      -- pane and Neovim clipped the counts — silently, at the window edge.
+      local width = 22
+      local function fits(lines)
+        for _, line in ipairs(lines) do
+          expect(vim.fn.strdisplaywidth(line) <= width).to_be_true()
+        end
+      end
+
+      render.sessions(buf, {
+        { session_id = "aaaa1111", title = "Fix session restoration", last_ts = 1785700000, added = 90, removed = 5 },
+      }, { width = width, now = 1785700000 })
+      fits(lines_of(buf))
+
+      local feed = render.create_buf("feed")
+      render.feed(feed, {
+        { ts = 1785700060, kind = "edit", path = "/proj/lua/deep/module.lua", added = 12, removed = 3 },
+        { ts = 1785700120, kind = "tool", tool = "Bash", label = "Run the whole suite", status = "running" },
+      }, { width = width, cwd = "/proj" })
+      fits(lines_of(feed))
+
+      local changes = render.create_buf("changes")
+      render.changes(changes, {
+        { path = "/proj/lua/deep/module.lua", status = "M", added = 120, removed = 30 },
+      }, { width = width, cwd = "/proj" })
+      fits(lines_of(changes))
+    end)
+  end)
+
   describe("paint", function()
     local writes, set_lines
 

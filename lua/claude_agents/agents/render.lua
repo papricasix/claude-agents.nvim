@@ -513,6 +513,16 @@ M.truncate = utils.truncate
 M.shorten_path = utils.shorten_path
 M.relative_path = utils.relative_path
 
+---Paint a pane's one-line "nothing here" message, cut to the pane with `…` like
+---any row. Neovim clips a line wider than its window at the edge and says
+---nothing of it, so an uncut message read as a sentence that simply stopped.
+---@param buf integer
+---@param text string
+---@param width integer
+local function paint_empty(buf, text, width)
+  paint(buf, { "  " .. M.truncate(text, width - 2) }, {}, {})
+end
+
 ---Right-align `text` in a field `width` display cells wide.
 ---@param text string
 ---@param width integer
@@ -610,7 +620,7 @@ function M.sessions(buf, rows, opts)
   local lines, marks, payload_map = {}, {}, {}
 
   if #rows == 0 then
-    paint(buf, { "  no sessions for this project" }, {}, {})
+    paint_empty(buf, "no sessions for this project", width)
     return
   end
 
@@ -637,10 +647,12 @@ function M.sessions(buf, rows, opts)
     local left_prefix = flagged .. (row.worktree and (WORKTREE_MARK .. " ") or "")
     local prefix_width = vim.fn.strdisplaywidth(left_prefix)
     local right_width = vim.fn.strdisplaywidth(right)
+    -- The title's room floors at 1 cell, as in every pane: a wider floor pushed
+    -- the age and counts past the window edge, where Neovim clips silently.
     local title, note = M.fit_title(
       row.title or row.session_id or "?",
       row.flag and row.flag.note or nil,
-      math.max(8, width - prefix_width - right_width - 1)
+      math.max(1, width - prefix_width - right_width - 1)
     )
 
     local line, age_at = right_align(left_prefix .. title .. note, width, right)
@@ -800,7 +812,7 @@ function M.feed(buf, events, opts)
   local lines, marks, payload_map = {}, {}, {}
 
   if #events == 0 then
-    paint(buf, { "  no activity yet" }, {}, {})
+    paint_empty(buf, "no activity yet", width)
     return
   end
 
@@ -821,7 +833,8 @@ function M.feed(buf, events, opts)
     -- The marker takes its cells out of the text, not out of the pane: a row that
     -- reads to the edge and then grows a `…` would reflow the whole column.
     local mark = is_tool and STATUS_MARK[event.status] or nil
-    local room = math.max(8, width - #head - 1 - (mark and (vim.fn.strdisplaywidth(mark.text) + 1) or 0))
+    -- Floors at 1 cell, so the marker is cut into rather than pushed off the edge.
+    local room = math.max(1, width - #head - 1 - (mark and (vim.fn.strdisplaywidth(mark.text) + 1) or 0))
     local name
     if is_tool then
       -- Cut from the end: a label is a sentence, and its first words are the ones
@@ -922,7 +935,7 @@ function M.changes(buf, entries, opts)
   local lines, marks, payload_map = {}, {}, {}
 
   if #entries == 0 then
-    paint(buf, { "  no files changed" }, {}, {})
+    paint_empty(buf, "no files changed", width)
     return
   end
 
@@ -941,7 +954,8 @@ function M.changes(buf, entries, opts)
     })
     local path = M.relative_path(entry.path, opts.cwd)
     local head = string.format(" %s ", status)
-    local name = M.shorten_path(path, math.max(8, width - #head - vim.fn.strdisplaywidth(counts) - 1))
+    -- Floors at 1 cell, so the counts stay inside the pane.
+    local name = M.shorten_path(path, math.max(1, width - #head - vim.fn.strdisplaywidth(counts) - 1))
     local line, counts_at = right_align(head .. name, width, counts)
 
     local lnum = index - 1
@@ -1027,7 +1041,7 @@ function M.subagents(buf, rows, opts)
   local lines, marks, payload_map = {}, {}, {}
 
   if #rows == 0 then
-    paint(buf, { "  no subagents, shells or monitors" }, {}, {})
+    paint_empty(buf, "no subagents, shells or monitors", width)
     return
   end
 
