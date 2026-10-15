@@ -27,7 +27,6 @@ local FOOTER = "pick the active one again to reverse it"
 local ACTIVE_MARK = "❯"
 
 local render = require("claude_agents.agents.render")
-local utils = require("claude_agents.utils")
 
 ---@param name string
 ---@return string group
@@ -174,18 +173,6 @@ function M.is_open()
   return shown ~= nil and shown.win ~= nil and vim.api.nvim_win_is_valid(shown.win)
 end
 
----@param lines string[]
----@return integer width, integer height
-local function dimensions(lines)
-  local width = 0
-  for _, line in ipairs(lines) do
-    width = math.max(width, vim.fn.strdisplaywidth(line))
-  end
-  local columns = vim.o.columns or 80
-  local rows = vim.o.lines or 24
-  return math.max(24, math.min(width + 2, math.floor(columns * 0.8))), math.min(#lines, math.floor(rows * 0.8))
-end
-
 ---Which row the cursor should start on: the criterion already active.
 ---@param by_line table<integer, string>
 ---@param kind_by_line table<integer, string>
@@ -204,86 +191,6 @@ local function active_line(by_line, kind_by_line, active)
     end
   end
   return first or 1
-end
-
----@param buf integer
----@param title string
----@param lines string[]
----@param lnum integer
----@return boolean shown
-local function open_snacks(buf, title, lines, lnum)
-  local ok, snacks_win = pcall(require, "snacks.win")
-  if not ok or type(snacks_win) ~= "table" then
-    return false
-  end
-  local width, height = dimensions(lines)
-  local win = snacks_win({
-    buf = buf,
-    title = " " .. title .. " ",
-    title_pos = "center",
-    border = "rounded",
-    width = width,
-    height = height,
-    enter = true,
-    backdrop = 60,
-    zindex = 60,
-    wo = { wrap = false, cursorline = true },
-    keys = {
-      q = "close",
-      ["<Esc>"] = "close",
-    },
-    on_close = function()
-      shown = nil
-    end,
-  })
-  if not win then
-    return false
-  end
-  shown = {
-    win = win.win,
-    -- snacks owns the buffer's lifetime once it is handed over.
-    buf = nil,
-    close = function()
-      win:close()
-    end,
-  }
-  pcall(vim.api.nvim_win_set_cursor, win.win, { lnum, 0 })
-  return true
-end
-
----@param buf integer
----@param title string
----@param lines string[]
----@param lnum integer
----@return boolean shown
-local function open_native(buf, title, lines, lnum)
-  local width, height = dimensions(lines)
-  local columns = vim.o.columns or 80
-  local rows = vim.o.lines or 24
-  local ok, win = pcall(vim.api.nvim_open_win, buf, true, {
-    relative = "editor",
-    width = width,
-    height = height,
-    row = math.max(0, math.floor((rows - height) / 2) - 1),
-    col = math.max(0, math.floor((columns - width) / 2)),
-    style = "minimal",
-    border = "rounded",
-    title = " " .. title .. " ",
-    title_pos = "center",
-    zindex = 60,
-  })
-  if not ok or not win then
-    return false
-  end
-  shown = { win = win, buf = buf }
-  utils.set_win_option(win, "cursorline", true)
-  pcall(vim.api.nvim_win_set_cursor, win, { lnum, 0 })
-  for _, lhs in ipairs({ "q", "<Esc>" }) do
-    pcall(vim.keymap.set, "n", lhs, function()
-      M.close()
-    end, { buffer = buf, nowait = true, silent = true, desc = "Close the Claude agents sort menu" })
-  end
-  return true
 end
 
 ---Show the menu. A second call while it is open closes it, so the same `gs` that
@@ -351,11 +258,19 @@ function M.open(items, active, on_pick, windows, active_window)
   end, { buffer = buf, nowait = true, silent = true, desc = "Claude agents: take the row under the cursor" })
 
   local title = (windows and #windows > 0) and "Sessions" or "Sort sessions"
-  local lnum = active_line(by_line, kind_by_line, active)
-  if open_snacks(buf, title, lines, lnum) then
-    return true
-  end
-  if open_native(buf, title, lines, lnum) then
+  shown = require("claude_agents.menu_float").open(buf, {
+    title = title,
+    lines = lines,
+    lnum = active_line(by_line, kind_by_line, active),
+    on_dismiss = function()
+      if shown and shown.buf then
+        M.close()
+      else
+        shown = nil
+      end
+    end,
+  })
+  if shown then
     return true
   end
   pcall(vim.api.nvim_buf_delete, buf, { force = true })

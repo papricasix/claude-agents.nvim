@@ -28,8 +28,6 @@
 ---@brief ]]
 ---@module 'claude_agents.agents.flags'
 
-local uv = vim.uv or vim.loop
-
 local M = {}
 
 --- Bumped when a persisted field changes meaning.
@@ -52,84 +50,9 @@ local stamp = nil
 ---@type string|nil
 local store_path = nil
 
----@param dir string
-local function mkdir_p(dir)
-  if dir == "" or uv.fs_stat(dir) then
-    return
-  end
-  local parent = dir:match("^(.*)[/\\][^/\\]+$")
-  if parent and parent ~= dir then
-    mkdir_p(parent)
-  end
-  uv.fs_mkdir(dir, 493) -- 0755
-end
-
----@param path string
----@param data string
----@return boolean written
-local function write_file(path, data)
-  local fd = uv.fs_open(path, "w", 420) -- 0644
-  if not fd then
-    return false
-  end
-  local written = uv.fs_write(fd, data, 0)
-  uv.fs_close(fd)
-  return written == #data
-end
-
---- The filesystem, as a seam for specs.
----
---- **libuv calls only, and that is load-bearing.** `settle` runs wherever a
---- transcript fold finishes, and a fold finishes in the callback of an
---- `uv.fs_read` — a fast context, where every `vim.fn` call raises `E5560`. The
---- first version read and wrote with `readfile`/`writefile`: the read threw
---- after the copy in memory had been emptied for it, the error was swallowed by
---- the fold's `pcall`, and a replied-to flag left the row while staying on disk
---- — with every *other* flag gone from memory too. Measured in a real Neovim;
---- the specs' fake filesystem has no fast context to fail in.
-M._io = {
-  ---@param path string
-  ---@return string|nil data nil when the file cannot be read.
-  read = function(path)
-    local fd = uv and uv.fs_open and uv.fs_open(path, "r", 438)
-    if not fd then
-      return nil
-    end
-    local st = uv.fs_fstat(fd)
-    local data = st and uv.fs_read(fd, st.size, 0) or nil
-    uv.fs_close(fd)
-    return data
-  end,
-  ---Replace the file in one step: a reader in another Neovim sees the old store
-  ---or the new one, never the half of one that a truncate-then-write leaves.
-  ---The temporary file is named for this process, so two editors writing at
-  ---once do not write into each other's.
-  ---@param path string
-  ---@param data string
-  ---@return boolean written
-  write = function(path, data)
-    if not (uv and uv.fs_open) then
-      return false
-    end
-    mkdir_p(path:match("^(.*)[/\\][^/\\]*$") or "")
-    local tmp = string.format("%s.%d.tmp", path, uv.os_getpid())
-    if write_file(tmp, data) and uv.fs_rename(tmp, path) then
-      return true
-    end
-    uv.fs_unlink(tmp)
-    return write_file(path, data)
-  end,
-  ---@param path string
-  ---@return string|nil stamp Size and mtime as one comparable value; nil when there is no file.
-  stat = function(path)
-    local st = uv and uv.fs_stat and uv.fs_stat(path)
-    if not st then
-      return nil
-    end
-    local mtime = st.mtime or {}
-    return string.format("%d:%d.%d", st.size or 0, mtime.sec or 0, mtime.nsec or 0)
-  end,
-}
+--- The filesystem, as a seam for specs. libuv calls only: `settle` runs wherever
+--- a transcript fold finishes, which is a fast context (see `store_io`).
+M._io = require("claude_agents.store_io")
 
 ---Where the store lives.
 ---

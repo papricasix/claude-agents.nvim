@@ -144,6 +144,23 @@ function M.shell_quote(arg)
   return "'" .. arg:gsub("'", "'\\''") .. "'"
 end
 
+---Quote one word of a command the Claude CLI will run itself — a hook, an
+---`apiKeyHelper`.
+---
+---The CLI hands those to a shell of its own (`shell: true`): `/bin/sh` on macOS
+---and Linux, `cmd.exe` on native Windows. Neither is Neovim's `'shell'`, so
+---`vim.fn.shellescape` is the wrong quoting: a Windows Neovim set to pwsh or bash
+---would emit POSIX single quotes that cmd.exe passes through literally, and the
+---command silently never runs.
+---@param arg string
+---@return string
+function M.quote_for_cli_shell(arg)
+  if M.is_windows() then
+    return '"' .. arg .. '"' -- cmd.exe: double quotes (no escape needed; " is illegal in paths)
+  end
+  return "'" .. arg:gsub("'", "'\\''") .. "'"
+end
+
 ---Expand a leading `~` or `~/` in a single argument to the user's home
 ---directory, matching shell tilde expansion at the start of a word. Embedded
 ---tildes (e.g. `--path=~/x`) and the `~user` form are intentionally left
