@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Create the made-up project the demo media is recorded in: a tiny shop
-# backend, committed to its own git repository so the agents view has status
-# letters to show. Wipes and recreates it on every run.
+# backend in Rust, committed to its own git repository so the agents view has
+# status letters to show. Wipes and recreates it on every run.
 #
 # Usage: sandbox.sh <project-dir>
 
@@ -9,7 +9,7 @@ set -euo pipefail
 
 dir="${1:?usage: sandbox.sh <project-dir>}"
 rm -rf "$dir"
-mkdir -p "$dir/shop" "$dir/tests"
+mkdir -p "$dir/src" "$dir/tests"
 cd "$dir"
 
 cat >README.md <<'EOF'
@@ -23,66 +23,136 @@ EOF
 # is drawn as an error. Asked here not to, it does not.
 cat >CLAUDE.md <<'EOF'
 Make only the change you are asked for, then stop. Do not run commands, tests
-or type checkers, and do not mention this note in your replies.
+or builds, and do not mention this note in your replies.
 EOF
 
-cat >shop/__init__.py <<'EOF'
+# The release check's shells build the crate, and nothing in the build belongs
+# in the repository.
+cat >.gitignore <<'EOF'
+/target
+/Cargo.lock
 EOF
 
-cat >shop/cart.py <<'EOF'
-from shop.pricing import line_total
+cat >Cargo.toml <<'EOF'
+[package]
+name = "acme-shop"
+version = "0.1.0"
+edition = "2021"
 
-
-class Cart:
-    def __init__(self):
-        self.items = {}
-
-    def add_item(self, sku, price, quantity=1):
-        entry = self.items.setdefault(sku, {"price": price, "quantity": 0})
-        entry["quantity"] += quantity
-
-    def total(self):
-        return sum(line_total(e["price"], e["quantity"]) for e in self.items.values())
-
-    def is_empty(self):
-        return not self.items
+[dependencies]
 EOF
 
-cat >shop/pricing.py <<'EOF'
-TAX_RATE = 0.2
-
-
-def line_total(price, quantity):
-    return price * quantity
-
-
-def with_tax(amount):
-    return round(amount * (1 + TAX_RATE), 2)
+cat >src/lib.rs <<'EOF'
+pub mod cart;
+pub mod inventory;
+pub mod pricing;
 EOF
 
-cat >shop/inventory.py <<'EOF'
-class Inventory:
-    def __init__(self, stock=None):
-        self.stock = dict(stock or {})
+cat >src/cart.rs <<'EOF'
+use std::collections::HashMap;
 
-    def available(self, sku):
-        return self.stock.get(sku, 0)
+use crate::pricing::line_total;
 
-    def reserve(self, sku, quantity):
-        if self.available(sku) < quantity:
-            raise ValueError(f"not enough {sku} in stock")
-        self.stock[sku] -= quantity
+struct Line {
+    price: f64,
+    quantity: u32,
+}
+
+#[derive(Default)]
+pub struct Cart {
+    items: HashMap<String, Line>,
+}
+
+impl Cart {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn add_item(&mut self, sku: &str, price: f64, quantity: u32) {
+        let line = self
+            .items
+            .entry(sku.to_string())
+            .or_insert(Line { price, quantity: 0 });
+        line.quantity += quantity;
+    }
+
+    pub fn total(&self) -> f64 {
+        self.items
+            .values()
+            .map(|line| line_total(line.price, line.quantity))
+            .sum()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.items.is_empty()
+    }
+}
 EOF
 
-cat >tests/test_cart.py <<'EOF'
-from shop.cart import Cart
+cat >src/pricing.rs <<'EOF'
+pub const TAX_RATE: f64 = 0.2;
 
+pub fn line_total(price: f64, quantity: u32) -> f64 {
+    price * f64::from(quantity)
+}
 
-def test_total_sums_lines():
-    cart = Cart()
-    cart.add_item("apple", 0.5, 4)
-    cart.add_item("pear", 0.75)
-    assert cart.total() == 2.75
+pub fn with_tax(amount: f64) -> f64 {
+    (amount * (1.0 + TAX_RATE) * 100.0).round() / 100.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn with_tax_adds_twenty_percent() {
+        assert_eq!(with_tax(10.0), 12.0);
+    }
+}
+EOF
+
+cat >src/inventory.rs <<'EOF'
+use std::collections::HashMap;
+
+pub struct Inventory {
+    stock: HashMap<String, u32>,
+}
+
+impl Inventory {
+    pub fn new(stock: &[(&str, u32)]) -> Self {
+        let stock = stock
+            .iter()
+            .map(|&(sku, count)| (sku.to_string(), count))
+            .collect();
+        Self { stock }
+    }
+
+    pub fn available(&self, sku: &str) -> u32 {
+        self.stock.get(sku).copied().unwrap_or(0)
+    }
+
+    pub fn reserve(&mut self, sku: &str, quantity: u32) -> Result<(), String> {
+        match self.stock.get_mut(sku) {
+            Some(count) if *count >= quantity => {
+                *count -= quantity;
+                Ok(())
+            }
+            _ => Err(format!("not enough {sku} in stock")),
+        }
+    }
+}
+EOF
+
+cat >tests/cart.rs <<'EOF'
+use acme_shop::cart::Cart;
+
+#[test]
+fn total_sums_lines() {
+    let mut cart = Cart::new();
+    cart.add_item("apple", 0.5, 4);
+    cart.add_item("pear", 0.75, 1);
+    assert_eq!(cart.total(), 2.75);
+}
 EOF
 
 git init -q

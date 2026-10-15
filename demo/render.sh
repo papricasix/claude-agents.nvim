@@ -46,7 +46,7 @@ if [[ -z "${DEMO_CLEAN:-}" ]]; then
     "$0" "$@"
 fi
 
-for tool in vhs claude nvim git; do
+for tool in vhs claude nvim git cargo; do
   command -v "$tool" >/dev/null || {
     echo "render.sh: $tool not found on PATH" >&2
     exit 1
@@ -62,9 +62,13 @@ export DEMO_PROJECT="$project" DEMO_INIT="$demo/init.lua"
 
 # The shell inside a recording sees only the tools a shot needs. Claude Code
 # offers to install an LSP plugin, in a dialog, the first time it touches a file
-# whose language server binary is on PATH; without one there is no dialog.
+# whose language server binary is on PATH; without one there is no dialog. So
+# `cargo` (the release check's shells build the crate) is linked on its own,
+# never the directory it sits in, which usually holds rust-analyzer too. Under
+# rustup it is a link to rustup, which acts as the tool it is called by; the
+# link keeps the name.
 mkdir -p "$DEMO_ROOT/bin"
-for tool in claude nvim git; do
+for tool in claude nvim git cargo; do
   ln -sf "$(command -v "$tool")" "$DEMO_ROOT/bin/$tool"
 done
 export DEMO_PATH="$DEMO_ROOT/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -116,7 +120,7 @@ for shot in "${shots[@]}"; do
   forget_transcripts
   rm -rf "${nvim_dirs[@]}"
   if grep -q '^# seed' "$tape"; then
-    # The demo PATH here too: the seed's interactive run reads Python files, and
+    # The demo PATH here too: the seed's interactive run reads Rust files, and
     # an LSP dialog it leaves unanswered counts against the user's own config.
     PATH="$DEMO_PATH" "$demo/seed.sh" "$project"
   fi

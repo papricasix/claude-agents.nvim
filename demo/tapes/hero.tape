@@ -35,7 +35,7 @@ Hide
 Wait+Screen@30s /accept edits on/
 Sleep 800ms
 Show
-Type "Add docstrings and type hints to shop/cart.py and shop/pricing.py."
+Type "Add doc comments to src/cart.rs and src/pricing.rs."
 Sleep 1500ms
 Enter
 Sleep 2s
@@ -49,7 +49,7 @@ Hide
 Wait+Screen@30s /accept edits on/
 Sleep 800ms
 Show
-Type "Add type hints to shop/inventory.py."
+Type "Add doc comments to src/inventory.rs."
 Sleep 1500ms
 Enter
 # Until the second agent reports, the first still at work beside it.

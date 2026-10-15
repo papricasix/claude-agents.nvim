@@ -42,7 +42,7 @@ release_check() {
   ENABLE_TOOL_SEARCH=false python3 -I - claude "$1" --name "Release check" --model haiku \
     --setting-sources project,local --strict-mcp-config \
     --permission-mode acceptEdits --tools "Agent,Bash,Monitor,Read,Edit,Write" \
-    --allowedTools "Agent,Monitor,Read,Edit,Write,Bash(sleep *),Bash(python3 *),Bash(echo *)" <<'PY'
+    --allowedTools "Agent,Monitor,Read,Edit,Write,Bash(sleep *),Bash(cargo *),Bash(echo *)" <<'PY'
 import fcntl, glob, json, os, pty, re, select, signal, struct, sys, termios, time, uuid
 
 QUIET_S, LIMIT_S = 5, 180
@@ -134,13 +134,13 @@ PY
 }
 
 run "Cart: remove items" \
-  "Add a remove_item(sku) method to the Cart class in shop/cart.py. Change nothing else." &
+  "Add a remove_item(&mut self, sku: &str) method to Cart in src/cart.rs. Change nothing else." &
 sleep 2
 run "Member discount" \
-  "Add a member_discount(amount) function to shop/pricing.py that takes 10% off. Change nothing else." &
+  "Add a member_discount(amount: f64) -> f64 function to src/pricing.rs that takes 10% off. Change nothing else." &
 sleep 2
 run "Inventory tests" \
-  "Write tests/test_inventory.py with pytest tests for Inventory.reserve in shop/inventory.py, including the not-enough-stock error." &
+  "Write tests/inventory.rs with tests for Inventory::reserve in src/inventory.rs, including the not-enough-stock error." &
 sleep 2
 # Started last and by far the slowest (about twenty seconds against ten), so it
 # is the newest conversation of the four: the top row, and the one the view
@@ -149,8 +149,8 @@ release_check "Release check for acme-shop. For this task the monitor and the su
 
 1. Start exactly one monitor: with the Monitor tool, description \"Release checklist\", watch this command: for i in 1 2 3; do echo \"check \$i\"; sleep 1; done
 2. In one message, launch two general-purpose subagents with the Agent tool, each with run_in_background set to true, with exactly these descriptions and prompts:
-   - description \"Compile the package\", prompt: \"Run this command with the Bash tool, with run_in_background set to true and the description 'Byte-compile shop': sleep 1 && python3 -m compileall -q shop && echo compiled. Then read shop/cart.py, then read shop/inventory.py. If the command has not finished by then, reply only with: Waiting for the byte-compile. Once you are notified that it finished, reply in one line with how it ended. Run no other commands.\"
-   - description \"Smoke-test pricing\", prompt: \"Run this command with the Bash tool, with run_in_background set to true and the description 'Price a cart': sleep 2 && python3 -c 'from shop.pricing import with_tax; print(with_tax(10))'. Then read shop/pricing.py, then read tests/test_cart.py. If the command has not finished by then, reply only with: Waiting for the price check. Once you are notified that it finished, reply in one line with how it ended. Run no other commands.\"
+   - description \"Compile the package\", prompt: \"Run this command with the Bash tool, with run_in_background set to true and the description 'Check the crate': sleep 1 && cargo check -q && echo checked. Then read src/cart.rs, then read src/inventory.rs. If the command has not finished by then, reply only with: Waiting for the crate check. Once you are notified that it finished, reply in one line with how it ended. Run no other commands.\"
+   - description \"Smoke-test pricing\", prompt: \"Run this command with the Bash tool, with run_in_background set to true and the description 'Price a cart': sleep 2 && cargo test -q --lib pricing. Then read src/pricing.rs, then read tests/cart.rs. If the command has not finished by then, reply only with: Waiting for the price check. Once you are notified that it finished, reply in one line with how it ended. Run no other commands.\"
 3. Wait for the subagents without calling any tool (no sleep, no second monitor); their reports arrive on their own. When both have reported that they finished, create CHANGELOG.md (it does not exist yet) with a \"## 1.0.0\" heading and one bullet per check, and edit README.md to add the line \"Current release: 1.0.0 (see CHANGELOG.md).\" after its description. Then reply with one short line." &
 release=$!
 status=0

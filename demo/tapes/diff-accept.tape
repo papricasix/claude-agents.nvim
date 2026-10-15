@@ -1,4 +1,4 @@
-# Reviewing an edit in the editor: Claude proposes a change to shop/cart.py, it
+# Reviewing an edit in the editor: Claude proposes a change to src/cart.rs, it
 # opens as an inline diff in the window beside the terminal, and :w accepts it.
 Output diff-accept.gif
 
@@ -14,7 +14,7 @@ Set Framerate 20
 
 # Edits ask for approval, so they go through the editor's diff.
 Hide
-Type `cd "$DEMO_PROJECT" && export PATH="$DEMO_PATH" && clear && DEMO_PERMISSION=default nvim -u "$DEMO_INIT" shop/cart.py`
+Type `cd "$DEMO_PROJECT" && export PATH="$DEMO_PATH" && clear && DEMO_PERMISSION=default nvim -u "$DEMO_INIT" src/cart.rs`
 Enter
 Sleep 1500ms
 Type " ac"
@@ -23,7 +23,7 @@ Sleep 2s
 Show
 
 Sleep 1s
-Type@25ms "Rename the method total to subtotal in shop/cart.py only"
+Type@25ms "Rename the method total to subtotal in src/cart.rs only"
 # Time to read the prompt before it is sent.
 Sleep 1500ms
 Enter
