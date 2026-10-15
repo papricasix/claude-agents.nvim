@@ -70,7 +70,8 @@ describe("agents.subagents", function()
         "<task-notification>",
         "<task-id>" .. id .. "</task-id>",
         "<status>" .. (fields.status or "completed") .. "</status>",
-        "<summary>Agent finished</summary>",
+        "<summary>" .. (fields.summary or "Agent finished") .. "</summary>",
+        fields.note and ("<note>" .. fields.note .. "</note>") or "",
         "<usage><subagent_tokens>"
           .. (fields.tokens or 1000)
           .. "</subagent_tokens><tool_uses>1</tool_uses><duration_ms>"
@@ -327,6 +328,30 @@ describe("agents.subagents", function()
       local out = rows({ live = true })
       expect(out[2].id).to_be("child")
       expect(out[2].state).to_be("failed")
+    end)
+
+    it("is still running while it waits on background work of its own", function()
+      -- The CLI says `completed`, but only that the turn stopped: the run resumes
+      -- when its shell reports, and notifies again then.
+      agent("a", { first = NOW - 90, last = NOW - 30, tokens = 42000 })
+      put(SESSION, {
+        notification("a", NOW - 29, {
+          summary = 'Agent "Build the crate" is waiting on its own background work',
+          note = "This agent stopped with background work of its own still running. It may resume on its own when that work completes or reports, and the same task-id notifies again if it does; the result below may be interim.",
+        }),
+      })
+      expect(rows({ live = true })[1].state).to_be("running")
+      -- Its later notification ends it.
+      fs[SESSION].data = fs[SESSION].data .. notification("a", NOW - 2) .. "\n"
+      expect(rows({ live = true })[1].state).to_be("done")
+    end)
+
+    it("reads one that waits on its own work past its session's life as stopped", function()
+      agent("a", { first = NOW - 7200, last = NOW - 3600 })
+      put(SESSION, {
+        notification("a", NOW - 3599, { summary = 'Agent "a" is waiting on its own background work' }),
+      }, NOW - 3599)
+      expect(rows({ live = false })[1].state).to_be("stopped")
     end)
 
     it("is running again once the agent writes past its last notification", function()

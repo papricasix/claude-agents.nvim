@@ -102,6 +102,29 @@ describe("agents.subagent_view", function()
       expect(doc.items[2].tokens).to_be(9127)
     end)
 
+    it("says a child that stopped to wait on work of its own is waiting, not finished", function()
+      local note = table.concat({
+        "<task-notification>",
+        "<task-id>child1</task-id>",
+        "<status>completed</status>",
+        '<summary>Agent "Build the crate" is waiting on its own background work</summary>',
+        "<note>This agent stopped with background work of its own still running.</note>",
+        "</task-notification>",
+      }, "\n")
+      local doc = fold({ user("go"), user(note) })
+      expect(doc.items[2].interim).to_be(true)
+      local child = { id = "child1", agent_type = "general-purpose", description = "Build the crate" }
+      local lines, _, links = view.render(doc, ctx({ by_id = { child1 = child } }))
+      local at
+      for index, line in ipairs(lines) do
+        if line:find("Build the crate", 1, true) then
+          at = index
+        end
+      end
+      expect(lines[at]).to_be("- … waiting on its own background work: Build the crate")
+      expect(links[at]).to_be("child1")
+    end)
+
     it("summarises a result too large to decode from its raw text", function()
       local big = result("t9", string.rep("x", 300 * 1024), { stdout = "" }, true)
       local doc = fold({ big })

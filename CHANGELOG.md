@@ -4,6 +4,7 @@
 
 ### Fixed
 
+- A subagent that is waiting for a background command of its own to finish is shown as running in Tasks, not as done while its command is still going.
 - `<C-\><C-n>` leaves an agent's terminal again. The agents view's `<C-n>` (next session) took its second key, so you stayed in terminal mode.
 - `<Tab>` moves on to the next pane from an agent's terminal too, once you are out of terminal mode, as the help says it does anywhere in the view.
 

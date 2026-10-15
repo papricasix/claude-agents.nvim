@@ -275,6 +275,7 @@ function M.fold_line(doc, line)
         kind = "note",
         id = note.id,
         status = note.status,
+        interim = note.interim,
         tokens = note.tokens,
         duration_ms = note.duration_ms,
         summary = message.content:match("<summary>([^<]+)</summary>"),
@@ -493,9 +494,11 @@ function M.render(doc, ctx)
       end
     elseif item.kind == "note" then
       local target = ctx.by_id[item.id]
-      local glyph = item.status == "completed" and "✓" or (item.status == "killed" and "⊘" or "✗")
+      -- An interim note is a child that stopped to wait on work of its own.
+      local glyph = item.interim and "…"
+        or (item.status == "completed" and "✓" or (item.status == "killed" and "⊘" or "✗"))
       local name = target and (target.description or target.command or target.agent_type) or item.summary or item.id
-      local line = "- " .. glyph .. " finished: " .. name
+      local line = "- " .. glyph .. (item.interim and " waiting on its own background work: " or " finished: ") .. name
       local spent_child = cost(item.tokens, item.duration_ms and item.duration_ms / 1000 or nil)
       if spent_child ~= "" then
         line = line .. " · " .. spent_child

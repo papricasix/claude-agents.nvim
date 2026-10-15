@@ -301,8 +301,10 @@ local function classify(agent, index, opts)
   -- A notification older than the transcript's newest line belongs to an earlier
   -- stop: the agent was sent another message and is working again. Same-second
   -- counts as ended, since the notification is written after the run's last line.
+  -- An interim one ends nothing: the run waits on background work of its own and
+  -- carries on when it reports, so it reads running while it could be.
   local note = index.notes[agent.id]
-  if note and last <= note.ts then
+  if note and not note.interim and last <= note.ts then
     return ENDED[note.status] or "failed",
       note.tokens or live_tokens,
       note.duration_ms and note.duration_ms / 1000 or math.max(0, last - first)

@@ -234,6 +234,7 @@ local config = nil
 ---@field event string|nil A monitor event's lines; such a notification is not an end.
 ---@field queued boolean|nil The `queue-operation` copy (each notification is also written when delivered).
 ---@field orphaned boolean|nil A resumed CLI's `stopped` for a task the previous process never recorded an end for.
+---@field interim boolean|nil A subagent that stopped with background work of its own still running; not an end.
 ---@field exit_code integer|nil A shell's exit code, from the notification's summary.
 ---@field ts number Epoch seconds the parent recorded it.
 
@@ -1531,6 +1532,14 @@ function M._task_notification(line)
     -- Written by a resumed CLI for every task the previous process left with no
     -- completion record: a guess that it stopped, not a record of how it ended.
     orphaned = summary and summary:find("before the previous session ended", 1, true) ~= nil or nil,
+    -- A subagent whose turn ended while a shell or subagent of its own still runs
+    -- is reported `completed` with this summary (2.1.299). It resumes when that
+    -- work reports, and the same task id notifies again: not an end.
+    interim = ((summary and summary:find("waiting on its own background work", 1, true)) or body:find(
+      "background work of its own still running",
+      1,
+      true
+    )) and true or nil,
     queued = entry.type == "queue-operation" or nil,
     tokens = tonumber(body:match("<subagent_tokens>(%d+)</subagent_tokens>")),
     duration_ms = tonumber(body:match("<duration_ms>(%d+)</duration_ms>")),
