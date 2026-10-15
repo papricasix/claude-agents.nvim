@@ -2,9 +2,12 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-15
+
 ### Changed
 
 - The plan view (`plan`) and per-tab status (`status`) are on by default. Per-tab status runs a short hook before and after every tool call; `status = { enabled = false }` and `plan = { enabled = false }` switch them off. With status on, the agents view follows its agents through those hooks instead of polling their transcripts.
+- The README's install snippet lists every optional feature, commented out, so turning one on or off is a matter of uncommenting a line.
 
 ## [1.0.0] - 2026-10-15
 

@@ -13,7 +13,7 @@ local logger = require("claude_agents.logger")
 ---@type ClaudeCodeVersion
 M.version = {
   major = 1,
-  minor = 0,
+  minor = 1,
   patch = 0,
   prerelease = nil,
   string = function(self)
