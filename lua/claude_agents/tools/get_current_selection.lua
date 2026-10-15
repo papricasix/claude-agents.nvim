@@ -37,9 +37,12 @@ local function handler(params)
   local selection = selection_module.get_latest_selection()
 
   if not selection then
-    -- Check if there's an active editor/buffer
+    -- Check if there's an active editor/buffer. Named as the file it stands for, the
+    -- way the selection tracker reports one: a review diff's proposal buffer is
+    -- called `✻ [Claude Code] cart.py (…) ⧉ (proposed)`, which is no path.
     local current_buf = vim.api.nvim_get_current_buf()
-    local buf_name = vim.api.nvim_buf_get_name(current_buf)
+    local buf_name = type(selection_module.reported_path) == "function" and selection_module.reported_path(current_buf)
+      or vim.api.nvim_buf_get_name(current_buf)
 
     if not buf_name or buf_name == "" then
       -- No active editor case - match VS Code format

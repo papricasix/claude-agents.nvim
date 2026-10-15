@@ -66,6 +66,22 @@ describe("Tool: get_current_selection", function()
     assert.spy(mock_selection_module.get_latest_selection).was_called()
   end)
 
+  it("names a review diff's proposal buffer as the file it proposes to change", function()
+    -- Its own name is the scratch title, which is no path.
+    _G.vim.api.nvim_buf_get_name = spy.new(function()
+      return "✻ [Claude Code] cart.py (a1b2) ⧉ (proposed)"
+    end)
+    mock_selection_module.reported_path = function(bufnr)
+      return bufnr == 1 and "/proj/cart.py" or nil
+    end
+
+    local _, result = pcall(get_current_selection_handler, {})
+    local parsed_result = require("tests.busted_setup").json_decode(result.content[1].text)
+    expect(parsed_result.success).to_be_true()
+    expect(parsed_result.filePath).to_be("/proj/cart.py")
+    expect(parsed_result.fileUrl).to_be("file:///proj/cart.py")
+  end)
+
   it("should return the selection data from claudecode.selection if available", function()
     local mock_sel_data = {
       text = "selected text",
