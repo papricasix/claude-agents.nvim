@@ -153,7 +153,7 @@ end
 local function hook_script_path()
   local src = debug.getinfo(1, "S").source or ""
   local file = src:gsub("^@", "")
-  local root = file:gsub("[/\\]lua[/\\]claudecode[/\\]live_cursor%.lua$", "")
+  local root = file:gsub("[/\\]lua[/\\]claude_agents[/\\]live_cursor%.lua$", "")
   return root .. "/scripts/live_cursor_hook.lua"
 end
 

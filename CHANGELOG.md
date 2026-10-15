@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Claude's hooks never reached Neovim since 1.0.0: the module rename left the hook script's path pointing inside `live_cursor.lua`, so per-tab status, the agents view's state and spinners, the live cursor and the plan view received nothing.
+
 ## [1.1.0] - 2026-10-15
 
 ### Changed

@@ -122,6 +122,20 @@ describe("live_cursor", function()
       return contents
     end
 
+    -- The path is derived from this module's own location; the rename to
+    -- `claude_agents` left the pattern naming `claudecode`, so every launch
+    -- pointed `nvim -l` at `…/live_cursor.lua/scripts/…` and no hook ever ran.
+    it("points the hook command at the shipped script", function()
+      live_cursor.setup(base_config({ enabled = true, mode = "preview" }))
+      local contents = injected_settings_contents(live_cursor.build_launch_injection())
+      local script = contents:match("%-l '([^']-live_cursor_hook%.lua)'")
+      assert.is_not_nil(script)
+      script = script:gsub("\\/", "/")
+      local f = io.open(script, "r")
+      assert.is_not_nil(f, "hook script not found at " .. script)
+      f:close()
+    end)
+
     it("single-quotes the hook command for /bin/sh on POSIX", function()
       live_cursor.setup(base_config({ enabled = true, mode = "preview" }))
       local contents = injected_settings_contents(live_cursor.build_launch_injection())
