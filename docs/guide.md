@@ -50,7 +50,7 @@ Two profiles exist out of the box, `subscription` and `API key`. The key lives i
 
 - macOS: `security add-generic-password -U -s claudecode.nvim -a default -w`
 - Linux: `secret-tool store --label='claudecode.nvim API key (default)' service claudecode.nvim account default`
-- Windows: `cmdkey /generic:claudecode.nvim/default /user:claudecode.nvim /pass`
+- Windows: `cmdkey /generic:claudecode.nvim/default /user:claudecode.nvim /pass` (not yet tested on Windows)
 
 `:checkhealth claude_agents` says whether it is there. Create the key in a Console workspace with a monthly spend limit, so a leaked key costs at most that. A key that belongs to the whole organisation rather than one workspace needs `workspace = "wrkspc_…"` on its profile.
 

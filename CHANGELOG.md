@@ -2,9 +2,11 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-15
+
 ### Added
 
-- Launch profiles: start each Claude on your subscription or on an API key. `:ClaudeCodeProfile` picks one for a tab's Claude, and `ga`/`gi` in the agents view start or resume a session under one. A running Claude switches by restarting with its conversation carried on, and a resumed conversation goes back to the profile it last ran under. The key stays in the OS keychain (macOS Keychain, Secret Service on Linux, Credential Manager on Windows) and Claude Code fetches it itself, so it is never in your config, Neovim's environment or the environment of the commands Claude runs. `:checkhealth` says whether it is stored. Sessions run on an API key are marked `$`.
+- Launch profiles: start each Claude on your subscription or on an API key. `:ClaudeCodeProfile` picks one for a tab's Claude, and `ga`/`gi` in the agents view start or resume a session under one. A running Claude switches by restarting with its conversation carried on, and a resumed conversation goes back to the profile it last ran under. The key stays in the OS keychain (macOS Keychain, Secret Service on Linux, Credential Manager on Windows) and Claude Code fetches it itself, so it is never in your config, Neovim's environment or the environment of the commands Claude runs. `:checkhealth` says whether it is stored. Sessions run on an API key are marked `$`. Reading the key from Windows' Credential Manager has not been tested on Windows yet.
 
 ### Fixed
 
