@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-15
+
+### Fixed
+
+- Claude Code 2.1.300 writes a record of each API request into the conversation's transcript, and the agents view read those as part of the conversation: every tool call appeared twice in Activity, the copy without a time (`--:--`) and marked as running for ever. They are skipped now.
+- Subagents run in print mode (`claude -p`, the SDK) are read correctly: their calls finish, their background shells and monitors appear in Tasks, and their results no longer count as something the user typed.
+- A call refused by a permission rule or by auto mode is drawn as declined (`⊘`), like one you turned down, not as a failure.
+- Subagents are listed in Tasks in the order they were started, and two agents started one after the other no longer swap places in Sessions.
+- With `status` off, an agent's bullet no longer stays on busy for good.
+- An edit shows in the counts, Activity and Changes as soon as its tool finishes, also while the CLI holds back writing it or the agent waits on a permission prompt.
+- The panes repaint when Neovim or a window is resized, and in a narrow pane a row's text is cut rather than pushing its time, counts or status mark past the edge.
+- `getCurrentSelection` names a review diff's proposal by the file it changes, also before anything has been selected.
+
+### Changed
+
+- The README's demo clips are recorded in a small Rust project.
+
 ## [1.1.1] - 2026-10-15
 
 ### Fixed

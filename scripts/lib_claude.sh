@@ -163,7 +163,7 @@ create_init_message() {
     },
     "clientInfo": {
       "name": "ClaudeCodeNvim",
-      "version": "1.1.1"
+      "version": "1.1.2"
     }
   }' "$id"
 }
