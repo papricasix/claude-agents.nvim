@@ -480,6 +480,30 @@ describe("agents_view", function()
       agents_view.setup(base_config({ enabled = true }))
       expect((pcall(agents_view.cycle_session, 1))).to_be_true()
     end)
+
+    it("leaves <C-\\><C-n> to leave an agent's terminal, though <C-n> cycles there", function()
+      -- Neovim reads the key after a terminal's <C-\> through mappings: a
+      -- terminal-mode <C-n> alone would take it.
+      agents_view.setup(base_config({ enabled = true, keymaps = { next_session = "<C-n>", prev_session = "<C-p>" } }))
+      local buf = vim.api.nvim_create_buf(false, true)
+      agents_view.bind_terminal_keys(buf)
+      local pair = vim._buf_keymaps[buf].t["<C-\\><C-n>"]
+      expect(pair).not_to_be_nil()
+      expect(pair.rhs).to_be("<C-\\><C-n>")
+      expect(pair.opts.remap).to_be_nil()
+      expect(vim._buf_keymaps[buf].t["<C-\\><C-p>"].rhs).to_be("<C-\\><C-p>")
+    end)
+
+    it("moves on to the next pane from an agent's terminal once out of terminal mode", function()
+      agents_view.setup(base_config({ enabled = true, keymaps = { next_pane = "<Tab>" } }))
+      local buf = vim.api.nvim_create_buf(false, true)
+      agents_view.bind_terminal_keys(buf)
+      local tab = vim._buf_keymaps[buf].n["<Tab>"]
+      expect(tab).not_to_be_nil()
+      expect(type(tab.rhs)).to_be("function")
+      -- Terminal mode's Tab is Claude's.
+      expect((vim._buf_keymaps[buf].t or {})["<Tab>"]).to_be_nil()
+    end)
   end)
 
   describe("persistence", function()

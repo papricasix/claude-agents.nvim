@@ -646,15 +646,24 @@ function map_cycle(buf, terminal)
         silent = true,
         desc = delta > 0 and "Select the next Claude session" or "Select the previous Claude session",
       })
+      -- Neovim reads the key after a terminal's <C-\> through mappings, so this
+      -- one would take the <C-n> of <C-\><C-n> and leave the user in terminal
+      -- mode. The pair mapped to itself wins by being longer, and its replay is
+      -- not remapped.
+      if terminal then
+        pcall(vim.keymap.set, "t", "<C-\\>" .. lhs, "<C-\\>" .. lhs, { buffer = buf, silent = true })
+      end
     end
   end
 end
 
----Bind the cycling keys on an agent's terminal buffer.
+---Bind the cycling keys on an agent's terminal buffer, and in its normal mode the
+---key to the next pane, which the help lists as working anywhere in the view.
 ---@param bufnr integer|nil
 function M.bind_terminal_keys(bufnr)
   if type(bufnr) == "number" and vim.api.nvim_buf_is_valid(bufnr) then
     map_cycle(bufnr, true)
+    map(bufnr, keymaps().next_pane, M.focus_next_pane, "Focus the next pane")
   end
 end
 
