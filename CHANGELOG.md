@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- A turn that ended in an API error (a rate limit, no credit, a rejected key) left the tab and the agent shown as busy for good.
+
 ## [1.1.2] - 2026-10-15
 
 ### Fixed

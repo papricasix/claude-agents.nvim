@@ -2088,7 +2088,13 @@ function M.note(event, _source_tab, note_opts)
         transcript.provisional(path, event)
       end
     end
-  elseif ehn == "Stop" or ehn == "SessionStart" or ehn == "SessionEnd" or ehn == "SubagentStop" then
+  elseif
+    ehn == "Stop"
+    or ehn == "StopFailure"
+    or ehn == "SessionStart"
+    or ehn == "SessionEnd"
+    or ehn == "SubagentStop"
+  then
     state.dirty.transcript = true
     state.dirty.list = true
   end

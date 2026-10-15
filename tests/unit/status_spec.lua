@@ -165,6 +165,14 @@ describe("status", function()
       expect(status.get_state(2)).to_be("done")
     end)
 
+    it("ends a turn an API error cut short, which reports StopFailure instead of Stop", function()
+      -- Measured on 2.1.300: unregistered, such a turn left the tab busy for good.
+      note("UserPromptSubmit", {}, 2)
+      expect(status.get_state(2)).to_be("busy")
+      note("StopFailure", { error = "billing_error" }, 2)
+      expect(status.get_state(2)).to_be("done")
+    end)
+
     it("lists only the tabs that have a Claude", function()
       note("Stop", {}, 2)
       local all = status.all()

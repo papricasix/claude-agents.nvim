@@ -712,7 +712,10 @@ function M.classify(event, opts)
     end
     info.message = message ~= "" and message or nil
     return "waiting", info
-  elseif ehn == "Stop" then
+  elseif ehn == "Stop" or ehn == "StopFailure" then
+    -- `StopFailure` fires *instead of* `Stop` when an API error ended the turn
+    -- (no credit, a rate limit, a bad key — measured on 2.1.300: unregistered,
+    -- such a turn left the tab busy for good). The turn is over either way.
     return finished, bare
   end
 
@@ -800,7 +803,7 @@ function M.identify(event)
       end
     end
     event.tool_use_id = newest
-  elseif ehn == "Stop" or ehn == "UserPromptSubmit" or ehn == "SubagentStop" then
+  elseif ehn == "Stop" or ehn == "StopFailure" or ehn == "UserPromptSubmit" or ehn == "SubagentStop" then
     forget_calls(session, thread)
   elseif ehn == "SessionStart" or ehn == "SessionEnd" then
     forget_calls(session, nil)

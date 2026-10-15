@@ -249,6 +249,9 @@ function M.build_launch_injection()
     register("PermissionRequest", "*")
     register("SubagentStop")
     register("Stop")
+    -- Fires instead of `Stop` when an API error ended the turn; without it such a
+    -- turn never ends here.
+    register("StopFailure")
     register("SessionEnd")
   else
     if #pre_tools > 0 then

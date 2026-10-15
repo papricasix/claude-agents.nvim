@@ -142,6 +142,7 @@ Click a file path in the Claude terminal to open it in the editor (VS Code parit
 - `PermissionRequest` → waiting (fires as any prompt goes up, AskUserQuestion included)
 - `Notification` → waiting with its message, **unless** it is the "waiting for your input" idle nudge (that is a timer, not a question)
 - `Stop` → done or idle; `SessionStart`/`SessionEnd` → idle/none
+- `StopFailure` → done or idle, like `Stop`: it fires **instead of** `Stop` when an API error ended the turn (rate limit, no credit, rejected key). Unregistered, such a turn stayed busy for good (measured on 2.1.300). Registered with the status hooks.
 
 Rules:
 
