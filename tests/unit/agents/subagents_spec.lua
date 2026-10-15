@@ -10,7 +10,8 @@ describe("agents.subagents", function()
   local NOW = 1786000000 -- 2026-08-06T07:06:40Z
 
   local function iso(epoch)
-    return os.date("!%Y-%m-%dT%H:%M:%S.000Z", epoch)
+    local whole = math.floor(epoch)
+    return os.date("!%Y-%m-%dT%H:%M:%S", whole) .. string.format(".%03dZ", math.floor((epoch - whole) * 1000 + 0.5))
   end
 
   local function put(path, lines, mtime)
@@ -201,6 +202,24 @@ describe("agents.subagents", function()
       expect(table.concat(drawn, "|")).to_be("root|├─child1|│ └─grandchild|└─child2|late")
       expect(out[3].depth).to_be(2)
       expect(out[2].agent_type).to_be("Explore")
+    end)
+
+    it("dates a run by its transcript's first line, not by when its descriptor was written", function()
+      -- The CLI writes a descriptor again later (when a background run first
+      -- waits on a shell of its own, or long after), so its mtime put an early
+      -- run below one started after it.
+      agent("early", { first = NOW - 300, started = NOW - 50 })
+      agent("later", { first = NOW - 200, started = NOW - 200 })
+      -- Started from one message: first lines milliseconds apart, inside one
+      -- second, descriptors written in the same second.
+      agent("zeta", { first = NOW - 100.8, started = NOW - 99 })
+      agent("alpha", { first = NOW - 100.3, started = NOW - 99 })
+
+      local drawn = {}
+      for _, row in ipairs(rows({ live = true })) do
+        drawn[#drawn + 1] = row.id
+      end
+      expect(table.concat(drawn, "|")).to_be("early|later|zeta|alpha")
     end)
 
     it("says which runs were given a worktree of their own", function()
@@ -485,6 +504,40 @@ describe("agents.subagents", function()
       end
       expect(table.concat(drawn, "|")).to_be("worker|├─bsub|└─helper")
       expect(out[2].transcript).to_be(DIR .. "/agent-worker.jsonl")
+    end)
+
+    it("lists a print-mode subagent's shell, whose result is only its text", function()
+      -- A print-mode (`sdk-cli`) subagent writes no `toolUseResult` on its
+      -- ordinary results (measured, CLI 2.1.299 and 2.1.300), so no
+      -- `backgroundTaskId` either: the sentence is all there is.
+      agent("worker", { first = NOW - 300 })
+      local log = fs[DIR .. "/agent-worker.jsonl"]
+      log.data = log.data
+        .. shell_call("toolu_p", NOW - 250, { command = "npm test", run_in_background = true })
+        .. "\n"
+        .. vim.json.encode({
+          type = "user",
+          timestamp = iso(NOW - 250),
+          message = {
+            role = "user",
+            content = {
+              {
+                type = "tool_result",
+                tool_use_id = "toolu_p",
+                content = "Command running in background with ID: bprint. Output is being written to: "
+                  .. TASKS
+                  .. "/bprint.output. You will be notified when it completes.",
+              },
+            },
+          },
+        })
+        .. "\n"
+      local out = rows({ live = true })
+      expect(#out).to_be(2)
+      expect(out[2].kind).to_be("shell")
+      expect(out[2].id).to_be("bprint")
+      expect(out[2].prefix).to_be("└─")
+      expect(out[2].output_path).to_be(TASKS .. "/bprint.output")
     end)
 
     it("records a command sent to the background with Ctrl+B", function()

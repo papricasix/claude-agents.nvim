@@ -108,12 +108,18 @@ end
 ---A word or two saying how one call went.
 ---@param block table The `tool_result` block.
 ---@param result any The entry's `toolUseResult`.
+---@param denial any The entry's `toolDenialKind`: who refused the call, if anyone did.
 ---@return { status: string, summary: string|nil }
-function M.summarize_result(block, result)
+function M.summarize_result(block, result, denial)
   local text = content_text(block.content)
   if block.is_error then
-    if text:find(transcript.REJECTION_MARKER, 1, true) then
+    -- The user turning a call down, or a permission rule or the auto-mode
+    -- classifier doing it for them (`DENIAL_FIELD` in `transcript.lua`).
+    if denial == "user-rejected" or text:find(transcript.REJECTION_MARKER, 1, true) then
       return { status = "rejected", summary = "declined" }
+    end
+    if type(denial) == "string" then
+      return { status = "rejected", summary = "denied" }
     end
     local first = (text:gsub("^%s+", "")):match("^([^\n]*)") or ""
     return { status = "error", summary = first ~= "" and utils.truncate(first, ERROR_TEXT_LIMIT) or nil }
@@ -212,7 +218,9 @@ end
 ---@param doc table
 ---@param line string
 function M.fold_line(doc, line)
-  if #line == 0 then
+  -- A request record repeats calls and results; only a large one would get past
+  -- the type test below, as raw text.
+  if #line == 0 or transcript._is_request_record(line) then
     return
   end
   if #line > DECODE_LIMIT then
@@ -281,7 +289,7 @@ function M.fold_line(doc, line)
     for _, block in ipairs(message.content) do
       if type(block) == "table" then
         if block.type == "tool_result" and type(block.tool_use_id) == "string" then
-          doc.results[block.tool_use_id] = M.summarize_result(block, entry.toolUseResult)
+          doc.results[block.tool_use_id] = M.summarize_result(block, entry.toolUseResult, entry.toolDenialKind)
         elseif block.type == "text" and type(block.text) == "string" then
           fold_user_text(doc, block.text)
         end

@@ -1206,6 +1206,286 @@ describe("agents.transcript", function()
       expect(sum.events[2].tool).to_be("Bash")
     end)
 
+    ---A result as a print-mode (`sdk-cli`) subagent writes it: the raw block and no
+    ---decoded copy beside it (measured, CLI 2.1.299 and 2.1.300).
+    local function bare_result_line(id, content, parent)
+      return vim.json.encode({
+        type = "user",
+        parentUuid = parent,
+        timestamp = "2026-08-02T20:30:05.000Z",
+        message = { role = "user", content = { { type = "tool_result", tool_use_id = id, content = content } } },
+      })
+    end
+
+    ---What CLI 2.1.300 writes beside the conversation: a record of an API request,
+    ---its type first, and a blob holding a message as it was sent — the call again,
+    ---with no timestamp, after its result.
+    local function request_records(id)
+      return {
+        '{"type":"api-request","sessionId":"s","id":"r1","timestamp":"2026-08-02T20:59:00.000Z"}',
+        '{"type":"api-request-blob","sessionId":"s","hash":"h1","message":{"role":"assistant","content":[{"type":"tool_use","id":"'
+          .. id
+          .. '","name":"Bash","input":{"command":"ls"}}]}}',
+        '{"type":"api-request-blob","sessionId":"s","hash":"h2","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"'
+          .. id
+          .. '","content":"ok"}]}}',
+      }
+    end
+
+    ---`lines`, with the request records for `id` after them.
+    ---@param lines string[]
+    ---@param id string
+    ---@return string[]
+    local function with_request_records(lines, id)
+      for _, record in ipairs(request_records(id)) do
+        lines[#lines + 1] = record
+      end
+      return lines
+    end
+
+    it("reads nothing from the CLI's records of its API requests", function()
+      -- Read as conversation, the blob listed every call a second time, and that
+      -- copy stayed running for ever.
+      put(
+        "/p/a.jsonl",
+        with_request_records({
+          tool_use_line("Bash", { command = "ls" }, "toolu_a"),
+          tool_result_line("toolu_a"),
+        }, "toolu_a")
+      )
+      local sum = fold("/p/a.jsonl")
+      expect(#sum.events).to_be(1)
+      expect(sum.events[1].status).to_be("done")
+      expect(next(sum.pending)).to_be_nil()
+      expect(next(sum.task_calls)).to_be_nil()
+      -- Nor is the record's own clock the conversation's.
+      expect(sum.last_ts).to_be(transcript._iso_to_epoch("2026-08-02T20:30:05.000Z"))
+    end)
+
+    it("settles a call whose result has no decoded copy, and takes it for nothing typed", function()
+      put("/p/a.jsonl", {
+        tool_use_line("Bash", { command = "sleep 4" }, "toolu_p"),
+        bare_result_line("toolu_p", "(Bash completed with no output)", "uuid-call"),
+      })
+      local sum = fold("/p/a.jsonl")
+      expect(sum.events[1].status).to_be("done")
+      expect(next(sum.task_calls)).to_be_nil()
+      expect(#sum.prompts).to_be(0)
+    end)
+
+    it("calls a refusal a refusal whoever made it and however it is worded", function()
+      -- `toolDenialKind` is on every refused call's entry; the wording differs by
+      -- who refused it (a permission rule here, print mode or the auto-mode
+      -- classifier elsewhere).
+      put("/p/a.jsonl", {
+        tool_use_line("Bash", { command = "touch x" }, "toolu_r"),
+        vim.json.encode({
+          type = "user",
+          timestamp = "2026-08-02T20:30:05.000Z",
+          message = {
+            role = "user",
+            content = {
+              {
+                type = "tool_result",
+                tool_use_id = "toolu_r",
+                is_error = true,
+                content = "Permission to use Bash has been denied.",
+              },
+            },
+          },
+          toolUseResult = "Error: Permission to use Bash has been denied.",
+          toolDenialKind = "permission-rule",
+        }),
+      })
+      local sum = fold("/p/a.jsonl")
+      expect(sum.events[1].status).to_be("rejected")
+    end)
+
+    describe("a command whose result says it went to the background in words alone", function()
+      local folds = 0
+      local function background(content)
+        -- A transcript of its own each time: the fold reads a file as append-only.
+        folds = folds + 1
+        local path = "/p/bg" .. folds .. ".jsonl"
+        put(path, {
+          tool_use_line("Bash", { command = "make", run_in_background = true }, "toolu_bg"),
+          bare_result_line("toolu_bg", content),
+        })
+        return fold(path).tasks
+      end
+
+      it("is a task, in each of the CLI's wordings", function()
+        local tasks = background(
+          "Command running in background with ID: b1x. Output is being written to: /tmp/t/tasks/b1x.output. You will be notified when it completes."
+        )
+        expect(tasks.b1x).to_be_table()
+        expect(tasks.b1x.output_path).to_be("/tmp/t/tasks/b1x.output")
+        expect(tasks.b1x.by_user).to_be_nil()
+
+        tasks = background(
+          "Command did not complete within its 120s timeout and was moved to the background (ID: b2y). Output is being written to: /tmp/t/tasks/b2y.output."
+        )
+        expect(tasks.b2y).to_be_table()
+
+        tasks = background(
+          "Command was manually backgrounded by user with ID: b3z. Output is being written to: /tmp/t/tasks/b3z.output."
+        )
+        expect(tasks.b3z.by_user).to_be(true)
+      end)
+
+      it("records a monitor started in words alone", function()
+        put("/p/mon.jsonl", {
+          tool_use_line("Monitor", { command = "tail -f log", description = "watch" }, "toolu_m"),
+          bare_result_line(
+            "toolu_m",
+            "Monitor started (task bmon1, expires in 10s unless the source ends first). You will be notified on each event."
+          ),
+        })
+        local task = fold("/p/mon.jsonl").tasks.bmon1
+        expect(task).to_be_table()
+        expect(task.task_type).to_be("monitor")
+        expect(task.description).to_be("watch")
+      end)
+
+      it("is not one when the output merely quotes the sentence", function()
+        local tasks = background(
+          "log: Command running in background with ID: bq. Output is being written to: /tmp/t/tasks/bq.output."
+        )
+        expect(next(tasks)).to_be_nil()
+      end)
+    end)
+
+    describe("what a print-mode subagent writes in words alone", function()
+      -- Its results carry no `toolUseResult` (measured, CLI 2.1.300), so the text
+      -- is all there is to read a stop or a run's cost from.
+      it("records a task stopped with TaskStop", function()
+        put("/p/stop.jsonl", {
+          tool_use_line("TaskStop", { task_id = "bs1" }, "toolu_s"),
+          bare_result_line(
+            "toolu_s",
+            '{"message":"Successfully stopped task: bs1 (sleep 30)","task_id":"bs1","task_type":"local_bash","command":"sleep 30"}'
+          ),
+        })
+        expect(fold("/p/stop.jsonl").task_stops.bs1).to_be(transcript._iso_to_epoch("2026-08-02T20:30:05.000Z"))
+      end)
+
+      it("does not take a command's output quoting that object for a stop", function()
+        put("/p/quote.jsonl", {
+          tool_use_line("Bash", { command = "cat log" }, "toolu_q"),
+          bare_result_line("toolu_q", 'log: {"message":"Successfully stopped task: bs2 (x)"}'),
+        })
+        expect(next(fold("/p/quote.jsonl").task_stops)).to_be_nil()
+      end)
+
+      it("takes a foreground subagent's cost from the usage closing its report", function()
+        -- A report may quote another run's usage; the run's own closes the text.
+        put("/p/agent.jsonl", {
+          tool_use_line("Agent", { description = "check", prompt = "reply ok" }, "toolu_a"),
+          bare_result_line("toolu_a", {
+            {
+              type = "text",
+              text = "[Subagent hand-back] The report follows:\n  quoted <usage>subagent_tokens: 1\ntool_uses: 0\nduration_ms: 2</usage>\n"
+                .. "agentId: a1\n<usage>subagent_tokens: 8156\ntool_uses: 0\nduration_ms: 2147</usage>",
+            },
+          }),
+        })
+        local result = fold("/p/agent.jsonl").agent_results.toolu_a
+        expect(result).to_be_table()
+        expect(result.status).to_be("completed")
+        expect(result.tokens).to_be(8156)
+        expect(result.duration_ms).to_be(2147)
+      end)
+    end)
+
+    describe("an edit a hook reported before the transcript has it", function()
+      -- The CLI sometimes holds its transcript writes (measured, 2.1.300); the
+      -- hook's `tool_response` is the result the transcript will hold.
+      local function edit_payload(id, file, lines)
+        return {
+          hook_event_name = "PostToolUse",
+          tool_name = "Edit",
+          tool_use_id = id,
+          tool_response = {
+            filePath = file,
+            structuredPatch = { { oldStart = 1, oldLines = 1, newStart = 1, newLines = 2, lines = lines } },
+          },
+        }
+      end
+
+      it("is held, counted like a folded one, until the fold reaches the same call", function()
+        expect(transcript.provisional("/p/h.jsonl", edit_payload("toolu_e", "/proj/x.lua", { "-a", "+b", "+c" }))).to_be(
+          true
+        )
+        local view = transcript.provisional_view("/p/h.jsonl")
+        expect(view.added).to_be(2)
+        expect(view.removed).to_be(1)
+        expect(#view.events).to_be(1)
+        expect(view.events[1].tool_id).to_be("toolu_e")
+        expect(view.files["/proj/x.lua"].kind).to_be("edit")
+        -- The same table each time, which is how the Activity pane ages a row.
+        expect(transcript.provisional_view("/p/h.jsonl").events[1]).to_be(view.events[1])
+
+        put("/p/h.jsonl", {
+          tool_use_line("Edit", { file_path = "/proj/x.lua" }, "toolu_e"),
+          vim.json.encode({
+            type = "user",
+            timestamp = "2026-08-02T20:30:05.000Z",
+            message = { role = "user", content = { { type = "tool_result", tool_use_id = "toolu_e", content = "ok" } } },
+            toolUseResult = edit_payload("toolu_e", "/proj/x.lua", { "-a", "+b", "+c" }).tool_response,
+          }),
+        })
+        fold("/p/h.jsonl")
+        expect(transcript.has_provisional("/p/h.jsonl")).to_be(false)
+      end)
+
+      it("is not taken when the transcript already holds it", function()
+        -- The hook is a separate process and often arrives after the line was read.
+        put("/p/h.jsonl", {
+          tool_use_line("Edit", { file_path = "/proj/x.lua" }, "toolu_e"),
+          vim.json.encode({
+            type = "user",
+            timestamp = "2026-08-02T20:30:05.000Z",
+            message = { role = "user", content = { { type = "tool_result", tool_use_id = "toolu_e", content = "ok" } } },
+            toolUseResult = edit_payload("toolu_e", "/proj/x.lua", { "-a", "+b" }).tool_response,
+          }),
+        })
+        fold("/p/h.jsonl")
+        expect(transcript.provisional("/p/h.jsonl", edit_payload("toolu_e", "/proj/x.lua", { "-a", "+b" }))).to_be(
+          false
+        )
+        expect(transcript.has_provisional("/p/h.jsonl")).to_be(false)
+      end)
+
+      it("is taken only from the tools that edit, and a created file is its whole content", function()
+        expect(transcript.provisional("/p/h.jsonl", {
+          tool_name = "Bash",
+          tool_use_id = "toolu_b",
+          tool_response = { stdout = "ok" },
+        })).to_be(false)
+
+        transcript.provisional("/p/h.jsonl", {
+          tool_name = "Write",
+          tool_use_id = "toolu_w",
+          tool_response = {
+            type = "create",
+            filePath = "/proj/new.txt",
+            content = "alpha\nbeta\n",
+            structuredPatch = {},
+          },
+        })
+        expect(transcript.provisional_view("/p/h.jsonl").files["/proj/new.txt"].kind).to_be("add")
+        expect(transcript.provisional_view("/p/h.jsonl").added).to_be(2)
+        local hunks = transcript.provisional_hunks("/p/h.jsonl", "/proj/new.txt", "toolu_w")
+        expect(#hunks).to_be(1)
+        expect(hunks[1].lines[1]).to_be("+alpha")
+        expect(hunks[1].lines[2]).to_be("+beta")
+        expect(transcript.provisional_hunks("/p/h.jsonl", "/proj/other.txt")).to_be_nil()
+
+        transcript.drop_provisional("/p/h.jsonl")
+        expect(transcript.provisional_view("/p/h.jsonl")).to_be_nil()
+      end)
+    end)
+
     it("folds none of them when the pane does not want them", function()
       transcript.setup({ agents = { feed_tools = false } })
       put("/p/a.jsonl", {
@@ -1256,6 +1536,19 @@ describe("agents.transcript", function()
         local before = decodes
         call_of("/p/a.jsonl", "toolu_z")
         expect(decodes - before).to_be(2)
+      end)
+
+      it("is not taken in by a request record repeating the call after its result", function()
+        put(
+          "/p/a.jsonl",
+          with_request_records({
+            tool_use_line("Bash", { command = "ls" }, "toolu_a"),
+            tool_result_line("toolu_a", { result = { stdout = "a.lua\n", stderr = "" } }),
+          }, "toolu_a")
+        )
+        local call = call_of("/p/a.jsonl", "toolu_a")
+        expect(call.ts).to_be(transcript._iso_to_epoch("2026-08-02T20:30:00.000Z"))
+        expect(call.result.stdout).to_be("a.lua\n")
       end)
 
       it("answers nil for a call the transcript no longer has", function()

@@ -129,6 +129,25 @@ describe("agents.subagent_view", function()
         is_error = true,
       }).status).to_be("rejected")
     end)
+
+    it("calls a refused call refused, saying whether you or a rule refused it", function()
+      -- The entry's `toolDenialKind`, whatever the wording: print mode says the
+      -- command "needs approval", a rule that permission "has been denied".
+      local declined = view.summarize_result(
+        { content = "touch in '/p/x' needs approval.", is_error = true },
+        "Error: touch in '/p/x' needs approval.",
+        "user-rejected"
+      )
+      expect(declined.status).to_be("rejected")
+      expect(declined.summary).to_be("declined")
+      local denied = view.summarize_result(
+        { content = "Permission to use Bash has been denied.", is_error = true },
+        "Error: Permission to use Bash has been denied.",
+        "permission-rule"
+      )
+      expect(denied.status).to_be("rejected")
+      expect(denied.summary).to_be("denied")
+    end)
   end)
 
   describe("rendering", function()

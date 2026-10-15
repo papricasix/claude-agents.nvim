@@ -143,6 +143,24 @@ describe("agents.file_view", function()
     expect(vim.api.nvim_buf_get_option(buf, "filetype")).to_be("diff")
   end)
 
+  it("shows an edit the transcript does not hold yet as its own patch", function()
+    -- A hook reported it; the CLI is holding its transcript writes, so there is no
+    -- history to diff from. The hook's patch is the record that exists.
+    install_unified()
+    disk["/proj/a.lua"] = { "one", "TWO" }
+    transcript.provisional("/p/a.jsonl", {
+      tool_name = "Edit",
+      tool_use_id = "toolu_h",
+      tool_response = { filePath = "/proj/a.lua", structuredPatch = { hunk(2, { "-two", "+TWO" }) } },
+    })
+
+    open({ session_id = "s", transcript = "/p/a.jsonl", path = "/proj/a.lua", prefer = "step", tool_id = "toolu_h" })
+    expect(#shown).to_be(0)
+    local buf, title = float_buf()
+    expect(vim.api.nvim_buf_get_lines(buf, 0, -1, false)[1]).to_be("--- a//proj/a.lua")
+    expect(title:find("not in the transcript yet", 1, true) ~= nil).to_be_true()
+  end)
+
   it("shows the patches when the file is gone from disk", function()
     install_unified()
     histories["/proj/deleted.lua"] = { hunks = { hunk(1, { "-one" }) }, created = false, reads = {} }

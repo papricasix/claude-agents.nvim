@@ -69,6 +69,28 @@ M.INTERRUPT_MARKER = "[Request interrupted by user"
 local REJECTION_MARKER = "The user doesn't want to proceed with this tool use"
 M.REJECTION_MARKER = REJECTION_MARKER
 
+--- The field every refused call's result entry carries, naming who refused it:
+--- `user-rejected`, `permission-rule`, `automode-blocked`, `automode-unavailable`.
+--- Written since at least CLI 2.1.260, for every refusal — the user's wording above
+--- is only one of them; print mode, a permission rule and the auto-mode classifier
+--- each word theirs differently (measured across this store). The wording stays for
+--- transcripts older than the field. Inside a string a quote is escaped, so an
+--- unescaped match is the entry's own key.
+local DENIAL_FIELD = '"toolDenialKind":"'
+
+--- How every record the CLI keeps of an API request opens: `api-request`,
+--- `api-request-shape` and `api-request-blob`, written into the transcript beside
+--- the conversation by CLI 2.1.300. See `_fold_line`.
+local REQUEST_RECORD = '{"type":"api-request'
+
+---Whether a transcript line is the CLI's record of an API request rather than a
+---part of the conversation.
+---@param line string
+---@return boolean
+function M._is_request_record(line)
+  return line:sub(1, #REQUEST_RECORD) == REQUEST_RECORD
+end
+
 --- The tools that start a subagent. `Task` is the name older CLIs used.
 local AGENT_TOOLS = { Agent = true, Task = true }
 
@@ -173,6 +195,7 @@ local config = nil
 ---@field pending table<string, ClaudeCodeAgentsEvent> Tool events whose result has not been folded yet, by tool_use id.
 ---@field last_ts number Epoch seconds of the last entry carrying a timestamp.
 ---@field first_ts number Epoch seconds of the first entry carrying a timestamp (0 until one is seen).
+---@field first_at number The same moment with its fraction kept, for ordering runs started inside one second.
 ---@field last_reply_ts number Epoch seconds the user last said something to the conversation (0 until they have); see `note_reply`.
 ---@field tokens integer|nil Context size of the newest assistant turn: input, both cache reads/writes and output.
 ---@field agent_calls table<string, ClaudeCodeAgentsEvent> `Agent`/`Task` tool events, by tool_use id.
@@ -979,6 +1002,10 @@ end
 ---@param want_events boolean Whether the Activity pane wants rows for tool calls.
 ---@return boolean handled
 local function fold_tool_use(sum, entry, want_events)
+  -- Only an assistant entry makes calls; anything else naming one is a copy.
+  if entry.type ~= "assistant" then
+    return false
+  end
   local message = entry.message
   local content = type(message) == "table" and message.content or nil
   if type(content) ~= "table" then
@@ -1064,7 +1091,10 @@ end
 ---
 ---**A refusal is not a failure**, and it is common enough to tell apart: 32 of the
 ---379 `is_error` results across this store are the user declining the call. Those
----are the one thing in the pane the agent did not do wrong.
+---are the one thing in the pane the agent did not do wrong. A permission rule or
+---the auto-mode classifier refusing it is the same: the call never ran. Every
+---refusal says so in `DENIAL_FIELD`; only a transcript older than that field is
+---recognised by the user's wording.
 ---@param sum ClaudeCodeAgentsSummary
 ---@param line string
 local function resolve_tool(sum, line)
@@ -1084,11 +1114,44 @@ local function resolve_tool(sum, line)
     -- user stopped is reported by the interrupt marker instead, which is what
     -- `_fold_line` resolves the calls still outstanding from.
     event.status = "done"
-  elseif line:find(REJECTION_MARKER, 1, true) then
+  elseif line:find(DENIAL_FIELD, 1, true) or line:find(REJECTION_MARKER, 1, true) then
     event.status = "rejected"
   else
     event.status = "error"
   end
+end
+
+--- How far past its opening the sentence naming a background command's id and
+--- output file is looked for. The longest wording runs to about 200 characters
+--- before the path.
+local BACKGROUND_SENTENCE_MAX = 600
+
+---A background command's id, read from the text of a result that carries no
+---`toolUseResult`.
+---
+---The CLI words that result four ways (read from the 2.1.300 binary): started in
+---the background, sent there with Ctrl+B, moved there when it outlived its
+---timeout, or moved there so a message could reach the model. Each names the id
+---as `with ID: <id>.` or `(ID: <id>)` and then says where the output goes. The
+---result has to open with that sentence, which a foreground command's output
+---merely containing it does not.
+---@param line string
+---@return string|nil task_id
+---@return true|nil by_user Sent to the background with Ctrl+B.
+local function background_from_text(line)
+  local at = line:find('"content":"Command ', 1, true) or line:find('"text":"Command ', 1, true)
+  if not at then
+    return nil
+  end
+  local sentence = line:sub(at, at + BACKGROUND_SENTENCE_MAX)
+  if not sentence:find("Output is being written to: ", 1, true) then
+    return nil
+  end
+  local id = sentence:match("with ID: ([%w_%-]+)%.") or sentence:match("%(ID: ([%w_%-]+)%)")
+  if not id then
+    return nil
+  end
+  return id, sentence:find("manually backgrounded by user", 1, true) and true or nil
 end
 
 ---Settle a shell call from its result line, recording it when it went to the
@@ -1112,9 +1175,14 @@ end
 ---"local_workflow", workflowName, runId, summary, transcriptDir, scriptPath}`
 ---(CLI 2.1.272). That line is small and decoded; a remote launch
 ---(`remote_launched`) has no local run to show and is left out.
+---
+---A result written with **no `toolUseResult`** (a print-mode subagent's, see
+---`_fold_line`) has only its text to say the command went to the background
+---(`background_from_text`).
 ---@param sum ClaudeCodeAgentsSummary
 ---@param line string
-local function settle_shell(sum, line)
+---@param bare boolean The line carries no `toolUseResult`.
+local function settle_shell(sum, line, bare)
   local id = line:match('"tool_use_id":"([^"]+)"')
   local call = id and sum.task_calls[id]
   if not call then
@@ -1146,7 +1214,20 @@ local function settle_shell(sum, line)
     return
   end
   local monitor = call.tool == MONITOR_TOOL
-  local task_id = monitor and line:match('"taskId":"([^"]+)"') or line:match('"backgroundTaskId":"([^"]+)"')
+  local task_id, by_user
+  if monitor and bare then
+    -- Its first words name the task: `Monitor started (task <id>, expires in …`
+    -- (measured, CLI 2.1.300). How long it runs is not kept.
+    task_id = line:match('"content":"Monitor started %(task ([%w_%-]+),')
+      or line:match('"text":"Monitor started %(task ([%w_%-]+),')
+  elseif monitor then
+    task_id = line:match('"taskId":"([^"]+)"')
+  elseif bare then
+    task_id, by_user = background_from_text(line)
+  else
+    task_id = line:match('"backgroundTaskId":"([^"]+)"')
+    by_user = line:find('"backgroundedByUser":true', 1, true) ~= nil or nil
+  end
   if not task_id then
     return
   end
@@ -1167,7 +1248,7 @@ local function settle_shell(sum, line)
     ts = call.ts,
     started_ts = started > 0 and started or call.ts,
     output_path = path,
-    by_user = line:find('"backgroundedByUser":true', 1, true) ~= nil or nil,
+    by_user = by_user,
     timeout_ms = monitor and tonumber(line:match('"timeoutMs":(%d+)')) or nil,
     persistent = monitor and line:find('"persistent":true', 1, true) ~= nil or nil,
   }
@@ -1175,13 +1256,20 @@ end
 
 ---Record a `TaskStop` result: the only record a background shell stopped this way
 ---leaves in the transcript (it gets no notification — measured, CLI 2.1.270).
+---
+---A bare result (print mode, see `_fold_line`) carries the same object as its
+---text, its quotes escaped, and has to open with it (measured, CLI 2.1.300).
 ---@param sum ClaudeCodeAgentsSummary
 ---@param line string
-local function note_task_stop(sum, line)
-  if not line:find('"message":"Successfully stopped task', 1, true) then
-    return
+---@param bare boolean The line carries no `toolUseResult`.
+local function note_task_stop(sum, line, bare)
+  local task_id
+  if bare then
+    local at = line:find('"content":"{\\"message\\":\\"Successfully stopped task: ', 1, true)
+    task_id = at and line:match("Successfully stopped task: ([%w_%-]+)", at)
+  elseif line:find('"message":"Successfully stopped task', 1, true) then
+    task_id = line:match('"task_id":"([^"]+)"')
   end
-  local task_id = line:match('"task_id":"([^"]+)"')
   if task_id then
     local at = line:find('"timestamp":"', 1, true)
     sum.task_stops[task_id] = at and M._iso_to_epoch(line:sub(at + 13, at + 40)) or sum.last_ts
@@ -1205,10 +1293,36 @@ local function result_tool_id(entry)
   return nil
 end
 
+--- Edits a hook has reported that the transcript does not hold yet (see
+--- `M.provisional`): [transcript path] = { order = { tool_use_id… }, by_id =
+--- { [tool_use_id] = { sum = a summary of that one edit, result = its result } } }.
+local provisional = {}
+
+---Let go of a provisional edit the transcript has now recorded.
+---@param path string
+---@param tool_id string
+local function release_provisional(path, tool_id)
+  local held = provisional[path]
+  if not held or not held.by_id[tool_id] then
+    return
+  end
+  held.by_id[tool_id] = nil
+  for index, id in ipairs(held.order) do
+    if id == tool_id then
+      table.remove(held.order, index)
+      break
+    end
+  end
+  if #held.order == 0 then
+    provisional[path] = nil
+  end
+end
+
 ---Fold one decoded `toolUseResult` entry into the summary.
 ---@param sum ClaudeCodeAgentsSummary
 ---@param entry table Decoded transcript line.
----@return boolean handled
+---@return boolean folded
+---@return string|nil tool_id The call the result answers.
 local function fold_result(sum, entry)
   local result = entry.toolUseResult
   if type(result) ~= "table" then
@@ -1235,7 +1349,7 @@ local function fold_result(sum, entry)
       num_lines = tonumber(result.file.numLines),
       tool_id = tool_id,
     })
-    return true
+    return true, tool_id
   end
 
   if type(result.filePath) ~= "string" then
@@ -1257,7 +1371,7 @@ local function fold_result(sum, entry)
   sum.added = sum.added + added
   sum.removed = sum.removed + removed
   push_event(sum, { ts = ts, kind = kind, path = result.filePath, added = added, removed = removed, tool_id = tool_id })
-  return true
+  return true, tool_id
 end
 
 --- A real marker entry is tiny (647 bytes, measured on the one real interrupt in
@@ -1638,6 +1752,14 @@ function M._fold_line(sum, line)
     return
   end
 
+  -- The CLI's records of its API requests (CLI 2.1.300). A blob is a message as it
+  -- was sent: every tool call again, after its result and with no timestamp, and a
+  -- subagent's results too. Read as conversation, each call was listed twice and
+  -- the copy stayed running for ever.
+  if M._is_request_record(line) then
+    return
+  end
+
   -- Which worktree the session is in. Ahead of the rewind test: where the process
   -- works is not something a rewind takes back, and the entry is no part of the
   -- conversation that one retracts.
@@ -1669,6 +1791,7 @@ function M._fold_line(sum, line)
     end
     if sum.first_ts == 0 and ts > 0 then
       sum.first_ts = ts
+      sum.first_at = M._iso_to_epoch_precise(line:sub(at + 13, at + 40))
     end
   end
 
@@ -1678,6 +1801,13 @@ function M._fold_line(sum, line)
   -- again. Inside a string a quote is escaped, so the first unescaped match is
   -- the entry's own key.
   local result_at = line:find('"toolUseResult"', 1, true)
+  -- A result written without that decoded copy is a result all the same: a
+  -- print-mode (`sdk-cli`) subagent writes none on its ordinary results (measured,
+  -- CLI 2.1.299 and 2.1.300). Read as anything else it never settled its call, and
+  -- it was taken for something the user typed. Only a user entry is asked, so the
+  -- second scan is spent on lines that are results or prompts.
+  local user_at = not result_at and line:find('"type":"user"', 1, true)
+  local is_result = result_at ~= nil or (user_at and line:find('"type":"tool_result"', 1, true) ~= nil) or false
 
   -- The user speaking to the conversation, in either of the two entries the CLI
   -- writes that as (see `HUMAN_ORIGIN`). One scan for both, ahead of the branches
@@ -1685,7 +1815,7 @@ function M._fold_line(sum, line)
   -- match is a field of the entry and not a message quoting one; a tool result
   -- is ruled out for the case nothing in the store has yet — a structured result
   -- that happens to carry the same field — and is not scanned for it at all.
-  if ts > 0 and not result_at and line:find(HUMAN_ORIGIN, 1, true) then
+  if ts > 0 and not is_result and line:find(HUMAN_ORIGIN, 1, true) then
     note_reply(sum, ts)
   end
 
@@ -1698,9 +1828,9 @@ function M._fold_line(sum, line)
   -- an earlier message already has is a rewind to before that earlier one
   -- (across this store, 15 such pairs, every one a rewind; the nearest were 3
   -- lines and 8 seconds apart). Tool results are user entries too and are left
-  -- out — they carry `toolUseResult`. Matched raw: the CLI writes the field first,
-  -- and a message quoting it has its quotes escaped.
-  if not result_at and line:find('"type":"user"', 1, true) then
+  -- out (`is_result`). Matched raw: the CLI writes the field first, and a message
+  -- quoting it has its quotes escaped.
+  if user_at and not is_result then
     local parent = line:match('"parentUuid":"([^"]+)"')
     if parent and note_prompt(sum, lnum, parent, ts) then
       return
@@ -1711,7 +1841,7 @@ function M._fold_line(sum, line)
   -- Matched raw like the timestamp: an assistant line also carries the whole
   -- reply, and inside a JSON string a quote is escaped, so an unescaped
   -- `"usage":{` is the message's own field.
-  if not result_at and line:find('"type":"assistant"', 1, true) then
+  if not is_result and line:find('"type":"assistant"', 1, true) then
     local tokens = M._usage_tokens(line)
     if tokens then
       sum.tokens = tokens
@@ -1751,7 +1881,7 @@ function M._fold_line(sum, line)
 
   -- A tool result quoting a notification is never one, and is the kind of line
   -- that is too big to decode for nothing.
-  if not result_at and line:find("<task-notification>", 1, true) then
+  if not is_result and line:find("<task-notification>", 1, true) then
     local note = M._task_notification(line)
     if note and note.event then
       -- A monitor's event. Counted from the queued copy only: each is written
@@ -1825,7 +1955,7 @@ function M._fold_line(sum, line)
 
   -- Bash results carry neither a patch nor a `file` object, which is what keeps
   -- their (often huge) stdout out of the decoder.
-  if result_at then
+  if is_result then
     -- Which call this answers, and how it went: three substring tests on a line
     -- that is never decoded (see `resolve_tool`).
     if tools_wanted() then
@@ -1833,25 +1963,38 @@ function M._fold_line(sum, line)
     end
     -- An answered question, an approved plan, a call turned down with words:
     -- the user replying through a prompt rather than by typing one.
-    if ts > 0 and is_reply_result(line, result_at) then
+    if ts > 0 and result_at and is_reply_result(line, result_at) then
       note_reply(sum, ts)
     end
     if next(sum.task_calls) ~= nil then
-      settle_shell(sum, line)
+      settle_shell(sum, line, not result_at)
     end
-    note_task_stop(sum, line)
+    note_task_stop(sum, line, not result_at)
     -- A foreground subagent's result says what the run cost. The keys are matched
     -- raw for the same reason the rest of this branch is: the line also carries
     -- the subagent's whole reply. Inside that reply a quote is escaped, so an
     -- unescaped `"totalDurationMs":` can only be the result's own field.
+    local tokens, duration_ms
     if line:find('"totalDurationMs":', 1, true) then
+      tokens = tonumber(line:match('"totalTokens":(%d+)'))
+      duration_ms = tonumber(line:match('"totalDurationMs":(%d+)'))
+    elseif not result_at then
+      -- A bare result (print mode) says it only in the text the run handed back,
+      -- which closes `<usage>subagent_tokens: N … duration_ms: N</usage>`
+      -- (measured, CLI 2.1.300). The last one is the run's own: a report may
+      -- quote another.
+      for t, d in line:gmatch("<usage>subagent_tokens: (%d+).-duration_ms: (%d+)</usage>") do
+        tokens, duration_ms = tonumber(t), tonumber(d)
+      end
+    end
+    if duration_ms then
       local id = line:match('"tool_use_id":"([^"]+)"')
       if id then
         sum.agent_results[id] = {
           id = id,
           status = line:find('"is_error":true', 1, true) and "failed" or "completed",
-          tokens = tonumber(line:match('"totalTokens":(%d+)')),
-          duration_ms = tonumber(line:match('"totalDurationMs":(%d+)')),
+          tokens = tokens,
+          duration_ms = duration_ms,
           ts = sum.last_ts,
         }
       end
@@ -1859,8 +2002,12 @@ function M._fold_line(sum, line)
     if line:find('"structuredPatch"', 1, true) or line:find('"file":', 1, true) then
       local ok, entry = pcall(vim.json.decode, line)
       if ok and type(entry) == "table" then
-        if not fold_result(sum, entry) then
+        local folded, tool_id = fold_result(sum, entry)
+        if not folded then
           sum.skipped = sum.skipped + 1
+        elseif tool_id then
+          -- The transcript has caught up with what a hook reported.
+          release_provisional(sum.path, tool_id)
         end
       else
         sum.skipped = sum.skipped + 1
@@ -1913,6 +2060,7 @@ local function new_summary(path)
     task_events = {},
     last_ts = 0,
     first_ts = 0,
+    first_at = 0,
     last_reply_ts = 0,
     lines = 0,
     prompts = {},
@@ -1923,6 +2071,144 @@ local function new_summary(path)
     offset = 0,
     skipped = 0,
   }
+end
+
+--------------------------------------------------------------------------------
+-- Edits the transcript does not hold yet
+--------------------------------------------------------------------------------
+
+--- The tools whose results are a file's counts, and so the ones a hook-reported
+--- edit is taken for.
+local EDIT_TOOLS = { Edit = true, MultiEdit = true, Write = true }
+
+---Record an edit from its `PostToolUse` hook payload until the transcript has it.
+---
+---Everything the panes show comes from the transcript, and the CLI sometimes holds
+---its writes: measured against 2.1.300, once for 119s with the edit long on disk.
+---The hook's `tool_response` is the very `toolUseResult` the transcript will hold
+---(measured, 2.1.300), so it is folded by the same code into a summary of its own,
+---which the panes add in (`provisional_view`) until the transcript's fold reaches
+---the same call and lets it go. One the fold already has is not taken: the hook
+---is a separate process and often arrives after the line was read.
+---@param path string The conversation's transcript.
+---@param event table The decoded hook payload.
+---@return boolean recorded
+function M.provisional(path, event)
+  local id = event.tool_use_id
+  local result = event.tool_response
+  if type(path) ~= "string" or type(id) ~= "string" or type(result) ~= "table" then
+    return false
+  end
+  if not EDIT_TOOLS[event.tool_name] then
+    return false
+  end
+  local sum = cache[path]
+  for _, folded in ipairs(sum and sum.events or {}) do
+    if folded.tool_id == id then
+      return false
+    end
+  end
+  local held = provisional[path] or { order = {}, by_id = {} }
+  if held.by_id[id] then
+    return false
+  end
+  local one = new_summary(path)
+  local folded = fold_result(one, {
+    timestamp = os.date("!%Y-%m-%dT%H:%M:%S.000Z"),
+    toolUseResult = result,
+    message = { content = { { type = "tool_result", tool_use_id = id } } },
+  })
+  if not folded or #one.events == 0 then
+    return false
+  end
+  held.by_id[id] = { sum = one, result = result }
+  held.order[#held.order + 1] = id
+  provisional[path] = held
+  return true
+end
+
+---Whether a conversation has edits the transcript does not hold yet.
+---@param path string
+---@return boolean
+function M.has_provisional(path)
+  return provisional[path] ~= nil
+end
+
+---Forget them: the conversation's process has ended and its transcript has been
+---read to the end, so the CLI is not going to write them now.
+---@param path string
+function M.drop_provisional(path)
+  provisional[path] = nil
+end
+
+---What the transcript does not hold yet, for the panes to add in: the events
+---(oldest first; the same tables on every call, which is how the Activity pane
+---ages a row), each file's counts with its per-edit record, and the totals.
+---@param path string
+---@return { events: table[], files: table<string, table>, order: string[], added: integer, removed: integer }|nil
+function M.provisional_view(path)
+  local held = provisional[path]
+  if not held then
+    return nil
+  end
+  local view = { events = {}, files = {}, order = {}, added = 0, removed = 0 }
+  for _, id in ipairs(held.order) do
+    local one = held.by_id[id].sum
+    view.added = view.added + one.added
+    view.removed = view.removed + one.removed
+    for _, event in ipairs(one.events) do
+      view.events[#view.events + 1] = event
+    end
+    for _, file_path in ipairs(one.order) do
+      local file = one.files[file_path]
+      local into = view.files[file_path]
+      if not into then
+        into = { added = 0, removed = 0, kind = file.kind, last_ts = file.last_ts, edits = {} }
+        view.files[file_path] = into
+        view.order[#view.order + 1] = file_path
+      end
+      into.added = into.added + file.added
+      into.removed = into.removed + file.removed
+      into.last_ts = file.last_ts
+      for _, edit in ipairs(file.edits or {}) do
+        into.edits[#into.edits + 1] = edit
+      end
+    end
+  end
+  return view
+end
+
+---The hunks of edits to `file_path` the transcript does not hold yet: of the one
+---call `tool_id`, or of all of them. A file the edit created is one hunk of its
+---whole content, since its own patch is empty.
+---@param path string The conversation's transcript.
+---@param file_path string
+---@param tool_id string|nil
+---@return table[]|nil hunks nil when there is no such edit.
+function M.provisional_hunks(path, file_path, tool_id)
+  local held = provisional[path]
+  if not held then
+    return nil
+  end
+  local hunks, found = {}, false
+  for _, id in ipairs(held.order) do
+    local result = held.by_id[id].result
+    if (not tool_id or id == tool_id) and result.filePath == file_path then
+      found = true
+      local patch_hunks = type(result.structuredPatch) == "table" and result.structuredPatch or {}
+      if #patch_hunks == 0 and type(result.content) == "string" then
+        local lines = {}
+        for line in (result.content:gsub("\n$", "") .. "\n"):gmatch("([^\n]*)\n") do
+          lines[#lines + 1] = "+" .. line
+        end
+        patch_hunks = { { oldStart = 0, oldLines = 0, newStart = 1, newLines = #lines, lines = lines } }
+      end
+      for _, hunk in ipairs(patch_hunks) do
+        hunks[#hunks + 1] = hunk
+      end
+    end
+  end
+  return found and hunks or nil
 end
 
 ---Start a summary over, keeping only what a rewind taught it.
@@ -3032,7 +3318,10 @@ function M.tool_call(transcript_path, tool_id, cb)
       return
     end
     local ok, entry = pcall(vim.json.decode, line)
-    if not ok or type(entry) ~= "table" then
+    -- The conversation's own entries only: a request record (CLI 2.1.300) repeats
+    -- the call after its result, with no timestamp and no `toolUseResult`, and
+    -- being later in the file it would replace both.
+    if not ok or type(entry) ~= "table" or (entry.type ~= "assistant" and entry.type ~= "user") then
       return
     end
     local content = type(entry.message) == "table" and entry.message.content or nil
@@ -3196,6 +3485,7 @@ function M.reset()
   cache = {}
   history_cache = {}
   cwd_cache = {}
+  provisional = {}
 end
 
 --------------------------------------------------------------------------------

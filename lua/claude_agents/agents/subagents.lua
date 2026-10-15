@@ -84,6 +84,26 @@ local function read_meta(path, st)
   return meta
 end
 
+---When a run started: its transcript's first line, to the millisecond.
+---
+---Not its descriptor's mtime, which says when the CLI last wrote the descriptor.
+---It writes it again later — measured against CLI 2.1.299 when a background run
+---first waits on a shell of its own, 4.7s after its first line; in about a sixth
+---of one store's runs, minutes to hours after it — replacing the file, so its
+---birth time moves too. Dated that way, a run was listed below one started after
+---it. The fraction keeps runs started from one message, milliseconds apart, in
+---the order they were started.
+---@param path string The run's transcript.
+---@param fallback number What to date it by while its transcript is not folded.
+---@return number
+local function started_at(path, fallback)
+  local sum = transcript.get(path)
+  if sum and (sum.first_at or 0) > 0 then
+    return sum.first_at
+  end
+  return fallback
+end
+
 ---@class ClaudeCodeSubagent
 ---@field id string
 ---@field agent_type string
@@ -93,7 +113,7 @@ end
 ---@field shape string|nil `background` | `foreground`
 ---@field worktree string|nil The git worktree it was given to work in (`isolation: "worktree"`).
 ---@field path string Its transcript.
----@field started number Epoch seconds the descriptor was written.
+---@field started number Epoch seconds it started (`started_at`).
 ---@field mtime number Epoch seconds its transcript was last written (0 when it has none yet).
 
 ---Every subagent a session has started, in no particular order.
@@ -138,7 +158,7 @@ function M.scan(transcript_path)
           -- against CLI 2.1.291). Its transcript stays here with its siblings'.
           worktree = (type(meta.worktreePath) == "string" and meta.worktreePath ~= "") and meta.worktreePath or nil,
           path = path,
-          started = st.mtime or 0,
+          started = started_at(path, st.mtime or 0),
           mtime = log and log.mtime or 0,
         }
         if meta.toolUseId ~= nil and rewound_tools[meta.toolUseId] then
@@ -652,7 +672,7 @@ function M.scan_workflow(transcript_path, task)
       label = type(meta.description) == "string" and meta.description or (progress[id] and progress[id].label) or nil,
       phase = type(meta.workflowPhase) == "string" and meta.workflowPhase or (progress[id] and progress[id].phaseTitle),
       path = path,
-      started = st and st.mtime or run.written,
+      started = started_at(path, st and st.mtime or run.written),
       mtime = log and log.mtime or 0,
       returned = journal.results[id] or nil,
       failed = journal.failed[id] or nil,

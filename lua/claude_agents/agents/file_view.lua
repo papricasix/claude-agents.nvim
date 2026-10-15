@@ -1034,6 +1034,24 @@ function M.open(opts, done)
     return finish(float.open_file(opts.session_id, path, opts.line, opts.reuse, title_for(nil)))
   end
 
+  -- An edit a hook reported that the transcript does not hold yet
+  -- (`transcript.provisional`): its own patch, as text, which is all there is to
+  -- build from. An Activity row names its call; a Changes row is opened this way
+  -- only while the transcript has nothing of the file, since otherwise what the
+  -- session did to it is the diff it opens as.
+  if opts.prefer ~= "read" then
+    local summary = transcript.get(opts.transcript)
+    local known = summary and summary.files[path]
+    if opts.tool_id or not known or known.kind == "read" then
+      local held = transcript.provisional_hunks(opts.transcript, path, opts.tool_id)
+      if held then
+        return finish(
+          open_patch_text(opts.session_id, path, held, title_for("(not in the transcript yet)"), opts.reuse)
+        )
+      end
+    end
+  end
+
   ---The session's whole work on the file: today's content against what it
   ---started from.
   ---@param history ClaudeCodeAgentsFileHistory|nil
