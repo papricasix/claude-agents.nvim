@@ -33,6 +33,25 @@ cat >.gitignore <<'EOF'
 /Cargo.lock
 EOF
 
+# The tasks shot types `/release-check` rather than its long prompt. It lifts the
+# no-commands rule for the commands it names: a monitor, and three subagents,
+# one of them running a release build in the background whose output streams
+# for about half a minute, so it is still going when the shot opens it.
+mkdir -p .claude/commands
+cat >.claude/commands/release-check.md <<'EOF'
+---
+description: Check that acme-shop is ready to release
+---
+Release check for acme-shop. For this check the monitor and the subagents may run the shell commands written below, although CLAUDE.md says not to run commands; they run no others and do not change them. Run no command yourself. Steps, in order:
+
+1. Start exactly one monitor with the Monitor tool, description "Release checklist", watching this command: for n in 1 2 3 4 5 6; do echo "checklist item $n of 6 ok"; sleep 4; done
+2. In one message, launch three general-purpose subagents with the Agent tool, each with run_in_background set to true, with exactly these descriptions and prompts:
+   - description "Build the crate", prompt: "Run this command with the Bash tool, with run_in_background set to true and the description 'Release build': for step in fetch resolve lock check compile codegen optimise strip link package; do echo \"$step ...\"; sleep 3; done; cargo build -q --release && echo 'release build ok'. Then read src/lib.rs, src/cart.rs, src/inventory.rs and src/pricing.rs, one file per call. Then reply only with: Waiting for the build. Once you are notified that the build finished, reply in one line with how it ended. Run no other commands."
+   - description "Test the pricing", prompt: "Read src/pricing.rs. Then run this command with the Bash tool, with the description 'Price tests': sleep 3 && cargo test -q --lib pricing. Then read tests/cart.rs. Then run this command with the Bash tool, with the description 'Cart tests': sleep 3 && cargo test -q --test cart. Reply in one line with both results. Run no other commands."
+   - description "Review the cart", prompt: "Read src/cart.rs, then tests/cart.rs, then src/pricing.rs, one file per call. Reply in one line with the most important case the tests miss. Run no commands."
+3. Wait for the subagents without calling any tool; their reports arrive on their own. When all three have reported that they finished, reply with "Release check done:" followed by one short line per check.
+EOF
+
 cat >Cargo.toml <<'EOF'
 [package]
 name = "acme-shop"

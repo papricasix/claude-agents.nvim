@@ -4,38 +4,36 @@ Claude Code in Neovim, from one terminal to a whole team of agents.
 
 ![The agents view: two Claude agents at work beside the project's earlier conversations, with the selected one's changes, activity and tasks](https://raw.githubusercontent.com/papricasix/claude-agents.nvim/assets/hero.gif)
 
-Claude Code connects to Neovim the way it connects to VS Code: it sees what you have selected, opens files in your editor, and proposes every edit as a diff you accept with `:w`. When one Claude is not enough, `<leader>aA` opens the agents view: several Claudes on one project, which of them is working, which one is waiting on you, and what each has changed.
+`<leader>aA` opens the agents view: several Claudes on one project, which of them is working, which one is waiting on you, what each has changed, and the subagents, shells and monitors they run, live as they work. Beside your code, Claude Code connects to Neovim the way it connects to VS Code: it sees what you have selected, opens files in your editor, and proposes every edit as a diff you accept with `:w`.
 
 ## What you get
 
-- **The IDE integration.** Claude sees your file and selection, opens files, reads your diagnostics, and shows each edit as a diff. `:w` accepts, `:q` rejects, and you can edit the proposal first.
-- **The agents view.** Every conversation this project has had, read from Claude Code's own transcripts: what each one changed, file by file and edit by edit, the commands it ran, the subagents and background jobs it started. Start, resume, search, flag and stop them from one tab.
-- **Inline diffs** right in the file, if you have [unified.nvim](https://github.com/papricasix/unified.nvim), instead of two windows side by side.
+- **The agents view.** Every conversation this project has had, read from Claude Code's own transcripts: what each one changed, file by file and edit by edit, the commands it ran, the subagents and background jobs it started, followed live while they run. Start, resume, search, flag and stop them from one tab.
 - **A live cursor** that follows Claude through your files as it reads and edits them, and plan mode's plan opened as a document in the editor.
+- **The IDE integration.** Claude sees your file and selection, opens files, reads your diagnostics, and shows each edit as a diff. `:w` accepts, `:q` rejects, and you can edit the proposal first.
+- **Inline diffs** right in the file, if you have [unified.nvim](https://github.com/papricasix/unified.nvim), instead of two windows side by side.
 - **Per-tab status** for your tabline: which tab's Claude is working, which one needs you, and which answer you have not read yet.
 - **Clickable paths.** File paths in Claude's terminal open in Neovim, not in your file manager.
 - **Conversations that come back.** Restore a Neovim session and each tab's Claude resumes where it left off.
 - **Subscription or API key, per session.** Start any Claude on either, or switch a running one without losing the conversation. The key stays in your OS keychain, out of your config and out of reach of the commands Claude runs.
 
-## In your editor
-
-With one Claude beside your code, as `:ClaudeCode` opens it.
-
-**The live cursor** follows Claude through a file as it reads and edits it.
-
-![A preview split showing the file Claude is reading, then its edit as an inline diff](https://raw.githubusercontent.com/papricasix/claude-agents.nvim/assets/live-cursor.gif)
-
-**Review an edit** as an inline diff in your editor, and accept it with `:w`.
-
-![Claude's proposed rename shown as an inline diff, accepted with :w](https://raw.githubusercontent.com/papricasix/claude-agents.nvim/assets/diff-accept.gif)
-
 ## In the agents view
 
 A tab of its own, for several Claudes at once. Diffs and files an agent opens appear there as floats.
 
+**Follow the work as it happens**: the subagents, shells and monitors an agent starts appear in Tasks while they run. Open one to watch what it is doing.
+
+![The agents view: an agent's release check starts a monitor and three subagents; a running subagent is opened and its calls appear live, then its background build's output streams in](https://raw.githubusercontent.com/papricasix/claude-agents.nvim/assets/tasks.gif)
+
 **Read what a session did**: open an edit, a changed file or a subagent's work, then flag the session to come back to.
 
 ![The agents view: opening an Activity edit, a Changes file and a subagent, then flagging a session](https://raw.githubusercontent.com/papricasix/claude-agents.nvim/assets/agents-switch.gif)
+
+## In your editor
+
+With one Claude beside your code, as `:ClaudeCode` opens it. **The live cursor** follows Claude through the files it reads, and **its edit** opens as an inline diff in your editor that you accept with `:w`.
+
+![A preview split following Claude through the files it reads, then its edit as an inline diff, accepted with :w](https://raw.githubusercontent.com/papricasix/claude-agents.nvim/assets/editor.gif)
 
 ## Install
 

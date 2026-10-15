@@ -25,7 +25,9 @@ demo="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # would make the recorded CLI attach to that session's editor or save no transcript.
 # The XDG directories and CLAUDE_CONFIG_DIR are passed through untouched: the CLI
 # keeps its installed versions under XDG_DATA_HOME, and a different one makes it
-# install itself there and repoint the user's `claude` launcher at the copy.
+# install itself there and repoint the user's `claude` launcher at the copy. The
+# updater is off: it fails in this environment and says so in red in the CLI's
+# footer, on camera.
 if [[ -z "${DEMO_CLEAN:-}" ]]; then
   plugins="${DEMO_PLUGINS:-${XDG_DATA_HOME:-$HOME/.local/share}/nvim/lazy}"
   root="${DEMO_ROOT:-/tmp/demo}"
@@ -37,6 +39,7 @@ if [[ -z "${DEMO_CLEAN:-}" ]]; then
   done
   exec env -i \
     DEMO_CLEAN=1 HOME="$HOME" USER="$USER" PATH="$PATH" TERM=xterm-256color LANG="${LANG:-en_US.UTF-8}" \
+    DISABLE_AUTOUPDATER=1 \
     SHELL=/bin/bash ${keep[@]+"${keep[@]}"} \
     DEMO_ROOT="$root" DEMO_OUT="${DEMO_OUT:-$root/out}" \
     DEMO_UNIFIED="${DEMO_UNIFIED:-$plugins/unified.nvim}" \

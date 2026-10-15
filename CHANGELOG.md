@@ -8,6 +8,10 @@
 - `<C-\><C-n>` leaves an agent's terminal again. The agents view's `<C-n>` (next session) took its second key, so you stayed in terminal mode.
 - `<Tab>` moves on to the next pane from an agent's terminal too, once you are out of terminal mode, as the help says it does anywhere in the view.
 
+### Changed
+
+- The README leads with the agents view and shows its Tasks pane live: subagents, a background build and a monitor followed as they work. The editor's live cursor and `:w` clips are now one.
+
 ## [1.2.0] - 2026-10-15
 
 ### Added

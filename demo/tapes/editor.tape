@@ -1,6 +1,6 @@
-# Reviewing an edit in the editor: Claude proposes a change to src/cart.rs, it
-# opens as an inline diff in the window beside the terminal, and :w accepts it.
-Output diff-accept.gif
+# One Claude beside your code: the live cursor follows it through the files it
+# reads, then its edit opens as an inline diff in the editor and :w accepts it.
+Output editor.gif
 
 Set Shell "bash"
 Set FontSize 16
@@ -18,23 +18,24 @@ Type `cd "$DEMO_PROJECT" && export PATH="$DEMO_PATH" && clear && DEMO_PERMISSION
 Enter
 Sleep 1500ms
 Type " ac"
-Wait+Screen@30s /Claude Code/
+Wait+Screen@30s /Claude Code v/
 Sleep 2s
 Show
 
 Sleep 1s
-Type@25ms "Rename the method total to subtotal in src/cart.rs only"
+# Two files read, so the preview moves between them (left to itself the model
+# may grep for with_tax instead). The full path keeps the change to one edit:
+# with an import it would be two diffs to accept.
+Type@25ms "Read src/pricing.rs, then make Cart::total in src/cart.rs return the total with tax, calling crate::pricing::with_tax by its full path"
 # Time to read the prompt before it is sent.
 Sleep 1500ms
 Enter
-Sleep 1s
 
-# The model reads the file and proposes the edit: the diff takes the editor
-# window, focus moves into it, and the terminal's question names the editor.
-Hide
+# The reads, on camera: the preview split below the file follows each one. The
+# edit then opens as a diff in the editor window, focus moves into it, and the
+# terminal's question names the editor.
 Wait+Screen@90s /Opened changes in/
 Sleep 600ms
-Show
 # Time to read the proposal, then `:w` typed, held, and run.
 Sleep 3s
 Type ":w"

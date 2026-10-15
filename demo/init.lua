@@ -5,6 +5,7 @@
 --   DEMO_UNIFIED, DEMO_SNACKS, DEMO_COLORSCHEME_DIR  plugin checkouts to load
 --   DEMO_COLORSCHEME                                 colorscheme name
 --   DEMO_PERMISSION                                  claude --permission-mode for this shot
+--   DEMO_TOOLS, DEMO_ALLOWED                         claude --tools / --allowedTools for this shot
 
 local repo = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 vim.opt.rtp:prepend(repo)
@@ -64,9 +65,21 @@ end)
 
 -- The CLI loads only this project's settings and no MCP servers, so nothing of
 -- the recording machine's own Claude setup (hooks, status line, plugins) shows.
--- No Bash: a command that asks for approval would stall a recording, and the
--- model's own look around (grep, git) differs from run to run.
-local claude = "claude --model haiku --setting-sources project,local --strict-mcp-config --disallowedTools Bash"
+-- No Bash unless a shot names its tools: a command that asks for approval would
+-- stall a recording, and the model's own look around (grep, git) differs from
+-- run to run. A shot that needs shells sets DEMO_TOOLS (the tools offered) and
+-- DEMO_ALLOWED (the ones that run without asking).
+local claude = "claude --model haiku --setting-sources project,local --strict-mcp-config"
+if vim.env.DEMO_TOOLS and vim.env.DEMO_TOOLS ~= "" then
+  claude = claude
+    .. " --tools '"
+    .. vim.env.DEMO_TOOLS
+    .. "' --allowedTools '"
+    .. (vim.env.DEMO_ALLOWED or vim.env.DEMO_TOOLS)
+    .. "'"
+else
+  claude = claude .. " --disallowedTools Bash"
+end
 if vim.env.DEMO_PERMISSION and vim.env.DEMO_PERMISSION ~= "" then
   claude = claude .. " --permission-mode " .. vim.env.DEMO_PERMISSION
 end
