@@ -9,6 +9,9 @@ describe("agents.model", function()
   local scans -- paths passed to transcript.summary, in order
   local live -- conversations the stubbed registry reports as running
   local launch_names -- [id] = what the stubbed registry says a launch named its conversation
+  local launch_times -- [id] = when the stubbed registry says a launch started its conversation
+  local held -- [path] = what the stubbed store holds from hooks (`provisional_view`)
+  local provisional_calls -- every payload handed to `transcript.provisional`, in order
   local git_calls
   local git_result -- what the stubbed `git status` answers
   local scheduled -- pending scheduler callbacks
@@ -39,7 +42,8 @@ describe("agents.model", function()
     summaries, scans, live, git_calls, scheduled, deleted, stale = {}, {}, {}, 0, {}, {}, {}
     git_result = {}
     elsewhere, locates, invalidated, git_roots, rehomed = {}, {}, {}, {}, {}
-    launch_names = {}
+    launch_names, launch_times = {}, {}
+    held, provisional_calls = {}, {}
 
     package.loaded["claude_agents.agents.transcript"] = {
       setup = function() end,
@@ -79,6 +83,21 @@ describe("agents.model", function()
       end,
       stale = function(path)
         return stale[path] == true
+      end,
+      -- What the stubbed store holds from hooks, by path, in `provisional_view`'s
+      -- shape; folding a payload into it is the transcript spec's to pin down.
+      provisional = function(path, event)
+        provisional_calls[#provisional_calls + 1] = { path = path, event = event }
+        return true
+      end,
+      provisional_view = function(path)
+        return held[path]
+      end,
+      has_provisional = function(path)
+        return held[path] ~= nil
+      end,
+      drop_provisional = function(path)
+        held[path] = nil
       end,
       delete = function(path)
         deleted[#deleted + 1] = path
@@ -148,7 +167,8 @@ describe("agents.model", function()
         return ids
       end,
       get = function(id)
-        return live[id] and { session_id = id, cwd = "/proj", name = launch_names[id] } or nil
+        return live[id] and { session_id = id, cwd = "/proj", name = launch_names[id], started_at = launch_times[id] }
+          or nil
       end,
     }
 
@@ -402,6 +422,23 @@ describe("agents.model", function()
         end
       end
       expect(model.row("ccc").title).to_be("plan-2")
+    end)
+
+    it("dates such an agent by when it was started, and keeps that date", function()
+      -- Dated "now" on every rebuild, two new agents tied and were ordered by
+      -- their ids, so the newer one could be sorted in below the older.
+      live.ccc = true
+      launch_times.ccc = 1000
+      model.refresh_list()
+      live.ddd = true
+      launch_times.ddd = 1005
+      model.refresh_list()
+
+      local rows = model.rows()
+      expect(rows[1].session_id).to_be("ddd")
+      expect(rows[2].session_id).to_be("ccc")
+      expect(rows[1].last_ts).to_be(1005)
+      expect(rows[2].last_ts).to_be(1000)
     end)
 
     describe("a running conversation whose transcript is there but unread", function()
@@ -1823,6 +1860,105 @@ describe("agents.model", function()
       expect(model.status_of("bbb").state).to_be("waiting")
     end)
 
+    describe("an edit the transcript does not hold yet", function()
+      -- What the stubbed store answers for `aaa` from a hook: one edit of 3/1 to a
+      -- file the transcript already lists and one to a file it does not.
+      local function hold()
+        local event =
+          { ts = 1785700300, kind = "edit", path = "/proj/new.lua", added = 2, removed = 0, tool_id = "toolu_h" }
+        held["/p/aaa.jsonl"] = {
+          events = { event },
+          files = {
+            ["/proj/a.lua"] = { added = 1, removed = 1, kind = "edit", last_ts = 1785700300, edits = {} },
+            ["/proj/new.lua"] = { added = 2, removed = 0, kind = "add", last_ts = 1785700300, edits = {} },
+          },
+          order = { "/proj/a.lua", "/proj/new.lua" },
+          added = 3,
+          removed = 1,
+        }
+        return event
+      end
+
+      it("is handed to the store from a main-thread edit, never from a subagent's", function()
+        local response = { filePath = "/proj/a.lua", structuredPatch = {} }
+        model.note({
+          hook_event_name = "PostToolUse",
+          tool_name = "Edit",
+          tool_use_id = "toolu_1",
+          tool_response = response,
+          session_id = "aaa",
+        })
+        expect(#provisional_calls).to_be(1)
+        expect(provisional_calls[1].path).to_be("/p/aaa.jsonl")
+        -- A subagent's edit is in its own transcript; this one would never confirm it.
+        model.note({
+          hook_event_name = "PostToolUse",
+          tool_name = "Edit",
+          tool_use_id = "toolu_2",
+          tool_response = response,
+          session_id = "aaa",
+          agent_id = "sub1",
+        })
+        expect(#provisional_calls).to_be(1)
+      end)
+
+      it("is counted in the session's row, listed in Activity and in Changes", function()
+        summaries.aaa.files = { ["/proj/a.lua"] = { added = 4, removed = 0, kind = "edit", last_ts = 100, edits = {} } }
+        summaries.aaa.order = { "/proj/a.lua" }
+        summaries.aaa.added, summaries.aaa.removed = 4, 0
+        model.attach(1, "/proj")
+        model.select("aaa")
+        local event = hold()
+
+        local row
+        for _, r in ipairs(model.rows()) do
+          if r.session_id == "aaa" then
+            row = r
+          end
+        end
+        expect(row.added).to_be(7)
+        expect(row.removed).to_be(1)
+
+        local feed = model.feed(10)
+        expect(feed[1]).to_be(event)
+
+        local changes = model.changes()
+        expect(#changes).to_be(2)
+        expect(changes[1].path).to_be("/proj/a.lua")
+        expect(changes[1].added).to_be(5)
+        expect(changes[2].path).to_be("/proj/new.lua")
+        expect(changes[2].status).to_be("A")
+      end)
+
+      it("is dropped once its agent has ended and the transcript is read to the end", function()
+        model.attach(1, "/proj")
+        hold()
+        live.aaa = true
+        model.poll({ list_only = true })
+        expect(held["/p/aaa.jsonl"]).not_to_be_nil()
+
+        live.aaa = nil
+        stale["/p/aaa.jsonl"] = true -- the CLI is writing what it held
+        model.poll({ list_only = true })
+        expect(held["/p/aaa.jsonl"]).not_to_be_nil()
+
+        stale["/p/aaa.jsonl"] = nil
+        model.poll({ list_only = true })
+        expect(held["/p/aaa.jsonl"]).to_be_nil()
+      end)
+    end)
+
+    it("leaves the state alone when told the event cannot report one", function()
+      -- The live cursor's file-tool hook alone: nothing it sends ends a busy.
+      model.note({ hook_event_name = "PreToolUse", tool_name = "Read", session_id = "aaa" }, 1, { classify = false })
+      expect(model.status_of("aaa")).to_be(nil)
+      -- What to re-read still follows it.
+      model._state().dirty.transcript = false
+      model.note({ hook_event_name = "PostToolUse", tool_name = "Edit", session_id = "aaa" }, 1, { classify = false })
+      expect(model._state().dirty.transcript).to_be_true()
+      expect(model.status_of("aaa")).to_be(nil)
+    end)
+
     it("counts a finished turn as read only for the session on screen", function()
       model.select("aaa")
       model.note({ hook_event_name = "Stop", session_id = "aaa" })
@@ -2078,6 +2214,28 @@ describe("agents.model", function()
       model.poll({ list_only = true })
       tick()
       expect(scans[1]).to_be("/p/aaa.jsonl")
+    end)
+
+    it("re-reads a running agent's transcript when it has grown, selected or not", function()
+      -- An agent waiting on a permission prompt sends no hook, so the edit it
+      -- made just before asking is in its file and nowhere else.
+      summaries.aaa = summary_for("aaa")
+      summaries.bbb = summary_for("bbb")
+      live.bbb = true
+      model.attach(1, "/proj")
+      model.select("aaa")
+      model.request_refresh()
+      tick()
+      scans = {}
+
+      stale["/p/bbb.jsonl"] = true
+      model.poll({ list_only = true })
+      tick()
+      local reread = false
+      for _, path in ipairs(scans) do
+        reread = reread or path == "/p/bbb.jsonl"
+      end
+      expect(reread).to_be_true()
     end)
 
     it("enumerates even when it is told not to read transcripts", function()

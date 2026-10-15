@@ -25,6 +25,22 @@ local utils = require("claude_agents.utils")
 
 local M = {}
 
+---Wall-clock seconds, to the microsecond where libuv can say.
+---
+---A conversation with no transcript yet is listed, and ordered, by when it was
+---started; two agents started within one second would tie and fall through to
+---the order of their ids. Injectable because the vim mock's clock stands still.
+---@return number
+M._clock = function()
+  local ok, sec, usec = pcall(function()
+    return vim.loop.gettimeofday()
+  end)
+  if ok and type(sec) == "number" then
+    return sec + (tonumber(usec) or 0) / 1e6
+  end
+  return os.time()
+end
+
 ---The agents config subtable.
 ---
 ---Read on demand rather than stored at setup: this module has no `setup` of its
@@ -47,7 +63,7 @@ end
 ---@field instance table|nil The server instance this agent talks to.
 ---@field resumed boolean Whether it was started with --resume.
 ---@field name string|nil What its conversation is called, as far as the launch knows: `--name`, then whatever `set_name` was told.
----@field started_at number
+---@field started_at number When it began running the conversation it runs now — the launch, or the `/clear` that swapped it — in wall-clock seconds.
 ---@field exited boolean
 ---@field exit_code integer|nil
 
@@ -293,7 +309,7 @@ function M.launch(session_id, opts)
     instance = instance,
     resumed = opts.resume == true,
     name = name,
-    started_at = vim.loop and vim.loop.now() or 0,
+    started_at = M._clock(),
     exited = false,
   }
   terminals[session_id] = term
@@ -360,6 +376,7 @@ function M.rekey(agent_key, session_id, opts)
   terminals[previous] = nil
   terminals[session_id] = term
   term.session_id = session_id
+  term.started_at = M._clock()
   if vim.api.nvim_buf_is_valid(term.bufnr) then
     pcall(function()
       vim.b[term.bufnr].claudecode_agent_session = session_id

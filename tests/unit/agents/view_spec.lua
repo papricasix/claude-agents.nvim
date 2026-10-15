@@ -571,6 +571,28 @@ describe("agents_view", function()
       agents_view.close()
     end)
 
+    it("repaints the panes when a pane or Neovim is resized", function()
+      -- Rows are cut to their pane's width; a quiet view in hooks mode otherwise
+      -- waited for the list refresh (measured headless: 1.6s).
+      agents_view.setup(base_config({ enabled = true }))
+      expect(agents_view.open()).to_be_true()
+      local redraw, calls = agents_view.redraw, 0
+      agents_view.redraw = function()
+        calls = calls + 1
+      end
+
+      fire_autocmd("WinResized", { event = "WinResized" })
+      expect(calls).to_be(1)
+      fire_autocmd("VimResized", { event = "VimResized" })
+      expect(calls).to_be(2)
+      -- A focus change only records sizes.
+      fire_autocmd("WinEnter", { event = "WinEnter" })
+      expect(calls).to_be(2)
+
+      agents_view.redraw = redraw
+      agents_view.close()
+    end)
+
     it("keeps a size the user set rather than reverting to the configured share", function()
       agents_view.setup(base_config({ enabled = true }))
       expect(agents_view.open()).to_be_true()
@@ -2302,6 +2324,52 @@ describe("agents_view", function()
       agents_view.setup(base_config({ enabled = false }))
       local ok = pcall(agents_view.note, { hook_event_name = "PostToolUse", tool_name = "Edit", session_id = "x" })
       expect(ok).to_be_true()
+    end)
+
+    describe("whether an event may set a conversation's state", function()
+      local noted
+
+      before_each(function()
+        noted = {}
+        package.loaded["claude_agents.agents.model"] = {
+          setup = function() end,
+          on_change = function() end,
+          note = function(event, _, opts)
+            noted[#noted + 1] = { event = event, classify = opts and opts.classify }
+          end,
+        }
+        package.loaded["claude_agents.agents_view"] = nil
+        agents_view = require("claude_agents.agents_view")
+      end)
+
+      after_each(function()
+        package.loaded["claude_agents.agents.model"] = nil
+        package.loaded["claude_agents.agents_view"] = nil
+      end)
+
+      ---@param agents table
+      ---@param status_on boolean
+      ---@return boolean|nil classify
+      local function classify_under(agents, status_on)
+        local config = base_config(agents, { enabled = status_on })
+        require("claude_agents.status").setup(config)
+        agents_view.setup(config)
+        agents_view.note({ hook_event_name = "PreToolUse", tool_name = "Read", session_id = "x" }, 1, nil)
+        return noted[#noted].classify
+      end
+
+      it("may not when only the live cursor's hook is injected", function()
+        -- Its file-tool PreToolUse marked the row busy, and no Stop or
+        -- PostToolUse ever came to end it.
+        expect(classify_under({ enabled = true, source = "auto" }, false)).to_be(false)
+      end)
+
+      it("may whenever the launch carries the events that end a state", function()
+        expect(classify_under({ enabled = true, source = "auto" }, true)).to_be_true()
+        expect(classify_under({ enabled = true, source = "hooks" }, false)).to_be_true()
+        -- Polling the transcripts does not stop status paying for the hooks.
+        expect(classify_under({ enabled = true, source = "poll" }, true)).to_be_true()
+      end)
     end)
   end)
 

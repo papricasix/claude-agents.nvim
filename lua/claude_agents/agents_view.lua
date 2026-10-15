@@ -275,6 +275,20 @@ function M.wants_hooks()
   return ok and status.is_enabled() == true
 end
 
+---Whether a launch carries the events that end a state — `Stop`,
+---`UserPromptSubmit`, `PostToolUse` on every tool. They are injected for status
+---or for this view's own hooks, the same test `live_cursor.build_launch_injection`
+---makes. Without them the hook sends only the live cursor's file-tool
+---`PreToolUse`, the plan view's `ExitPlanMode` and `SessionStart`.
+---@return boolean
+local function hooks_report_state()
+  if M.wants_hooks() then
+    return true
+  end
+  local ok, status = pcall(require, "claude_agents.status")
+  return ok and status.is_enabled() == true
+end
+
 --------------------------------------------------------------------------------
 -- Tab identity
 --------------------------------------------------------------------------------
@@ -1641,6 +1655,10 @@ function M.arm_autocmds()
     group = state.augroup,
     callback = function()
       M.resize()
+      -- Every row is cut to its pane's width; see the `WinResized` handler below.
+      if tab_visible() then
+        M.redraw()
+      end
     end,
     desc = "Keep the Claude agents panes sized to the window",
   })
@@ -1716,8 +1734,14 @@ function M.arm_autocmds()
   -- panes, so none of these can record a disturbed layout.
   vim.api.nvim_create_autocmd({ "WinResized", "WinEnter", "WinLeave" }, {
     group = state.augroup,
-    callback = function()
+    callback = function(args)
       M.remember_sizes()
+      -- Every row is cut to its pane's width, and in hooks mode nothing else
+      -- repaints a quiet view before the list refresh: a dragged pane kept rows
+      -- cut to its old width for 1.6s (measured headless; `list_refresh_ms` 2s).
+      if args and args.event == "WinResized" and tab_visible() then
+        M.redraw()
+      end
     end,
     desc = "Remember deliberate Claude agents pane sizes",
   })
@@ -3789,7 +3813,12 @@ function M.note(event, source_tab, agent_id)
       cleared = started and event.source == "clear",
     })
   end
-  model.note(event, source_tab)
+  -- Only a launch that reports how a state ends may set one. With status off the
+  -- live cursor's file-tool `PreToolUse` still arrives and marked the row busy,
+  -- and nothing that reached Neovim ever ended it: the agent read busy through
+  -- permission prompts and long after its turn was over. The panes still follow
+  -- the event.
+  model.note(event, source_tab, { classify = hooks_report_state() })
 end
 
 ---A running agent is having a different conversation than it was.

@@ -280,6 +280,21 @@ describe("agents.registry", function()
       expect(retagged_floats[1][2]).to_be("def")
     end)
 
+    it("dates the conversation it moves onto from the move", function()
+      -- A conversation with no transcript yet is ordered by this, and the one
+      -- `/clear` starts begins at the clear, not at the launch.
+      registry._clock = function()
+        return 1000.25
+      end
+      local term = registry.launch("abc", { win = 1000, tab = 1 })
+      expect(term.started_at).to_be(1000.25)
+      registry._clock = function()
+        return 1300.5
+      end
+      registry.rekey(key_of("abc"), "def")
+      expect(registry.get("def").started_at).to_be(1300.5)
+    end)
+
     it("is still called what its launch named it", function()
       -- Measured against 2.1.295: the conversation `/clear` starts opens with
       -- the `agent-name` the one before it had.

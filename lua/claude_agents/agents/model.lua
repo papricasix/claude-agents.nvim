@@ -959,7 +959,10 @@ function M.refresh_list()
           -- unknown-count placeholder would claim its counts are still being read.
           added = 0,
           removed = 0,
-          last_ts = os.time(),
+          -- Dated once, by when it was started. Stamped afresh on every rebuild,
+          -- every such row was "now": two new agents tied, fell through to the
+          -- order of their ids, and the second could be sorted in below the first.
+          last_ts = (term and term.started_at) or M._now_s(),
           folded = true,
         }
       end
@@ -1340,6 +1343,11 @@ function M.rows()
 
       local added = row.folded and row.added or nil
       local removed = row.folded and row.removed or nil
+      -- With what the transcript does not hold yet (`transcript.provisional`).
+      local held = added and transcript.provisional_view(row.path)
+      if held then
+        added, removed = added + held.added, (removed or 0) + held.removed
+      end
       local added_age, removed_age = stamp_counts("session\0" .. row.session_id, added, removed)
 
       out[#out + 1] = {
@@ -1647,6 +1655,19 @@ function M.feed(visible, keep)
     return {}, {}
   end
   local events = transcript.events(row.path)
+  -- Edits the transcript does not hold yet, newest of all (`transcript.provisional`).
+  -- A copy, since the transcript's own list is the cache's.
+  local held = transcript.provisional_view(row.path)
+  if held and #held.events > 0 then
+    local merged = {}
+    for index, event in ipairs(events) do
+      merged[index] = event
+    end
+    for _, event in ipairs(held.events) do
+      merged[#merged + 1] = event
+    end
+    events = merged
+  end
   local ceiling = opts().feed_limit or 500
   local limit = ceiling
   if type(visible) == "number" and visible > 0 and visible < limit then
@@ -1739,8 +1760,42 @@ function M.changes()
     return {}
   end
   local summary = transcript.get(row.path)
-  if not summary then
+  -- With what the transcript does not hold yet (`transcript.provisional`) — for a
+  -- new conversation the CLI is holding, that may be everything there is.
+  local held = transcript.provisional_view(row.path)
+  if not summary and not held then
     return {}
+  end
+  local files, order = summary and summary.files or {}, summary and summary.order or {}
+  if held then
+    local merged_files, merged_order = {}, {}
+    for _, path in ipairs(order) do
+      merged_order[#merged_order + 1] = path
+      merged_files[path] = files[path]
+    end
+    for _, path in ipairs(held.order) do
+      local extra, file = held.files[path], merged_files[path]
+      if file then
+        local edits = {}
+        for _, edit in ipairs(file.edits or {}) do
+          edits[#edits + 1] = edit
+        end
+        for _, edit in ipairs(extra.edits) do
+          edits[#edits + 1] = edit
+        end
+        merged_files[path] = {
+          added = file.added + extra.added,
+          removed = file.removed + extra.removed,
+          kind = file.kind == "read" and extra.kind or file.kind,
+          last_ts = extra.last_ts,
+          edits = edits,
+        }
+      else
+        merged_files[path] = extra
+        merged_order[#merged_order + 1] = path
+      end
+    end
+    files, order = merged_files, merged_order
   end
 
   local utils = require("claude_agents.utils")
@@ -1782,8 +1837,8 @@ function M.changes()
 
   local marks = checkpoints.list(row.session_id)
   if #marks == 0 then
-    for _, path in ipairs(summary.order or {}) do
-      local file = summary.files[path]
+    for _, path in ipairs(order) do
+      local file = files[path]
       if file and file.kind ~= "read" then
         push(path, file, nil)
       end
@@ -1797,8 +1852,8 @@ function M.changes()
   -- does, so what the agent has done since the checkpoint is at the top and a
   -- new file lands above the rule rather than under everything.
   local eras = {}
-  for _, path in ipairs(summary.order or {}) do
-    local file = summary.files[path]
+  for _, path in ipairs(order) do
+    local file = files[path]
     local edits = file and file.edits
     -- A summary with no per-edit record (an old cache, a stub) still has its
     -- totals; they are dated by the file's last touch rather than dropped.
@@ -1971,7 +2026,9 @@ end
 
 ---Fold one Claude Code hook event into per-conversation state.
 ---@param event table Decoded hook payload.
-function M.note(event)
+---@param _source_tab integer|nil
+---@param note_opts { classify: boolean? }|nil `classify = false`: the event still marks what to re-read, but says nothing about what the conversation is doing (`agents_view.note`).
+function M.note(event, _source_tab, note_opts)
   if type(event) ~= "table" then
     return
   end
@@ -1988,7 +2045,7 @@ function M.note(event)
   end
 
   local ok, status = pcall(require, "claude_agents.status")
-  if ok and status.advance then
+  if ok and status.advance and not (note_opts and note_opts.classify == false) then
     -- `advance`, not `classify`: a conversation's subagents report under its
     -- id, and a background one's tool calls must not read as the answer to a
     -- question the conversation itself has on screen.
@@ -2022,6 +2079,14 @@ function M.note(event)
     state.dirty.transcript = true
     if WRITING_TOOLS[tool] then
       state.dirty.git = true
+      -- Counted from the hook until the transcript has it: the CLI sometimes holds
+      -- its writes (`transcript.provisional`). Not a subagent's — its edits are in
+      -- its own transcript, never in this one, so this one would never confirm it.
+      local row = state.by_id[session_id]
+      local path = (row and row.path) or event.transcript_path
+      if event.agent_id == nil and type(path) == "string" then
+        transcript.provisional(path, event)
+      end
     end
   elseif ehn == "Stop" or ehn == "SessionStart" or ehn == "SessionEnd" or ehn == "SubagentStop" then
     state.dirty.transcript = true
@@ -2304,9 +2369,32 @@ function M.poll(tick_opts)
     if row and row.path and transcript.stale(row.path) then
       state.dirty.transcript = true
     end
+    -- Every running agent's too, one stat each. An agent sitting on a permission
+    -- prompt sends no hook until it is answered, so a line written after its last
+    -- one — the result of the edit it made just before asking — waited for some
+    -- other agent's event before its row counted it.
+    for _, other in ipairs(state.rows) do
+      if state.dirty.transcript then
+        break
+      end
+      if other ~= row and other.path and is_live(other) and transcript.stale(other.path) then
+        state.dirty.transcript = true
+      end
+    end
   end
   if state.subagents_running then
     state.dirty.subagents = true
+  end
+
+  -- Edits a hook reported that the transcript never recorded (`transcript.provisional`):
+  -- once the process has ended and its transcript has been read to the end, the
+  -- CLI is not going to write them — a held transcript is written at exit at the
+  -- latest (measured against 2.1.300).
+  for _, row in ipairs(state.rows) do
+    if transcript.has_provisional(row.path) and not is_live(row) and not transcript.stale(row.path) then
+      transcript.drop_provisional(row.path)
+      state.dirty.transcript = true
+    end
   end
 
   local now = (vim.loop and vim.loop.now()) or 0
