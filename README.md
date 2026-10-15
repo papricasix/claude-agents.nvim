@@ -45,7 +45,10 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
   "papricasix/claude-agents.nvim",
   dependencies = { "folke/snacks.nvim" }, -- optional: a nicer terminal window
   opts = {
-    agents = { enabled = true },
+    agents = {
+      enabled = true,
+      -- tab_name = "agents", -- name the view's tab in your tabline
+    },
   },
   keys = {
     { "<leader>ac", "<cmd>ClaudeCode<cr>", desc = "Claude: toggle terminal" },
