@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- The plan view (`plan`) and per-tab status (`status`) are on by default. Per-tab status runs a short hook before and after every tool call; `status = { enabled = false }` and `plan = { enabled = false }` switch them off. With status on, the agents view follows its agents through those hooks instead of polling their transcripts.
+
 ## [1.0.0] - 2026-10-15
 
 The first release of claude-agents.nvim, a fork of [claudecode.nvim](https://github.com/coder/claudecode.nvim) 0.3.0. The commands and the options are unchanged: point the plugin spec at `papricasix/claude-agents.nvim` and keep the rest.

@@ -86,7 +86,7 @@ agents = {
 }
 ```
 
-The view follows the agents by watching their transcripts, up to half a second behind. With [per-tab status](guide.md#per-tab-status) on, it uses the same hooks instead (`agents.source`).
+The view follows the agents through the hooks [per-tab status](guide.md#per-tab-status) runs, which is on by default. With status off it watches their transcripts instead, up to half a second behind (`agents.source`).
 
 The commands, to map from inside an agent's terminal where the pane keys do not reach. All but the first act on the selected session:
 

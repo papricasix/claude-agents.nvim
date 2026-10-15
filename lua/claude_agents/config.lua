@@ -57,7 +57,7 @@ M.defaults = {
     preview_highlight = "ClaudeCodeLivePreview", -- highlight group for the marker; defaults to a link to DiagnosticOk (green)
   },
   plan = {
-    enabled = false, -- opt-in: render Claude's plan-mode plan in an editor split
+    enabled = true, -- render Claude's plan-mode plan in the editor; false turns it off
     layout = "vertical", -- "vertical" or "horizontal" split for the plan window
     split_size_percentage = 0.5, -- plan split size as a fraction of the screen (0..1)
     focus = true, -- move focus into the plan window when it opens
@@ -67,10 +67,11 @@ M.defaults = {
     highlight = "ClaudeCodePlan", -- winbar highlight group; defaults to a link to DiagnosticInfo
   },
   -- Per-tab Claude activity ("busy" / "waiting" for you / "idle"), published for
-  -- tablines, statuslines and other plugins (see claudecode.status). Opt-in: it
-  -- widens the injected hook set to every tool call.
+  -- tablines, statuslines and other plugins (see claude_agents.status). On by
+  -- default; it widens the injected hook set to every tool call (two headless
+  -- Neovims per call, before and after), so `enabled = false` saves that.
   status = {
-    enabled = false,
+    enabled = true,
     -- A glyph per state, or a list of frames to animate that state:
     --   icons = { busy = require("claude_agents.status").SPINNER }
     -- animates a working tab with the CLI's own spinner.

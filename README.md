@@ -50,9 +50,9 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
       -- tab_name = "agents", -- name the view's tab in your tabline
     },
     -- live_cursor = { enabled = true, mode = "preview" }, -- follow Claude through files
-    -- plan = { enabled = true }, -- open plan mode's plan in the editor
-    -- status = { enabled = true }, -- busy / waiting / done per tab, for your tabline
     -- session_persistence = "global", -- resume each tab's Claude with a saved session
+    -- plan = { enabled = false }, -- on by default: plan mode's plan in the editor
+    -- status = { enabled = false }, -- on by default: busy / waiting / done per tab
   },
   keys = {
     { "<leader>ac", "<cmd>ClaudeCode<cr>", desc = "Claude: toggle terminal" },
@@ -68,7 +68,7 @@ You need Neovim 0.11 or newer and the [Claude Code CLI](https://docs.anthropic.c
 
 ## Good to know
 
-The live cursor, the plan view, per-tab status and session persistence are off until you turn them on. They hear from Claude through hooks the plugin adds when it launches Claude (`claude --settings`; your own settings are left alone), so they only work for a Claude started from Neovim, and turning one on applies to the next Claude you start.
+The plan view and per-tab status are on; the live cursor and session persistence are off until you turn them on. All four hear from Claude through hooks the plugin adds when it launches Claude (`claude --settings`; your own settings are left alone), so they only work for a Claude started from Neovim, and a change applies to the next Claude you start. Per-tab status runs a short hook on every tool call; switch it off if you never look at it.
 
 The [guide](docs/guide.md) has every command, the configuration, diffs, terminal providers and each of those features. The [agents guide](docs/agents.md) walks through the agents view.
 

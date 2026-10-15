@@ -54,10 +54,10 @@ Available: `netrw`, `nvim-tree`, `oil`, `mini-files`.
 5. **Diff Integration** (`lua/claude_agents/diff.lua`).
 6. **Terminal Integration** (`lua/claude_agents/terminal.lua`) — internal and external terminals.
 7. **Live Cursor** (`lua/claude_agents/live_cursor.lua`) — opt-in ride-along view.
-8. **Plan View** (`lua/claude_agents/plan_view.lua`) — opt-in plan-mode rendering.
+8. **Plan View** (`lua/claude_agents/plan_view.lua`) — plan-mode rendering, on by default.
 9. **Terminal Links** (`lua/claude_agents/terminal_links.lua`) — on by default.
 10. **Session Persistence** (`lua/claude_agents/session_state.lua`) — opt-in.
-11. **Per-Tab Status** (`lua/claude_agents/status.lua`) — opt-in.
+11. **Per-Tab Status** (`lua/claude_agents/status.lua`) — on by default.
 12. **Agents Mode** (`lua/claude_agents/agents_view.lua`, `lua/claude_agents/agents/*.lua`) — opt-in.
 13. **Floating Windows** (`lua/claude_agents/float.lua`).
 
@@ -155,7 +155,7 @@ Rules:
   - `PostToolBatch` (every call of a message resolved, per thread) would say "moved on" exactly, but is a hook process per message; not registered.
   - An end-to-end check needs a sibling whose result is slow: `WebFetch https://example.com` beside `AskUserQuestion` reproduces it (the fetch returned 1.4s into the question). A background `Agent` launch does not reliably: it returns in the same millisecond the prompt goes up, and in three probe runs its `PostToolUse` reached Neovim first each time, which is the harmless order.
 - `done` = "finished but unread". `finished_state` lands a turn in `idle` only when that tab was current **and** Neovim had focus. Otherwise it stays unread until `mark_read` (wired to `TabEnter`/`TabNewEntered` and `FocusGained`, which also restores `set_focused`; `FocusLost` clears it). Reading never clears `waiting`.
-- `PostToolUse` is what ends `waiting`: between answering a permission prompt and the tool's result nothing else fires. That is why this feature widens the injected `PreToolUse` matcher to `"*"` and adds a `"*"` `PostToolUse` — a `Bash` call must not read as idle. Cost: one hook invocation (headless `nvim`) per tool call, hence opt-in.
+- `PostToolUse` is what ends `waiting`: between answering a permission prompt and the tool's result nothing else fires. That is why this feature widens the injected `PreToolUse` matcher to `"*"` and adds a `"*"` `PostToolUse` — a `Bash` call must not read as idle. Cost: a hook invocation (headless `nvim`) before and after every tool call. Opt-in up to 1.0.0 and on by default after it; `status = { enabled = false }` saves it.
 - State is keyed by **tabpage handle** (nothing here outlives the session; handles are never reused), unlike `session_state`.
 - `terminal.tag_terminal_tab` calls `note_launch` so a tab counts as having a Claude before its first hook event (never overriding a known state). The `TermClose` watcher in `init.lua` clears the tab when Claude ends.
 - Changes emit `User ClaudeCodeStatusChanged` (`data = { tab, tabnr, state, prev, status }`) and, unless `auto_redraw = false`, `redrawtabline`/`redrawstatus`. Repeat events that change nothing user-visible are swallowed. `since` marks when the _state_ was entered (busy→busy tool changes keep it). `get`/`all` hand out copies.
@@ -243,7 +243,7 @@ Rules:
 
 **Hooks, status and read-state**
 
-- `source = "auto"` rides the hooks `status` already pays for, else polls transcript mtimes. Hook cost is two headless `nvim` per tool call _per running agent_, so polling is the default.
+- `source = "auto"` rides the hooks `status` already pays for, else polls transcript mtimes. Hook cost is two headless `nvim` per tool call _per running agent_. Status is on by default, so `"auto"` normally means hooks; polling is what a user with `status.enabled = false` gets.
 - Two hooks are registered even under polling: `PostToolUse(ExitPlanMode)` and `SessionStart`.
 - **Hooks mode still stats the selected transcript every tick** (`transcript.stale`, one `fs_stat`, no read): a `PostToolUse` hook says the tool returned, but the CLI does not write the tool's transcript line in lockstep with it, and a hook can fail to arrive at all. Re-reading only on hook events left Changes and Activity behind until the next event — after a long command, the end of the turn (reported as "30s until I see any diff"). The status bullet was never affected, since it comes from the event itself.
 - Live state is per **conversation**, not per tab (`status.classify` is extracted so the rules stay shared). `done` takes the same three conditions as the tab rule: the conversation is the selected one, the view's tab is current, and Neovim has focus (`status.is_focused`, exported so the rules cannot drift).

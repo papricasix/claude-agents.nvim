@@ -48,9 +48,14 @@ describe("status", function()
   end)
 
   describe("configuration", function()
-    it("is off by default", function()
+    it("is on by default", function()
       package.loaded["claude_agents.config"] = nil
-      expect(require("claude_agents.config").defaults.status.enabled).to_be_false()
+      expect(require("claude_agents.config").defaults.status.enabled).to_be_true()
+    end)
+
+    it("shows the plan view by default", function()
+      package.loaded["claude_agents.config"] = nil
+      expect(require("claude_agents.config").defaults.plan.enabled).to_be_true()
     end)
 
     it("records nothing while disabled", function()

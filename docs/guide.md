@@ -83,11 +83,7 @@ live_cursor = { enabled = true, mode = "preview" }
 
 ## Plan view
 
-When Claude finishes a plan in plan mode, the plan opens as a markdown document in the editor window closest to the terminal. Accepting or rejecting it in the terminal puts that window back the way it was.
-
-```lua
-plan = { enabled = true }
-```
+On by default. When Claude finishes a plan in plan mode, the plan opens as a markdown document in the editor window closest to the terminal. Accepting or rejecting it in the terminal puts that window back the way it was. `plan = { enabled = false }` turns it off.
 
 ## Terminal links
 
@@ -95,17 +91,15 @@ On by default. Clicking a file path in Claude's terminal opens it in the editor 
 
 ## Per-tab status
 
-For one Claude per tab: each tab is `busy`, `waiting` (for you: a permission prompt, a question, a plan), `done` (finished, not looked at yet), `idle` or `none`, ready for your tabline.
+On by default. For one Claude per tab: each tab is `busy`, `waiting` (for you: a permission prompt, a question, a plan), `done` (finished, not looked at yet), `idle` or `none`, ready for your tabline.
 
 ```lua
-status = { enabled = true }
-
 local status = require("claude_agents.status")
 status.get_state(tab) -- "busy" | "waiting" | "done" | "idle" | "none"
 status.icon(tab), status.hl_group(tab) -- the glyph and highlight for that state
 ```
 
-Every change fires `User ClaudeCodeStatusChanged`. `icons = { busy = status.SPINNER }` animates a working tab with the CLI's own spinner. It costs two hook calls per tool call (before and after), which is why it is off by default.
+Every change fires `User ClaudeCodeStatusChanged`. `icons = { busy = status.SPINNER }` animates a working tab with the CLI's own spinner. It runs two short hook calls per tool call (before and after); `status = { enabled = false }` saves them.
 
 ## Session persistence
 
