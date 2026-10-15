@@ -49,6 +49,10 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
       enabled = true,
       -- tab_name = "agents", -- name the view's tab in your tabline
     },
+    -- live_cursor = { enabled = true, mode = "preview" }, -- follow Claude through files
+    -- plan = { enabled = true }, -- open plan mode's plan in the editor
+    -- status = { enabled = true }, -- busy / waiting / done per tab, for your tabline
+    -- session_persistence = "global", -- resume each tab's Claude with a saved session
   },
   keys = {
     { "<leader>ac", "<cmd>ClaudeCode<cr>", desc = "Claude: toggle terminal" },
