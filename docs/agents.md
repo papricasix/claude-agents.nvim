@@ -44,7 +44,7 @@ Switching to another agent leaves the one you were in running: start three, come
 
 ## Changes and Activity
 
-**Changes**, top left, lists every file the selected session touched, with the lines it added and removed and the file's git status. The counts are what Claude did, not the state of your tree: an edit you reverted still counts. **Activity**, bottom right, lists everything the session did, newest first: edits, reads, commands, searches, subagents. `…` marks a call still running, `✗` one that failed, `⊘` one you stopped or declined. `f` cycles between everything, files only and commands only.
+**Changes**, top left, lists every file the selected session touched, with the lines it added and removed and the file's git status. The counts are what Claude did, not the state of your tree: an edit you reverted still counts. **Activity**, bottom right, lists everything the session did, newest first: edits, reads, commands, searches, subagents. `…` marks a call still running, `✗` one that failed, `⊘` one you stopped or declined, or a permission rule or auto mode refused. `f` cycles between everything, files only and commands only.
 
 | Key               | What it does                                                                                                                                                                     |
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -86,7 +86,7 @@ agents = {
 }
 ```
 
-The view follows the agents through the hooks [per-tab status](guide.md#per-tab-status) runs, which is on by default. With status off it watches their transcripts instead, up to half a second behind (`agents.source`).
+The view follows the agents through the hooks [per-tab status](guide.md#per-tab-status) runs, which is on by default. An edit then shows as soon as the tool finishes, even while Claude Code has not yet written it to its transcript. With status off it watches their transcripts instead, up to half a second behind (`agents.source`).
 
 The commands, to map from inside an agent's terminal where the pane keys do not reach. All but the first act on the selected session:
 
