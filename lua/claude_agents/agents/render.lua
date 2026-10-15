@@ -612,7 +612,7 @@ end
 
 ---Draw the session list.
 ---@param buf integer
----@param rows table[] `{ session_id, title, last_ts, added, removed, state, icon, hl, selected, live, flag, worktree }`
+---@param rows table[] `{ session_id, title, last_ts, added, removed, state, icon, hl, selected, live, flag, worktree, mark }`
 ---@param opts { width: integer?, now: number? }|nil
 function M.sessions(buf, rows, opts)
   opts = opts or {}
@@ -644,7 +644,9 @@ function M.sessions(buf, rows, opts)
     local gutter = row.selected and SELECTED_MARK or GUTTER
     local bullet = gutter .. (icon == "" and "" or (icon .. " "))
     local flagged = bullet .. (row.flag and (FLAG_MARK .. " ") or "")
-    local left_prefix = flagged .. (row.worktree and (WORKTREE_MARK .. " ") or "")
+    local placed = flagged .. (row.worktree and (WORKTREE_MARK .. " ") or "")
+    -- The launch profile's mark (`$` for an API key): which account pays.
+    local left_prefix = placed .. (row.mark and (row.mark .. " ") or "")
     local prefix_width = vim.fn.strdisplaywidth(left_prefix)
     local right_width = vim.fn.strdisplaywidth(right)
     -- The title's room floors at 1 cell, as in every pane: a wider floor pushed
@@ -674,6 +676,9 @@ function M.sessions(buf, rows, opts)
     end
     if row.worktree then
       marks[#marks + 1] = { row = lnum, col = #flagged, end_col = #flagged + #WORKTREE_MARK, hl = hl("worktree") }
+    end
+    if row.mark then
+      marks[#marks + 1] = { row = lnum, col = #placed, end_col = #placed + #row.mark, hl = "ClaudeCodeProfileMark" }
     end
     marks[#marks + 1] = { row = lnum, col = #left_prefix, end_col = #left_prefix + #title, hl = hl("title") }
     if note ~= "" then

@@ -1221,4 +1221,276 @@ describe("claude_agents.terminal (wrapper for Snacks.nvim)", function()
       assert.is_true(found_error, "Expected error about missing close function")
     end)
   end)
+
+  describe("launch profiles and the one --settings", function()
+    require("tests.busted_setup") -- for _G.json_decode
+    local merged
+    local files
+
+    ---The value every `--settings` in a launched command carries.
+    local function settings_flags(cmd)
+      local utils = require("claude_agents.utils")
+      local _, sources = require("claude_agents.launch_settings").extract(utils.shell_split(cmd))
+      return sources
+    end
+
+    local real_decode
+
+    before_each(function()
+      merged, files = {}, {}
+      real_decode = vim.json.decode
+      vim.json.decode = _G.json_decode
+      package.loaded["claude_agents.live_cursor"] = {
+        build_launch_hooks = function()
+          return {
+            settings = { hooks = { SessionStart = { { hooks = { { type = "command", command = "plugin-hook" } } } } } },
+            env = { CLAUDECODE_NVIM_SERVER = "/tmp/nvim.sock" },
+          }
+        end,
+        write_settings_file = function(settings)
+          merged[#merged + 1] = settings
+          return "/tmp/merged-" .. #merged .. ".json"
+        end,
+      }
+      package.loaded["claude_agents.launch_settings"] = nil
+      package.loaded["claude_agents.profiles"] = nil
+      local profiles = require("claude_agents.profiles")
+      profiles._io = {
+        read = function(path)
+          return files[path]
+        end,
+        write = function(path, data)
+          files[path] = data
+          return true
+        end,
+        stat = function(path)
+          return files[path] and tostring(#files[path]) or nil
+        end,
+      }
+      profiles.setup({})
+    end)
+
+    after_each(function()
+      vim.json.decode = real_decode
+      package.loaded["claude_agents.live_cursor"] = nil
+      package.loaded["claude_agents.launch_settings"] = nil
+      package.loaded["claude_agents.profiles"] = nil
+    end)
+
+    it("keeps the user's own --settings, merged with the plugin's hooks into one flag", function()
+      -- The CLI reads one --settings: the plugin's flag used to replace the
+      -- user's on every launch the hooks were injected into.
+      terminal_wrapper.setup({}, [[claude --settings '{"model":"sonnet"}']])
+      terminal_wrapper.open()
+      local cmd = mock_snacks_provider.open:get_call(1).refs[1]
+      assert.are.same({ "/tmp/merged-1.json" }, settings_flags(cmd))
+      assert.are.equal("sonnet", merged[1].model)
+      assert.are.equal("plugin-hook", merged[1].hooks.SessionStart[1].hooks[1].command)
+      assert.are.equal("/tmp/nvim.sock", mock_snacks_provider.open:get_call(1).refs[2].CLAUDECODE_NVIM_SERVER)
+    end)
+
+    it("runs a launch under the profile it is given", function()
+      terminal_wrapper.open({}, nil, { profile = "subscription" })
+      local env = mock_snacks_provider.open:get_call(1).refs[2]
+      assert.are.equal("", env.ANTHROPIC_API_KEY)
+      assert.are.equal("", env.ANTHROPIC_AUTH_TOKEN)
+      assert.are.equal("", merged[1].apiKeyHelper)
+      assert.are.equal("plugin-hook", merged[1].hooks.SessionStart[1].hooks[1].command)
+    end)
+
+    it("hands an API launch the keychain helper", function()
+      terminal_wrapper.open({}, nil, { profile = "API key" })
+      local helper = merged[1].apiKeyHelper
+      assert.is_truthy(helper:find("api_key.lua", 1, true))
+      assert.is_truthy(helper:find(" get default", 1, true))
+    end)
+
+    it("resumes a conversation under the profile it last ran under", function()
+      local id = "0f9a1c3e-1111-4222-8333-444455556666"
+      require("claude_agents.profiles").remember(id, "API key")
+      terminal_wrapper.open({}, "--resume " .. id)
+      assert.is_truthy(merged[1].apiKeyHelper:find("api_key.lua", 1, true))
+    end)
+
+    it("touches nothing for a plain launch with no default profile", function()
+      terminal_wrapper.open()
+      local env = mock_snacks_provider.open:get_call(1).refs[2]
+      assert.is_nil(env.ANTHROPIC_API_KEY)
+      assert.is_nil(merged[1].apiKeyHelper)
+    end)
+
+    it("stamps a terminal a toggle started, as open always did", function()
+      -- `:ClaudeCode` is a toggle, and only `open` used to stamp: closing such a
+      -- Claude never forgot its conversation.
+      local buf = vim.api.nvim_create_buf(false, true)
+      local started = false
+      mock_snacks_provider.get_active_bufnr = spy.new(function()
+        return started and buf or nil
+      end)
+      mock_snacks_provider.simple_toggle = spy.new(function()
+        started = true
+      end)
+      terminal_wrapper.setup({})
+      terminal_wrapper.simple_toggle({}, nil)
+      assert.are.equal(vim.api.nvim_get_current_tabpage(), vim.b[buf].claudecode_tab)
+
+      -- Hiding and showing the same terminal stamps nothing more.
+      vim.b[buf].claudecode_tab = nil
+      terminal_wrapper.simple_toggle({}, nil)
+      assert.is_nil(vim.b[buf].claudecode_tab)
+    end)
+
+    describe("restarting under another profile", function()
+      local autocmds, deferred, stopped, killed
+      -- The vim mock is one table for the whole run: put back what is replaced.
+      local saved
+
+      after_each(function()
+        vim.api.nvim_create_autocmd = saved.create_autocmd
+        vim.defer_fn, vim.schedule = saved.defer_fn, saved.schedule
+        vim.fn.jobwait, vim.fn.jobpid, vim.fn.jobstop = saved.jobwait, saved.jobpid, saved.jobstop
+        vim.uv, vim.loop.kill = saved.uv, saved.kill
+      end)
+
+      before_each(function()
+        saved = {
+          create_autocmd = vim.api.nvim_create_autocmd,
+          defer_fn = vim.defer_fn,
+          schedule = vim.schedule,
+          jobwait = vim.fn.jobwait,
+          jobpid = vim.fn.jobpid,
+          jobstop = vim.fn.jobstop,
+          uv = vim.uv,
+          kill = vim.loop.kill,
+        }
+        autocmds, deferred, stopped, killed = {}, {}, nil, nil
+        vim.api.nvim_create_autocmd = function(event, opts)
+          autocmds[#autocmds + 1] = { event = event, opts = opts }
+          return #autocmds
+        end
+        vim.defer_fn = function(fn, ms)
+          deferred[#deferred + 1] = { fn = fn, ms = ms }
+        end
+        vim.schedule = function(fn)
+          fn()
+        end
+        vim.fn.jobwait = function()
+          return { -1 } -- still running
+        end
+        vim.fn.jobpid = function()
+          return 4242
+        end
+        vim.fn.jobstop = function(job)
+          stopped = job
+        end
+        vim.uv = nil
+        vim.loop.kill = function(pid, signal)
+          killed = { pid, signal }
+        end
+      end)
+
+      local function terminal_buffer()
+        local buf = vim.api.nvim_create_buf(false, true)
+        vim.b[buf].terminal_job_id = 7
+        return buf
+      end
+
+      it("waits for the old CLI to exit before going on", function()
+        -- Two CLIs on one conversation interleave their transcript writes.
+        local done = 0
+        terminal_wrapper._stop_and_wait(terminal_buffer(), function()
+          done = done + 1
+        end)
+        assert.are.equal(7, stopped)
+        assert.are.equal(0, done)
+        assert.are.equal("TermClose", autocmds[1].event)
+        autocmds[1].opts.callback()
+        assert.are.equal(1, done)
+        -- The grace timer going off afterwards changes nothing.
+        deferred[1].fn()
+        assert.are.equal(1, done)
+        assert.is_nil(killed)
+      end)
+
+      it("kills a CLI that will not exit, then goes on", function()
+        local done = 0
+        terminal_wrapper._stop_and_wait(terminal_buffer(), function()
+          done = done + 1
+        end)
+        deferred[1].fn() -- the grace period runs out
+        assert.are.same({ 4242, "sigkill" }, killed)
+        assert.are.equal(0, done)
+        deferred[2].fn()
+        assert.are.equal(1, done)
+      end)
+
+      it("goes straight on when the process has already exited", function()
+        vim.fn.jobwait = function()
+          return { 0 }
+        end
+        local done = 0
+        terminal_wrapper._stop_and_wait(terminal_buffer(), function()
+          done = done + 1
+        end)
+        assert.are.equal(1, done)
+        assert.is_nil(stopped)
+      end)
+
+      it("resumes the tab's conversation under the new profile, and is not taken for a close", function()
+        local buf = terminal_buffer()
+        local tab = vim.api.nvim_get_current_tabpage()
+        mock_snacks_provider.get_active_bufnr = spy.new(function()
+          return vim.api.nvim_buf_is_valid(buf) and buf or nil
+        end)
+        terminal_wrapper.setup({})
+        local restarting_while_stopping
+        terminal_wrapper._stop_and_wait = function(_, done)
+          restarting_while_stopping = terminal_wrapper.is_restarting(tab)
+          done()
+        end
+        terminal_wrapper.restart("API key", "0f9a1c3e-1111-4222-8333-444455556666")
+        assert.is_true(restarting_while_stopping)
+        assert.is_false(terminal_wrapper.is_restarting(tab))
+        local cmd = mock_snacks_provider.open:get_call(1).refs[1]
+        assert.is_truthy(cmd:find("--resume 0f9a1c3e-1111-4222-8333-444455556666", 1, true))
+        assert.is_truthy(merged[1].apiKeyHelper:find("api_key.lua", 1, true))
+      end)
+    end)
+
+    it("acts on the selected agent when typed in the agents view's tab", function()
+      -- That tab has no Claude of its own; opening one there would split the view.
+      local asked = {}
+      package.loaded["claude_agents.agents_view"] = {
+        is_view_tab = function()
+          return true
+        end,
+        resume_selected_as = function(name)
+          asked[#asked + 1] = "resume " .. name
+        end,
+        resume_as_menu = function()
+          asked[#asked + 1] = "menu"
+        end,
+      }
+      terminal_wrapper.setup({})
+      terminal_wrapper.launch_profile("API key")
+      terminal_wrapper.choose_profile()
+      package.loaded["claude_agents.agents_view"] = nil
+      assert.are.same({ "resume API key", "menu" }, asked)
+      mock_snacks_provider.open:was_called(0)
+    end)
+
+    it("makes the profile of a started terminal the tab's", function()
+      local buf = vim.api.nvim_create_buf(false, true)
+      local started = false
+      mock_snacks_provider.get_active_bufnr = spy.new(function()
+        return started and buf or nil
+      end)
+      mock_snacks_provider.open = spy.new(function()
+        started = true
+      end)
+      terminal_wrapper.setup({})
+      terminal_wrapper.open({}, nil, { profile = "API key" })
+      assert.are.equal("API key", require("claude_agents.profiles").of_tab())
+    end)
+  end)
 end)

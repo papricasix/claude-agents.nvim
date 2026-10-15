@@ -852,8 +852,10 @@ function M.refresh_list()
   if state.selected then
     keep[state.selected] = true
   end
-  -- Another Neovim may have flagged or answered something since the last pass.
+  -- Another Neovim may have flagged or answered something since the last pass,
+  -- or started a conversation under a launch profile.
   flags.refresh()
+  require("claude_agents.profiles").refresh()
   for session_id in pairs(flags.all()) do
     keep[session_id] = true
   end
@@ -1295,6 +1297,19 @@ local function worktree_elsewhere(row)
   return worktree
 end
 
+---The mark a session's launch profile puts on its row: the running agent's
+---profile, else the one the conversation last ran under.
+---@param session_id string
+---@param live boolean
+---@return string|nil
+local function profile_mark(session_id, live)
+  local profiles = require("claude_agents.profiles")
+  local term = live and require("claude_agents.agents.registry").get(session_id)
+  local name = term and term.profile or (not term and profiles.of(session_id)) or nil
+  local mark = name and profiles.mark(name) or ""
+  return mark ~= "" and mark or nil
+end
+
 ---@return table[]
 function M.rows()
   local ok_status, status = pcall(require, "claude_agents.status")
@@ -1368,6 +1383,8 @@ function M.rows()
         flag = flags.get(row.session_id),
         -- `{ name, path, branch }` when it works in a worktree rather than here.
         worktree = worktree_elsewhere(row),
+        -- What its launch profile marks it with (`$` for an API key); nil for none.
+        mark = profile_mark(row.session_id, live),
       }
     end
   end
@@ -1520,6 +1537,7 @@ function M.delete_sessions(session_ids)
       deleted[#deleted + 1] = session_id
       checkpoints.forget(session_id)
       flags.clear(session_id)
+      require("claude_agents.profiles").forget(session_id)
       if state.selected == session_id then
         state.selected = nil
         state.dirty.transcript = true

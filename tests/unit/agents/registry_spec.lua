@@ -7,6 +7,7 @@ describe("agents.registry", function()
   local instances -- agent server instances handed out by the stubbed main module
   local stopped_instances
   local retagged_floats
+  local remembered -- [session id] = profile name, as `profiles.remember` was told
 
   local function stub_dependencies()
     spawned, instances, stopped_instances, retagged_floats = {}, {}, {}, {}
@@ -41,10 +42,25 @@ describe("agents.registry", function()
       end,
     }
 
+    remembered = {}
+    package.loaded["claude_agents.profiles"] = {
+      remember = function(session_id, name)
+        remembered[session_id] = name
+      end,
+    }
+
     package.loaded["claude_agents.terminal"] = {
       build_launch = function(cmd_args, opts)
         local port = opts and opts.instance and opts.instance.port
-        return "claude " .. (cmd_args or ""), { CLAUDE_CODE_SSE_PORT = tostring(port) }, { cwd = opts and opts.cwd }
+        return "claude " .. (cmd_args or ""),
+          { CLAUDE_CODE_SSE_PORT = tostring(port) },
+          { cwd = opts and opts.cwd },
+          opts and opts.profile
+      end,
+      -- The old process is gone at once: what waiting for it guards is covered
+      -- by the terminal spec.
+      _stop_and_wait = function(_, done)
+        done()
       end,
     }
   end
@@ -76,6 +92,55 @@ describe("agents.registry", function()
     package.loaded["claude_agents"] = nil
     package.loaded["claude_agents.terminal"] = nil
     package.loaded["claude_agents.float"] = nil
+    package.loaded["claude_agents.profiles"] = nil
+  end)
+
+  describe("launch profiles", function()
+    it("runs an agent under the profile it is given, and remembers it for the conversation", function()
+      local term = registry.launch("abc", { win = 1000, tab = 1, profile = "API key" })
+      expect(term.profile).to_be("API key")
+      expect(remembered.abc).to_be("API key")
+    end)
+
+    it("remembers nothing for a plain launch", function()
+      local term = registry.launch("abc", { win = 1000, tab = 1 })
+      expect(term.profile).to_be(nil)
+      expect(remembered.abc).to_be(nil)
+    end)
+
+    it("files the conversation a /clear moves it to under the same profile", function()
+      local term = registry.launch("old", { win = 1000, tab = 1, profile = "API key" })
+      registry.rekey(term.agent_key, "new")
+      expect(remembered.new).to_be("API key")
+    end)
+
+    it("restarts a running agent under another profile, resuming its conversation", function()
+      registry.launch("abc", { win = 1000, tab = 1, profile = "subscription" })
+      local first = registry.get("abc")
+      local landed
+      registry.relaunch("abc", { win = 1000, tab = 1, profile = "API key" }, function(term)
+        landed = term
+      end)
+      expect(landed).to_be_table()
+      expect(landed ~= first).to_be_true()
+      expect(landed.profile).to_be("API key")
+      expect(landed.resumed).to_be_true()
+      expect(table.concat(spawned[2].cmd, " "):find("--resume abc", 1, true) ~= nil).to_be_true()
+      -- The old one was let go of, its server with it.
+      expect(stopped_instances[1]).to_be("abc")
+      expect(registry.is_live("abc")).to_be_true()
+    end)
+
+    it("marks an agent being restarted, so its ending is not taken for the user's", function()
+      registry.launch("abc", { win = 1000, tab = 1 })
+      local seen
+      package.loaded["claude_agents.terminal"]._stop_and_wait = function(_, done)
+        seen = registry.get("abc").relaunching
+        done()
+      end
+      registry.relaunch("abc", { win = 1000, tab = 1, profile = "API key" }, function() end)
+      expect(seen).to_be_true()
+    end)
   end)
 
   describe("launching", function()

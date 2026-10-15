@@ -157,10 +157,13 @@ local function hook_script_path()
   return root .. "/scripts/live_cursor_hook.lua"
 end
 
----Build the per-launch injection: extra `claude` args and env vars.
----Returns nil when the feature is disabled or no RPC address is available.
----@return { args: string, env: table<string,string> }|nil
-function M.build_launch_injection()
+---The hook settings a launch needs, and the env that tells the hook where to
+---report: a settings *table*, so the launch seam can merge it with the user's
+---own `--settings` and a launch profile into the one file the CLI reads (a
+---second `--settings` replaces the first entirely — see `launch_settings`).
+---Returns nil when no feature wants hooks or no RPC address is available.
+---@return { settings: table, env: table<string,string> }|nil
+function M.build_launch_hooks()
   local lc_on = is_enabled()
   local plan_on = plan_enabled()
   local session_on = session_enabled()
@@ -186,25 +189,14 @@ function M.build_launch_injection()
   state.server_addr = addr
 
   -- The hook command is executed by Claude Code's hook runner — /bin/sh on
-  -- macOS/Linux, cmd.exe on native Windows — NOT by Neovim's shell, so
-  -- vim.fn.shellescape (which follows the user's 'shell' option) is the wrong
-  -- quoting: an nvim configured with shell=pwsh/bash on Windows would emit
-  -- POSIX single quotes that cmd.exe passes through literally, silently
-  -- breaking the hook. Quote explicitly for the runner we know will be used.
-  local is_windows = vim.fn.has("win32") == 1
-  local function quote_for_hook_runner(path)
-    if is_windows then
-      return '"' .. path .. '"' -- cmd.exe: double quotes (no escape needed; " is illegal in paths)
-    end
-    return "'" .. path:gsub("'", "'\\''") .. "'" -- /bin/sh: single quotes
-  end
+  -- macOS/Linux, cmd.exe on native Windows — NOT by Neovim's shell; see
+  -- `utils.quote_for_cli_shell`.
+  local quote = utils.quote_for_cli_shell
 
   -- Use the absolute path of the running Neovim rather than relying on `nvim`
   -- being on the Claude process's PATH (it often isn't for GUI launches).
   local nvim_bin = (vim.v and vim.v.progpath) or "nvim"
-  local hook_cmd = quote_for_hook_runner(nvim_bin)
-    .. " --headless -u NONE -l "
-    .. quote_for_hook_runner(hook_script_path())
+  local hook_cmd = quote(nvim_bin) .. " --headless -u NONE -l " .. quote(hook_script_path())
   local hook = { type = "command", command = hook_cmd, async = true }
   -- Build the PreToolUse matcher from whichever features are enabled: live-cursor
   -- wants the file tools; the plan view wants ExitPlanMode (which carries the plan).
@@ -285,6 +277,26 @@ function M.build_launch_injection()
     register("SessionStart")
   end
 
+  -- Stamp the tabpage this Claude is launching in, so its tool events only drive
+  -- the preview when the user is viewing that tab (a background-tab Claude must
+  -- not open previews in whatever tab the user happens to be looking at).
+  local tab = 0
+  local ok_tab, t = pcall(vim.api.nvim_get_current_tabpage)
+  if ok_tab and type(t) == "number" then
+    tab = t
+  end
+
+  return {
+    settings = settings,
+    env = { CLAUDECODE_NVIM_SERVER = addr, CLAUDECODE_NVIM_TAB = tostring(tab) },
+  }
+end
+
+---Write a settings table to a temp file the CLI can be pointed at, kept until
+---`cleanup` (the CLI reads it at startup).
+---@param settings table
+---@return string|nil path nil when it could not be written.
+function M.write_settings_file(settings)
   local tmp = vim.fn.tempname()
   local ok_w = pcall(function()
     local f = assert(io.open(tmp, "w"))
@@ -296,19 +308,28 @@ function M.build_launch_injection()
     return nil
   end
   table.insert(state.settings_files, tmp)
+  return tmp
+end
 
-  -- Stamp the tabpage this Claude is launching in, so its tool events only drive
-  -- the preview when the user is viewing that tab (a background-tab Claude must
-  -- not open previews in whatever tab the user happens to be looking at).
-  local tab = 0
-  local ok_tab, t = pcall(vim.api.nvim_get_current_tabpage)
-  if ok_tab and type(t) == "number" then
-    tab = t
+---Build the per-launch injection: extra `claude` args and env vars.
+---Returns nil when the feature is disabled or no RPC address is available.
+---
+---The hooks alone, as a ready `--settings` flag. Launches go through
+---`launch_settings` instead, which merges these with the user's own settings and
+---a profile's; this stays for callers that want the hooks and nothing else.
+---@return { args: string, env: table<string,string> }|nil
+function M.build_launch_injection()
+  local hooks = M.build_launch_hooks()
+  if not hooks then
+    return nil
   end
-
+  local tmp = M.write_settings_file(hooks.settings)
+  if not tmp then
+    return nil
+  end
   return {
-    args = "--settings " .. vim.fn.shellescape(tmp),
-    env = { CLAUDECODE_NVIM_SERVER = addr, CLAUDECODE_NVIM_TAB = tostring(tab) },
+    args = "--settings " .. utils.shell_quote(tmp),
+    env = hooks.env,
   }
 end
 
@@ -475,6 +496,14 @@ function M.dispatch(event, source_tab, agent_id)
     pcall(function()
       require("claude_agents.session_state").note_session_id(source_tab, event.session_id, event.cwd)
     end)
+    -- A tab's own Claude starting a conversation (a launch whose id we did not
+    -- choose, `/clear`): it runs under the tab's launch profile. An agent's is the
+    -- registry's business (`registry.launch`, `registry.rekey`).
+    if ehn == "SessionStart" and (agent_id == nil or agent_id == "") then
+      pcall(function()
+        require("claude_agents.profiles").note_tab_session(source_tab, event.session_id)
+      end)
+    end
   end
   if ehn == "SessionStart" then
     return -- carries no tool; it exists purely for the id above

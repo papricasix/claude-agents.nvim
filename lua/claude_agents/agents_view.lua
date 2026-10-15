@@ -35,6 +35,7 @@
 local fade = require("claude_agents.agents.fade")
 local logger = require("claude_agents.logger")
 local model = require("claude_agents.agents.model")
+local profiles = require("claude_agents.profiles")
 local registry = require("claude_agents.agents.registry")
 local render = require("claude_agents.agents.render")
 local utils = require("claude_agents.utils")
@@ -695,6 +696,15 @@ local KEY_SPECS = {
     end,
   },
   {
+    field = "new_as",
+    panes = { "sessions", "center" },
+    group = "Sessions",
+    desc = "Start a new agent under a launch profile you pick (subscription, API key…)",
+    run = function()
+      M.new_agent_as()
+    end,
+  },
+  {
     field = "follow_up",
     -- Every pane that is about one session, the centre's notice screens
     -- included: the work that outgrew its conversation is being read in any of
@@ -891,6 +901,14 @@ local KEY_SPECS = {
     desc = "Focus the agent's terminal",
     run = function()
       M.focus_terminal()
+    end,
+  },
+  {
+    field = "resume_as",
+    group = "Anywhere in the view",
+    desc = "Resume this session under a launch profile you pick; a running one is restarted under it, its conversation carried on",
+    run = function()
+      M.resume_as_under_cursor()
     end,
   },
   {
@@ -1187,17 +1205,36 @@ local function show_start_prompt(session_id)
     table.insert(lines, at, text)
     marks[#marks + 1] = { row = at - 1, col = 0, end_col = -1, hl = render.highlight("worktree") }
   end
+  -- Which account it goes back to: the launch profile it last ran under, which
+  -- is what starting it here uses.
+  local profile = profiles.of(session_id)
+  if profile then
+    local at = #lines
+    local mark = profiles.mark(profile)
+    table.insert(lines, at, "  " .. (mark ~= "" and (mark .. " ") or "") .. "last ran under " .. profile)
+    if mark ~= "" then
+      marks[#marks + 1] = { row = at - 1, col = 2, end_col = 2 + #mark, hl = "ClaudeCodeProfileMark" }
+    end
+  end
   local hints
   if foreign_state then
     lines[#lines + 1] = "  This conversation is running in another tab."
     hints = { { start_key, "jump to it" } }
   else
     lines[#lines + 1] = "  This conversation is not running."
-    hints = { { start_key, "start it here" } }
+    hints = { { start_key, "start it here" .. (profile and (" under " .. profile) or "") } }
+    local resume_as_key = keymap_for("resume_as", "gi")
+    if resume_as_key then
+      hints[#hints + 1] = { resume_as_key, "start it under a profile you pick" }
+    end
   end
   local new_key = keymap_for("new", "a")
   if new_key then
     hints[#hints + 1] = { new_key, "start a new agent" }
+  end
+  local new_as_key = keymap_for("new_as", "ga")
+  if new_as_key then
+    hints[#hints + 1] = { new_as_key, "start a new agent under a profile you pick" }
   end
   -- The third answer to a conversation that is not running: carry on under its
   -- name in a new one. Named, because the name is the whole of what it does.
@@ -2734,11 +2771,14 @@ function M.select(session_id)
 end
 
 ---Start a conversation that does not exist yet in the centre pane, and select it.
----@param launch { name: string|nil, cwd: string|nil }|nil What it is called and where it runs: unnamed, in the view's directory, unless told.
+---@param launch { name: string|nil, cwd: string|nil, profile: string|nil }|nil What it is called, where it runs and on which account: unnamed, in the view's directory, under the default profile, unless told.
 ---@return string|nil session_id nil when nothing was started.
 local function start_agent(launch)
   launch = launch or {}
   if not M.is_open() then
+    return nil
+  end
+  if profiles.refuse_if_missing(profiles.get(launch.profile) or profiles.default()) then
     return nil
   end
   local center = ensure_center()
@@ -2756,6 +2796,7 @@ local function start_agent(launch)
     tab = state.tab,
     cwd = launch.cwd or model.cwd(),
     name = launch.name,
+    profile = launch.profile,
     resume = false,
     focus = true,
   })
@@ -2775,8 +2816,199 @@ local function start_agent(launch)
 end
 
 ---Start a brand new conversation in the centre pane.
-function M.new_agent()
-  start_agent()
+---@param profile string|nil Launch profile; the default when omitted.
+function M.new_agent(profile)
+  start_agent({ profile = profile })
+end
+
+---The launch profile a conversation runs under: the running agent's, else the
+---one it last ran under.
+---@param session_id string|nil
+---@return string|nil
+function M.profile_of(session_id)
+  if not session_id then
+    return nil
+  end
+  local term = registry.get(session_id)
+  if term and not term.exited then
+    return term.profile
+  end
+  return profiles.of(session_id)
+end
+
+---Pick a launch profile, then start a new agent under it (`ga`).
+function M.new_agent_as()
+  if not M.is_open() then
+    return
+  end
+  require("claude_agents.profile_menu").open({
+    title = "Start agent as",
+    current = profiles.default_name(),
+    on_pick = function(name)
+      M.new_agent(name)
+    end,
+  })
+end
+
+---Carry a session on under a launch profile.
+---
+---Stopped: resumed under it. Running under it already: shown. Running under
+---another: restarted under it with the conversation carried on (`--resume`) —
+---after a question when it is busy or waiting on you, since that cuts a turn
+---off. Running in another tab: left there, since two CLIs on one transcript
+---interleave their writes.
+---@param session_id string
+---@param name string Profile name.
+function M.resume_as(session_id, name)
+  if not M.is_open() or type(session_id) ~= "string" then
+    return
+  end
+  local profile = profiles.get(name)
+  if not profile then
+    vim.notify("ClaudeCode: no launch profile called " .. tostring(name), vim.log.levels.ERROR)
+    return
+  end
+  if profiles.refuse_if_missing(profile) then
+    return
+  end
+  if model.foreign_state(session_id) then
+    vim.notify(
+      "ClaudeCode: that conversation is running in another tab; switch it there with :ClaudeCodeProfile",
+      vim.log.levels.WARN
+    )
+    return
+  end
+
+  local center = ensure_center()
+  if not center then
+    return
+  end
+  local row = model.row(session_id)
+  local launch = {
+    win = center,
+    tab = state.tab,
+    cwd = usable_dir(row and row.cwd) or model.cwd(),
+    -- A conversation that never got a transcript is claimed again rather than
+    -- resumed, as `select` does.
+    resume = row ~= nil,
+    profile = profile.name,
+    focus = true,
+  }
+  local function landed(term, err)
+    if not term then
+      vim.notify("ClaudeCode: could not start that agent: " .. tostring(err), vim.log.levels.ERROR)
+      return
+    end
+    clear_start_prompt()
+    M.bind_terminal_keys(term.bufnr)
+    model.select(session_id)
+    model.refresh_list()
+    M.redraw()
+  end
+
+  if not registry.is_live(session_id) then
+    model.select(session_id)
+    landed(registry.launch(session_id, launch))
+    return
+  end
+  if M.profile_of(session_id) == profile.name then
+    M.enter_session(session_id)
+    return
+  end
+
+  local function restart()
+    model.select(session_id)
+    -- The notice takes the centre before the old terminal's buffer is deleted:
+    -- deleting a buffer closes the window showing it, and that window is the
+    -- centre pane the new terminal is meant for (measured: the relaunch found it
+    -- gone). It also says what is happening while the old CLI exits.
+    local title = (row and row.title) or session_id:sub(1, 8)
+    show_notice({
+      "",
+      "  " .. title,
+      "",
+      "  Switching to " .. profile.name .. "…",
+      "  The conversation carries on once the running Claude has stopped.",
+    }, nil, "switching")
+    registry.relaunch(session_id, launch, landed)
+  end
+  local entry = model.status_of(session_id)
+  local live_state = entry and entry.state
+  if live_state == "busy" or live_state == "waiting" then
+    require("claude_agents.agents.confirm").ask({
+      title = "Switch account",
+      message = {
+        "This agent is " .. (live_state == "busy" and "working" or "waiting on you") .. ".",
+        "Restart it under " .. profile.name .. "? The conversation carries on.",
+      },
+      confirm = "restart",
+    }, function(yes)
+      if yes then
+        restart()
+      end
+    end)
+    return
+  end
+  restart()
+end
+
+---Pick a launch profile, then carry a session on under it (`gi`).
+---@param session_id string|nil Defaults to the selected session.
+function M.resume_as_menu(session_id)
+  if not M.is_open() then
+    return
+  end
+  session_id = session_id or model.selected()
+  if not session_id then
+    -- Nothing to resume: the question can only be which account a new one uses.
+    M.new_agent_as()
+    return
+  end
+  local current = M.profile_of(session_id)
+  local notes = {}
+  if current then
+    notes[current] = registry.is_live(session_id) and "running" or "last run"
+  end
+  local row = model.row(session_id)
+  local title = render.truncate((row and row.title) or session_id:sub(1, 8), 40)
+  require("claude_agents.profile_menu").open({
+    title = (registry.is_live(session_id) and "Switch " or "Resume ") .. title .. " to",
+    current = current or profiles.default_name(),
+    notes = notes,
+    on_pick = function(name)
+      M.resume_as(session_id, name)
+    end,
+  })
+end
+
+---Carry the selected session on under a profile; a new agent when nothing is
+---selected. What `:ClaudeCodeProfile <name>` means when typed in this view's tab,
+---where the tab has no Claude of its own to switch.
+---@param name string Profile name.
+function M.resume_selected_as(name)
+  local session_id = model.selected() or state.pending_start
+  if session_id then
+    M.resume_as(session_id, name)
+  else
+    M.new_agent(name)
+  end
+end
+
+---Whether a tabpage is this view's (the current one by default).
+---@param tab integer|nil
+---@return boolean
+function M.is_view_tab(tab)
+  tab = tab or vim.api.nvim_get_current_tabpage()
+  return M.is_open() and state.tab == tab
+end
+
+---`keymaps.resume_as`. In the sessions pane it means the row under the cursor,
+---like `x` and `dd`; anywhere else the selected session (or the one the centre
+---is offering).
+function M.resume_as_under_cursor()
+  local payload, pane = payload_under_cursor()
+  local session_id = pane == "sessions" and payload and payload.session_id or nil
+  M.resume_as_menu(session_id or state.pending_start)
 end
 
 ---Start a new conversation named after a session, numbered on: `plan` →
@@ -2808,7 +3040,8 @@ function M.new_follow_up(session_id)
     return nil
   end
   local row = model.row(session_id)
-  if not start_agent({ name = name, cwd = usable_dir(row and row.cwd) }) then
+  -- On the same account as the work it continues.
+  if not start_agent({ name = name, cwd = usable_dir(row and row.cwd), profile = M.profile_of(session_id) }) then
     return nil
   end
   return name
@@ -3890,6 +4123,12 @@ end
 function M.note_terminal_closed(bufnr)
   local session_id = registry.session_for_buf(bufnr)
   if not session_id then
+    return
+  end
+  -- Stopped to start again under another profile (`registry.relaunch`): the
+  -- conversation is coming straight back, so there is nothing to offer.
+  local term = registry.get(session_id)
+  if term and term.relaunching then
     return
   end
   registry._on_exit(session_id, nil, nil)

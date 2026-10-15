@@ -2,8 +2,14 @@
 
 ## [Unreleased]
 
+### Added
+
+- Launch profiles: start each Claude on your subscription or on an API key. `:ClaudeCodeProfile` picks one for a tab's Claude, and `ga`/`gi` in the agents view start or resume a session under one. A running Claude switches by restarting with its conversation carried on, and a resumed conversation goes back to the profile it last ran under. The key stays in the OS keychain (macOS Keychain, Secret Service on Linux, Credential Manager on Windows) and Claude Code fetches it itself, so it is never in your config, Neovim's environment or the environment of the commands Claude runs. `:checkhealth` says whether it is stored. Sessions run on an API key are marked `$`.
+
 ### Fixed
 
+- A `--settings` of your own in `terminal_cmd` or `:ClaudeCode` arguments was dropped on every launch: the plugin's hook settings were passed as a second `--settings`, which replaces the first. They are merged into one now.
+- A Claude started with `:ClaudeCode` or `:ClaudeCodeFocus` was not recognised as the tab's: closing it did not forget its conversation for session persistence, and status showed nothing until its first hook.
 - A turn that ended in an API error (a rate limit, no credit, a rejected key) left the tab and the agent shown as busy for good.
 
 ## [1.1.2] - 2026-10-15

@@ -83,6 +83,13 @@ describe("live_cursor", function()
   end)
 
   describe("build_launch_injection", function()
+    it("hands the hooks over as a table, for the launch to merge into one --settings", function()
+      live_cursor.setup(base_config({ enabled = true, mode = "open" }))
+      local hooks = live_cursor.build_launch_hooks()
+      expect(hooks.settings.hooks.PreToolUse[1].matcher).to_be("Read|Edit|Write|MultiEdit")
+      expect(hooks.env.CLAUDECODE_NVIM_SERVER).to_be("/tmp/nvim_mock_server.sock")
+    end)
+
     it("returns nil when disabled", function()
       live_cursor.setup(base_config({ enabled = false }))
       expect(live_cursor.build_launch_injection()).to_be_nil()
@@ -216,6 +223,36 @@ describe("live_cursor", function()
     it("ignores non-PreToolUse events", function()
       live_cursor.dispatch({ hook_event_name = "PostToolUse", tool_name = "Read", tool_input = { file_path = "/x" } })
       expect(#shown).to_be(0)
+    end)
+
+    it("files a tab's conversation under the tab's launch profile when it starts", function()
+      -- Covers a launch whose id we did not choose, and `/clear`.
+      local profiles = require("claude_agents.profiles")
+      local files = {}
+      profiles._reset()
+      profiles._io = {
+        read = function(path)
+          return files[path]
+        end,
+        write = function(path, data)
+          files[path] = data
+          return true
+        end,
+        stat = function(path)
+          return files[path] and tostring(#files[path]) or nil
+        end,
+      }
+      profiles.set_pending_tab_launch(1, "API key", nil)
+      profiles.note_tab_terminal(1, nil)
+
+      live_cursor.dispatch({ hook_event_name = "SessionStart", session_id = "from-tab" }, 1, "")
+      expect(profiles.of("from-tab")).to_be("API key")
+      -- An agent's conversation is the registry's business.
+      live_cursor.dispatch({ hook_event_name = "SessionStart", session_id = "from-agent" }, 1, "3:abc")
+      expect(profiles.of("from-agent")).to_be(nil)
+
+      profiles._reset()
+      profiles._io = require("claude_agents.store_io")
     end)
 
     it("paints the read range from offset/limit", function()

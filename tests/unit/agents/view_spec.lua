@@ -842,6 +842,10 @@ describe("agents_view", function()
 
   describe("choosing a session without starting it", function()
     local selected, live, foreign, shown, launched, rows, notify_change, hidden
+    -- [session id] = what `registry.get` hands back for a running agent.
+    local terminals
+    -- [session id] = what `model.status_of` hands back.
+    local statuses
 
     ---What the centre pane is holding, as lines.
     local function center_lines()
@@ -858,6 +862,7 @@ describe("agents_view", function()
 
     before_each(function()
       selected, live, foreign, shown, launched, notify_change, hidden = nil, {}, {}, {}, {}, nil, 0
+      terminals = {}
       rows = { { session_id = "aaa", title = "First" }, { session_id = "bbb", title = "Second" } }
 
       package.loaded["claude_agents.agents.registry"] = {
@@ -875,6 +880,9 @@ describe("agents_view", function()
         cleanup_tab = function() end,
         live_ids = function()
           return {}
+        end,
+        get = function(id)
+          return terminals[id]
         end,
       }
       package.loaded["claude_agents.agents.model"] = {
@@ -929,6 +937,26 @@ describe("agents_view", function()
         refresh_list = function() end,
         refresh_git = function() end,
         set_armed = function() end,
+        status_of = function(id)
+          return statuses[id]
+        end,
+      }
+      statuses = {}
+      -- The profile store, in memory: nothing here may touch the real cache.
+      local profile_files = {}
+      local profiles = require("claude_agents.profiles")
+      profiles._reset()
+      profiles._io = {
+        read = function(path)
+          return profile_files[path]
+        end,
+        write = function(path, data)
+          profile_files[path] = data
+          return true
+        end,
+        stat = function(path)
+          return profile_files[path] and tostring(#profile_files[path]) or nil
+        end,
       }
       package.loaded["claude_agents.agents_view"] = nil
       agents_view = require("claude_agents.agents_view")
@@ -941,6 +969,167 @@ describe("agents_view", function()
         package.loaded["claude_agents.agents." .. name] = nil
       end
       package.loaded["claude_agents.agents_view"] = nil
+      package.loaded["claude_agents.profile_menu"] = nil
+      package.loaded["claude_agents.agents.confirm"] = nil
+      require("claude_agents.profiles")._reset()
+      require("claude_agents.profiles")._io = require("claude_agents.store_io")
+    end)
+
+    describe("launch profiles", function()
+      local launches, relaunched, menu_opts, asked, answer
+
+      before_each(function()
+        launches, relaunched, menu_opts, asked, answer = {}, {}, nil, nil, true
+        local registry = package.loaded["claude_agents.agents.registry"]
+        registry.launch = function(id, launch_opts)
+          launches[#launches + 1] = { id = id, opts = launch_opts }
+          live[id] = true
+          return { bufnr = vim.api.nvim_create_buf(false, true) }
+        end
+        registry.relaunch = function(id, launch_opts, done)
+          -- What the centre shows while the old CLI exits: the window has to
+          -- survive the old terminal's buffer being deleted.
+          relaunched[#relaunched + 1] = { id = id, opts = launch_opts, center = center_lines() }
+          done({ bufnr = vim.api.nvim_create_buf(false, true) })
+        end
+        package.loaded["claude_agents.profile_menu"] = {
+          open = function(opts)
+            menu_opts = opts
+            return true
+          end,
+        }
+        package.loaded["claude_agents.agents.confirm"] = {
+          ask = function(opts, cb)
+            asked = opts
+            cb(answer)
+          end,
+        }
+        local profiles = require("claude_agents.profiles")
+        profiles.setup({})
+      end)
+
+      it("ga starts a new agent under the profile picked", function()
+        open_view()
+        agents_view.new_agent_as()
+        expect(menu_opts.title).to_be("Start agent as")
+        menu_opts.on_pick("API key")
+        expect(#launches).to_be(1)
+        expect(launches[1].opts.profile).to_be("API key")
+        expect(launches[1].opts.resume).to_be(false)
+      end)
+
+      it("gi resumes a stopped session under the profile picked", function()
+        open_view()
+        agents_view.resume_as_menu("aaa")
+        expect(menu_opts.title:find("Resume First", 1, true) ~= nil).to_be_true()
+        menu_opts.on_pick("API key")
+        expect(launches[1].id).to_be("aaa")
+        expect(launches[1].opts.resume).to_be_true()
+        expect(launches[1].opts.profile).to_be("API key")
+      end)
+
+      it("names the profile a session last ran under, and starts the cursor there", function()
+        require("claude_agents.profiles").remember("aaa", "API key")
+        open_view()
+        agents_view.resume_as_menu("aaa")
+        expect(menu_opts.current).to_be("API key")
+        expect(menu_opts.notes["API key"]).to_be("last run")
+      end)
+
+      it("just shows a running session that is already under that profile", function()
+        live.aaa = true
+        terminals.aaa = { profile = "API key", bufnr = vim.api.nvim_create_buf(false, true) }
+        open_view()
+        agents_view.resume_as("aaa", "API key")
+        expect(#launches).to_be(0)
+        expect(#relaunched).to_be(0)
+      end)
+
+      it("restarts a running session under another profile, carrying the conversation on", function()
+        live.aaa = true
+        terminals.aaa = { profile = "subscription", bufnr = vim.api.nvim_create_buf(false, true) }
+        open_view()
+        agents_view.resume_as("aaa", "API key")
+        expect(asked).to_be(nil) -- idle: nothing is cut off
+        expect(#relaunched).to_be(1)
+        expect(relaunched[1].opts.profile).to_be("API key")
+        expect(relaunched[1].opts.resume).to_be_true()
+        -- Measured: deleting the old terminal's buffer closed the centre pane it
+        -- was in, and the relaunch found its window gone.
+        expect(relaunched[1].center:find("Switching to API key", 1, true) ~= nil).to_be_true()
+      end)
+
+      it("asks first when the session is busy, and leaves it be on no", function()
+        live.aaa = true
+        terminals.aaa = { profile = "subscription", bufnr = vim.api.nvim_create_buf(false, true) }
+        statuses.aaa = { state = "busy" }
+        answer = false
+        open_view()
+        agents_view.resume_as("aaa", "API key")
+        expect(asked.message[1]:find("working", 1, true) ~= nil).to_be_true()
+        expect(#relaunched).to_be(0)
+      end)
+
+      it("leaves a session running in another tab where it is", function()
+        foreign.aaa = "busy"
+        open_view()
+        agents_view.resume_as("aaa", "API key")
+        expect(#launches).to_be(0)
+        expect(#relaunched).to_be(0)
+      end)
+
+      it("starts a follow-up on the same account as the session it follows", function()
+        require("claude_agents.profiles").remember("aaa", "API key")
+        package.loaded["claude_agents.agents.model"].follow_up_name = function()
+          return "First-2"
+        end
+        open_view()
+        agents_view.new_follow_up("aaa")
+        expect(launches[1].opts.profile).to_be("API key")
+      end)
+
+      it("starts nothing under a profile whose key is known to be missing", function()
+        local profiles = require("claude_agents.profiles")
+        profiles._system = function(_, callback)
+          callback({ code = 2, stdout = "missing\n" })
+        end
+        profiles.check(profiles.get("API key"), function() end)
+        vim.wait(100, function()
+          return profiles.check_state("API key") ~= nil
+        end)
+        open_view()
+        agents_view.new_agent("API key")
+        expect(#launches).to_be(0)
+      end)
+
+      it("says on the offer which profile starting the session uses", function()
+        require("claude_agents.profiles").remember("aaa", "API key")
+        open_view()
+        local text = center_lines()
+        expect(text:find("$ last ran under API key", 1, true) ~= nil).to_be_true()
+        expect(text:find("start it here under API key", 1, true) ~= nil).to_be_true()
+      end)
+
+      it("takes :ClaudeCodeProfile in its tab as the selected session's, or a new agent's", function()
+        open_view()
+        expect(agents_view.is_view_tab()).to_be_true()
+        agents_view.resume_selected_as("API key")
+        expect(launches[1].id).to_be(selected)
+        expect(launches[1].opts.profile).to_be("API key")
+        expect(launches[1].opts.resume).to_be_true()
+      end)
+
+      it("lists both keys in the help", function()
+        agents_view.setup(base_config({ enabled = true, keymaps = { new_as = "ga", resume_as = "gi" } }))
+        local found = {}
+        for _, group in ipairs(agents_view.help_entries("sessions")) do
+          for _, key in ipairs(group.keys) do
+            found[key.lhs] = key.desc
+          end
+        end
+        expect(found.ga ~= nil).to_be_true()
+        expect(found.gi ~= nil).to_be_true()
+      end)
     end)
 
     it("draws more of the activity feed as it is scrolled, down to the store's cap", function()

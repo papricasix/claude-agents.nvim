@@ -453,6 +453,7 @@ function M.setup(opts)
   require("claude_agents.plan_view").setup(M.state.config)
   require("claude_agents.terminal_links").setup(M.state.config)
   require("claude_agents.session_state").setup(M.state.config)
+  require("claude_agents.profiles").setup(M.state.config)
   require("claude_agents.status").setup(M.state.config)
   require("claude_agents.agents_view").setup(M.state.config)
 
@@ -533,12 +534,9 @@ function M.setup(opts)
   -- watches TermClose rather than the providers' exit hooks.
   --
   -- Status tracking rides the same watcher: a Claude that ended has no activity
-  -- to report, so its tab goes back to "none".
-  if
-    require("claude_agents.session_state").is_enabled()
-    or require("claude_agents.status").is_enabled()
-    or require("claude_agents.agents_view").is_enabled()
-  then
+  -- to report, so its tab goes back to "none". So does the tab's launch profile,
+  -- which is why it is registered whatever is enabled: profiles always exist.
+  do
     vim.api.nvim_create_autocmd("TermClose", {
       group = vim.api.nvim_create_augroup("ClaudeCodeSessionClose", { clear = true }),
       callback = function(args)
@@ -566,9 +564,14 @@ function M.setup(opts)
         pcall(function()
           require("claude_agents.status").clear(tab)
         end)
-        if M.state.shutting_down then
+        -- Stopped to start again under another profile: the conversation carries
+        -- on, so it is neither forgotten nor its profile dropped.
+        if M.state.shutting_down or require("claude_agents.terminal").is_restarting(tab) then
           return
         end
+        pcall(function()
+          require("claude_agents.profiles").forget_tab(tab)
+        end)
         pcall(function()
           require("claude_agents.session_state").forget(tab)
         end)
@@ -995,14 +998,23 @@ function M._create_commands()
     desc = "Flag the selected agent session so it is not forgotten, or unflag it; your next reply takes the flag off. With text: flag it with that note, which stays until removed (with !: unflag)",
   })
 
-  vim.api.nvim_create_user_command("ClaudeCodeAgentNew", function()
+  vim.api.nvim_create_user_command("ClaudeCodeAgentNew", function(opts)
     local agents = require("claude_agents.agents_view")
     if not agents.is_open() then
       agents.open()
     end
-    agents.new_agent()
+    local name = opts.args ~= "" and opts.args or nil
+    if name and not require("claude_agents.profiles").get(name) then
+      vim.notify("ClaudeCode: no launch profile called " .. name, vim.log.levels.ERROR)
+      return
+    end
+    agents.new_agent(name)
   end, {
-    desc = "Start a new Claude agent in the agents view",
+    nargs = "?",
+    complete = function()
+      return M._profile_names()
+    end,
+    desc = "Start a new Claude agent in the agents view, optionally under a launch profile",
   })
 
   vim.api.nvim_create_user_command("ClaudeCodeAgentFollowUp", function()
@@ -1555,6 +1567,20 @@ function M._create_commands()
       desc = "Open the Claude Code terminal window with optional arguments",
     })
 
+    vim.api.nvim_create_user_command("ClaudeCodeProfile", function(opts)
+      if opts.args ~= "" then
+        terminal.launch_profile(opts.args)
+      else
+        terminal.choose_profile()
+      end
+    end, {
+      nargs = "?",
+      complete = function()
+        return M._profile_names()
+      end,
+      desc = "Start this tab's Claude under a launch profile, or switch the running one to it",
+    })
+
     vim.api.nvim_create_user_command("ClaudeCodeClose", function()
       terminal.close()
     end, {
@@ -1617,6 +1643,16 @@ function M._create_commands()
   end, {
     desc = "Toggle automatic file/selection tracking sent to Claude Code",
   })
+end
+
+---Launch profile names, for command completion.
+---@return string[]
+function M._profile_names()
+  local names = {}
+  for _, profile in ipairs(require("claude_agents.profiles").list()) do
+    names[#names + 1] = profile.name
+  end
+  return names
 end
 
 M.open_with_model = function(additional_args)

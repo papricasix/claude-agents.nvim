@@ -339,5 +339,64 @@ describe("Configuration", function()
     end)
   end)
 
+  describe("launch profiles", function()
+    local function valid(profiles)
+      return pcall(config.validate_profiles, profiles)
+    end
+
+    it("accepts no profiles block, and the built-ins it stands for", function()
+      expect(valid(nil)).to_be_true()
+      expect(valid({})).to_be_true()
+      expect(valid({ default = "API key" })).to_be_true()
+      expect(pcall(config.apply, { profiles = { default = "subscription" } })).to_be_true()
+    end)
+
+    it("accepts a full profile list", function()
+      expect(valid({
+        default = "work",
+        list = {
+          { name = "sub", key = "s", auth = "subscription", model = "opus", args = "--verbose" },
+          { name = "work", key = "w", auth = "api", keychain = "team.prod-1", workspace = "wrkspc_1", mark = "€" },
+          { name = "1p", auth = "api", api_key_cmd = "op read op://x", env = { ANTHROPIC_BASE_URL = "https://x" } },
+        },
+      })).to_be_true()
+    end)
+
+    it("rejects a default that names no profile", function()
+      local ok, err = valid({ default = "nope" })
+      expect(ok).to_be_false()
+      expect(tostring(err):find("names no profile", 1, true) ~= nil).to_be_true()
+    end)
+
+    it("keeps the menu's own keys off profiles", function()
+      for _, key in ipairs({ "h", "j", "k", "l", "q" }) do
+        local ok, err = valid({ list = { { name = "a", key = key, auth = "subscription" } } })
+        expect(ok).to_be_false()
+        expect(tostring(err):find("menu's own", 1, true) ~= nil).to_be_true()
+      end
+    end)
+
+    it("rejects a keychain entry that would not be safe on a command line", function()
+      expect(valid({ list = { { name = "a", auth = "api", keychain = "my key" } } })).to_be_false()
+      expect(valid({ list = { { name = "a", auth = "api", keychain = "x;rm" } } })).to_be_false()
+    end)
+
+    it("rejects what does not fit together", function()
+      expect(valid({ list = { { name = "a", auth = "both" } } })).to_be_false()
+      expect(valid({ list = { { name = "a", auth = "api", keychain = "k", api_key_cmd = "c" } } })).to_be_false()
+      expect(valid({ list = { { name = "a", auth = "subscription", keychain = "k" } } })).to_be_false()
+      expect(valid({ list = { { name = "a", auth = "api" }, { name = "a", auth = "api" } } })).to_be_false()
+      expect(valid({ list = { { name = "a", key = "x", auth = "api" }, { name = "b", key = "x", auth = "api" } } })).to_be_false()
+      expect(valid({ list = { { name = "a", auth = "api", env = { X = 1 } } } })).to_be_false()
+      expect(valid({ list = { { auth = "api" } } })).to_be_false()
+    end)
+
+    it("takes the agents view's two profile keys", function()
+      local ok = pcall(config.apply, { agents = { keymaps = { new_as = "gA", resume_as = false } } })
+      expect(ok).to_be_true()
+      expect(pcall(config.apply, { agents = { keymaps = { new_as = 3 } } })).to_be_false()
+    end)
+  end)
+
   teardown()
 end)

@@ -11,6 +11,9 @@ describe("health", function()
   local server_status
   local executables
   local lock_readable
+  -- What the API key helper answers when the health check asks it.
+  local key_check
+  local real_system
 
   local function record(level)
     return function(msg)
@@ -85,14 +88,55 @@ describe("health", function()
     }
     package.loaded["claude_agents.lockfile"] = { lock_dir = "/tmp/claude/ide" }
 
+    local profiles = require("claude_agents.profiles")
+    profiles._reset()
+    key_check = { code = 0, stdout = "found 108 ok\n", stderr = "" }
+    real_system = profiles._system
+    profiles._system = function()
+      return {
+        wait = function()
+          return key_check
+        end,
+      }
+    end
+
     package.loaded["claude_agents.health"] = nil
     health = require("claude_agents.health")
   end)
 
   after_each(function()
+    require("claude_agents.profiles")._system = real_system
     package.loaded["claude_agents"] = nil
     package.loaded["claude_agents.lockfile"] = nil
     package.loaded["claude_agents.health"] = nil
+  end)
+
+  describe("launch profiles", function()
+    it("reports the built-in profiles and a stored API key", function()
+      health.check()
+      expect(has_report("start", "Launch profiles")).to_be_true()
+      expect(has_report("ok", 'profile "subscription": your subscription')).to_be_true()
+      expect(has_report("ok", 'profile "API key": API key found')).to_be_true()
+      expect(has_report("error", ".")).to_be_false()
+    end)
+
+    it("says how to store a key that is missing", function()
+      key_check = { code = 2, stdout = "missing\n", stderr = "" }
+      health.check()
+      expect(has_report("warn", 'profile "API key": no API key stored')).to_be_true()
+    end)
+
+    it("warns about a key that is not an Anthropic key's shape", function()
+      key_check = { code = 0, stdout = "found 12 unexpected\n", stderr = "" }
+      health.check()
+      expect(has_report("warn", "does not look like an Anthropic API key")).to_be_true()
+    end)
+
+    it("reports a helper that failed as an error", function()
+      key_check = { code = 1, stdout = "", stderr = "keychain locked" }
+      health.check()
+      expect(has_report("error", "reading the key failed: keychain locked")).to_be_true()
+    end)
   end)
 
   it("reports all-ok for a healthy setup", function()

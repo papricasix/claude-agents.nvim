@@ -126,6 +126,75 @@ local function check_optional_deps(config)
   end
 end
 
+---Launch profiles: what each is, and whether an API profile's key is stored.
+---
+---The key is asked of the helper script, which reports whether a key is there
+---and what it looks like, never the key: nothing secret passes through Neovim
+---even here.
+local function check_profiles()
+  local profiles = require("claude_agents.profiles")
+  local api_key = require("claude_agents.api_key")
+  local default = profiles.default_name()
+  info(
+    "Plain launches ("
+      .. (default and ("profile " .. default) or "as configured: the CLI decides")
+      .. "). :ClaudeCodeProfile, and ga/gi in the agents view, pick one"
+  )
+
+  for _, profile in ipairs(profiles.list()) do
+    local label = ("profile %q"):format(profile.name)
+    if profile.auth == "subscription" then
+      ok(label .. ": your subscription (the claude.ai login)")
+    else
+      local source = profile.api_key_cmd and ("api_key_cmd: " .. profile.api_key_cmd)
+        or ("keychain entry " .. api_key.SERVICE .. "/" .. profile.keychain)
+      local check = profiles.check_sync(profile)
+      if check.state == "found" and check.shape == "ok" then
+        ok(("%s: API key found (%s, %d characters)"):format(label, source, check.length))
+      elseif check.state == "found" then
+        warn(
+          ("%s: a key was found (%s) but does not look like an Anthropic API key (%s)"):format(
+            label,
+            source,
+            check.shape
+          ),
+          { "The CLI takes the helper's whole output as the key: it must print the key and nothing else" }
+        )
+      elseif check.state == "missing" then
+        warn(("%s: no API key stored (%s)"):format(label, source), {
+          profile.api_key_cmd and "The command printed nothing"
+            or ("Store it once, in a terminal: " .. api_key.store_command(profile.keychain)),
+        })
+      else
+        error_(("%s: reading the key failed: %s"):format(label, check.detail or "unknown error"))
+      end
+    end
+  end
+
+  -- What plain launches run on, beyond what the plugin decides.
+  if (os.getenv("ANTHROPIC_API_KEY") or "") ~= "" then
+    warn("ANTHROPIC_API_KEY is set in Neovim's environment", {
+      "Plain launches inherit it and run on that key (the CLI asks once to approve it), and every command Claude runs can read it",
+      "Launch profiles blank it; storing the key in the keychain for an API profile keeps it out of the environment",
+    })
+  end
+  local settings_path = require("claude_agents.utils").claude_config_dir() .. "/settings.json"
+  local ok_read, lines = pcall(vim.fn.readfile, settings_path)
+  if ok_read and type(lines) == "table" then
+    local ok_json, settings = pcall(vim.json.decode, table.concat(lines, "\n"))
+    if
+      ok_json
+      and type(settings) == "table"
+      and type(settings.apiKeyHelper) == "string"
+      and settings.apiKeyHelper ~= ""
+    then
+      info(
+        "Your Claude settings set an apiKeyHelper: plain launches run on it, the subscription profile switches it off"
+      )
+    end
+  end
+end
+
 ---Each Claude the plugin is running -- a tab's own one and any agents -- has its
 ---own server, port, token and lock file, so the report is per instance.
 ---@param claudecode table The main plugin module
@@ -196,6 +265,9 @@ function M.check()
   check_terminal_provider(claudecode.state.config)
   check_optional_deps(claudecode.state.config)
   check_instances(claudecode)
+
+  start("Launch profiles")
+  check_profiles()
 end
 
 return M

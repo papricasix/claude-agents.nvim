@@ -64,6 +64,8 @@ end
 ---@field resumed boolean Whether it was started with --resume.
 ---@field name string|nil What its conversation is called, as far as the launch knows: `--name`, then whatever `set_name` was told.
 ---@field started_at number When it began running the conversation it runs now — the launch, or the `/clear` that swapped it — in wall-clock seconds.
+---@field profile string|nil The launch profile it runs under; nil for a plain launch.
+---@field relaunching boolean|nil Being stopped to start again under another profile.
 ---@field exited boolean
 ---@field exit_code integer|nil
 
@@ -173,7 +175,9 @@ end
 ---Start a Claude for one conversation in the given window.
 ---
 ---@param session_id string Conversation id to name (or resume) this agent with.
----@param opts { win: integer, tab: integer?, cwd: string?, resume: boolean?, focus: boolean?, name: string? }
+---@param opts { win: integer, tab: integer?, cwd: string?, resume: boolean?, focus: boolean?, name: string?, profile: string? }
+---       `profile` picks the launch profile; omitted, a resumed conversation goes
+---       back to the one it last ran under and a new one gets the default.
 ---@return ClaudeCodeAgentTerminal|nil term
 ---@return string|nil error
 function M.launch(session_id, opts)
@@ -224,9 +228,10 @@ function M.launch(session_id, opts)
   if name then
     flag = flag .. " --name=" .. utils.shell_quote(name)
   end
-  local ok_cmd, cmd_string, env_table, effective = pcall(terminal.build_launch, flag, {
+  local ok_cmd, cmd_string, env_table, effective, profile = pcall(terminal.build_launch, flag, {
     cwd = cwd,
     instance = instance,
+    profile = opts.profile,
   })
   if not ok_cmd then
     claudecode.stop_agent_instance(session_id)
@@ -310,10 +315,16 @@ function M.launch(session_id, opts)
     resumed = opts.resume == true,
     name = name,
     started_at = M._clock(),
+    profile = profile,
     exited = false,
   }
   terminals[session_id] = term
   by_agent[agent_key] = term
+  if profile then
+    pcall(function()
+      require("claude_agents.profiles").remember(session_id, profile)
+    end)
+  end
 
   if opts.focus then
     pcall(vim.api.nvim_set_current_win, opts.win)
@@ -388,6 +399,12 @@ function M.rekey(agent_key, session_id, opts)
   pcall(function()
     require("claude_agents.float").retag(previous, session_id)
   end)
+  -- The same process, so the same account.
+  if term.profile then
+    pcall(function()
+      require("claude_agents.profiles").remember(session_id, term.profile)
+    end)
+  end
 
   logger.debug("agents", "agent", agent_key, "moved from", previous, "to", session_id)
   return previous
@@ -455,6 +472,37 @@ function M.stop(session_id)
     by_agent[term.agent_key] = nil
   end
   return true
+end
+
+---Start a running agent again under other launch options — another profile —
+---with its conversation carried on (`--resume`).
+---
+---The old CLI is stopped and **waited for** before the new one starts: two CLIs
+---on one conversation interleave their writes to its transcript (see
+---`terminal._stop_and_wait`). While it goes, the agent is marked `relaunching`
+---so the view does not show the "agent ended" screen for a moment.
+---@param session_id string
+---@param opts table `launch` options; `resume` is forced on.
+---@param on_done fun(term: ClaudeCodeAgentTerminal|nil, err: string|nil)
+function M.relaunch(session_id, opts, on_done)
+  opts = vim.tbl_extend("force", opts or {}, { resume = true })
+  local term = terminals[session_id]
+  if not term or term.exited or not vim.api.nvim_buf_is_valid(term.bufnr) then
+    if term then
+      M.stop(session_id)
+    end
+    on_done(M.launch(session_id, opts))
+    return
+  end
+  term.relaunching = true
+  require("claude_agents.terminal")._stop_and_wait(term.bufnr, function()
+    M.stop(session_id)
+    if opts.win and not vim.api.nvim_win_is_valid(opts.win) then
+      on_done(nil, "the window it was shown in is gone")
+      return
+    end
+    on_done(M.launch(session_id, opts))
+  end)
 end
 
 ---Stop every agent hosted by a tab.

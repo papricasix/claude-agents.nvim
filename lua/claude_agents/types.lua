@@ -140,6 +140,7 @@
 ---@field diff_opts ClaudeCodeDiffOptions
 ---@field status ClaudeCodeStatusOptions?
 ---@field models ClaudeCodeModelOption[]
+---@field profiles { default: string|nil, list: ClaudeCodeProfile[]|nil }? Launch profiles (see `claude_agents.profiles`)
 ---@field disable_broadcast_debouncing? boolean
 ---@field enable_broadcast_debouncing_in_tests? boolean
 ---@field terminal ClaudeCodeTerminalConfig?

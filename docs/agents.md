@@ -29,6 +29,8 @@ The top right lists this project's conversations from the last two weeks, each w
 | `<CR>`            | Show the session under the cursor in the centre, resuming it if it is not running                                                 |
 | `i`               | Go into the selected session's terminal, starting it if needed                                                                    |
 | `a`               | Start a new agent                                                                                                                 |
+| `ga`              | Start a new agent on your subscription or an API key, picked from a menu                                                          |
+| `gi`              | Resume the session under a profile you pick; a running one is restarted under it, its conversation carried on                     |
 | `A`               | Start a new agent named after this session, numbered on (`plan` → `plan-2`), with a fresh context                                 |
 | `x`               | Stop the agent under the cursor                                                                                                   |
 | `dd`              | Delete the conversation for good, after asking. Takes a count or a visual selection                                               |
@@ -36,7 +38,7 @@ The top right lists this project's conversations from the last two weeks, each w
 | `gf`              | Search the conversations                                                                                                          |
 | `q`               | Close the view, after asking. The agents keep running                                                                             |
 
-Switching to another agent leaves the one you were in running: start three, come back to whichever finishes first. A session working in a git worktree is marked `⎇`, and resuming it puts it back in that worktree.
+Switching to another agent leaves the one you were in running: start three, come back to whichever finishes first. A session working in a git worktree is marked `⎇`, and resuming it puts it back in that worktree. A session run on an API key is marked `$`, and resuming it with `i` goes back to the same key; the [guide](guide.md#subscription-or-api-key) explains the profiles behind `ga` and `gi`.
 
 **Flags** are for sessions you have to come back to. A plain flag (`⚑`) comes off when you next answer that conversation, wherever you do it. A flag with a note (`⚑ Port upstream · check CI`) stays until you take it off. Flags survive restarts and are shared between Neovims.
 
@@ -91,7 +93,8 @@ The view follows the agents through the hooks [per-tab status](guide.md#per-tab-
 The commands, to map from inside an agent's terminal where the pane keys do not reach. All but the first act on the selected session:
 
 ```vim
-:ClaudeCodeAgentNew                   " start a new agent
+:ClaudeCodeAgentNew [profile]         " start a new agent, on a launch profile if named
+:ClaudeCodeProfile [profile]          " resume or switch it under a launch profile (no name: the gi menu)
 :ClaudeCodeAgentFollowUp              " a new agent named after it, numbered on
 :ClaudeCodeAgentsCheckpoint[!]        " draw a checkpoint; with !, drop the newest
 :ClaudeCodeAgentsFlag[!] [note]       " toggle its flag, or flag it with a note; with !, unflag

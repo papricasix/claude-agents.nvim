@@ -214,6 +214,11 @@ M.defaults = {
       help = "?", -- show the keys that reach the pane you are in
       next_pane = "<Tab>",
       focus_term = "i",
+      -- The same two, choosing a launch profile first (`profiles`): which account
+      -- the new agent runs on, or which one this session is resumed — or, when
+      -- it is running, restarted — under.
+      new_as = "ga",
+      resume_as = "gi",
       -- Cycle the selected session from anywhere in the tab, the agent's terminal
       -- included (bound there in terminal mode too). Set to false to leave the
       -- keys to Claude.
@@ -284,6 +289,18 @@ M.defaults = {
     { name = "Claude Fable (Latest)", value = "fable" },
     { name = "Default (account recommended)", value = "default" },
   },
+  -- Launch profiles: which account a Claude runs on — your subscription, or an
+  -- API key the CLI reads from the OS keychain itself. `ga`/`gi` in the agents
+  -- view and `:ClaudeCodeProfile` start (or switch) a Claude under one.
+  profiles = {
+    -- What plain launches use (`a`, `:ClaudeCode`): nil leaves them as they are —
+    -- the CLI decides — or a profile name below.
+    default = nil,
+    -- nil gives the built-ins: `subscription` (key `s`) and `API key` (key `a`,
+    -- keychain entry "default"). Each entry: { name, key, auth = "subscription" |
+    -- "api", keychain | api_key_cmd, model, args, env, workspace, mark }.
+    list = nil,
+  },
   terminal = nil, -- Will be lazy-loaded to avoid circular dependency
 }
 
@@ -316,6 +333,76 @@ function M.validate_float(float, label)
   check("cascade_offset", function(v)
     return type(v) == "number" and v >= 0
   end, "must be a non-negative number")
+end
+
+---Validate the `profiles` block.
+---
+---Strict about what reaches a command line: a keychain entry is put on the
+---`apiKeyHelper` command unquoted, so it is held to letters, digits, `.`, `_` and
+---`-`; and the default must name a profile, or every plain launch would quietly
+---fall back to "as configured".
+---@param profiles table|nil
+function M.validate_profiles(profiles)
+  if profiles == nil then
+    return
+  end
+  assert(type(profiles) == "table", "profiles must be a table")
+  local list = profiles.list
+  if list ~= nil then
+    assert(type(list) == "table", "profiles.list must be a list of profiles")
+  end
+  local names, keys = {}, {}
+  for index, profile in ipairs(list or require("claude_agents.profiles").BUILTIN) do
+    local label = "profiles.list[" .. index .. "]"
+    assert(type(profile) == "table", label .. " must be a table")
+    assert(type(profile.name) == "string" and profile.name ~= "", label .. ".name must be a non-empty string")
+    assert(not names[profile.name], label .. ": the name " .. profile.name .. " is used twice")
+    names[profile.name] = true
+    assert(profile.auth == "subscription" or profile.auth == "api", label .. '.auth must be "subscription" or "api"')
+    if profile.key ~= nil then
+      assert(type(profile.key) == "string" and profile.key ~= "", label .. ".key must be a non-empty string")
+      assert(
+        not require("claude_agents.profiles").RESERVED_KEYS[profile.key],
+        label .. ".key " .. profile.key .. " is the menu's own (h, j, k and l move, q closes)"
+      )
+      assert(not keys[profile.key], label .. ": the key " .. profile.key .. " is used twice")
+      keys[profile.key] = true
+    end
+    if profile.keychain ~= nil then
+      assert(
+        require("claude_agents.api_key").valid_entry(profile.keychain),
+        label .. ".keychain must be letters, digits, '.', '_' or '-'"
+      )
+    end
+    if profile.api_key_cmd ~= nil then
+      assert(
+        type(profile.api_key_cmd) == "string" and profile.api_key_cmd ~= "",
+        label .. ".api_key_cmd must be a non-empty string"
+      )
+      assert(profile.keychain == nil, label .. ": set keychain or api_key_cmd, not both")
+    end
+    if profile.auth == "subscription" then
+      assert(
+        profile.keychain == nil and profile.api_key_cmd == nil and profile.workspace == nil,
+        label .. ': keychain, api_key_cmd and workspace are for auth = "api"'
+      )
+    end
+    for _, field in ipairs({ "model", "args", "workspace", "mark" }) do
+      if profile[field] ~= nil then
+        assert(type(profile[field]) == "string", label .. "." .. field .. " must be a string")
+      end
+    end
+    if profile.env ~= nil then
+      assert(type(profile.env) == "table", label .. ".env must be a table")
+      for key, value in pairs(profile.env) do
+        assert(type(key) == "string" and type(value) == "string", label .. ".env must map variable names to strings")
+      end
+    end
+  end
+  if profiles.default ~= nil then
+    assert(type(profiles.default) == "string", "profiles.default must be a profile name or nil")
+    assert(names[profiles.default], "profiles.default names no profile: " .. profiles.default)
+  end
 end
 
 ---Validates the provided configuration table.
@@ -434,6 +521,7 @@ function M.validate(config)
   end
 
   M.validate_float(config.float, "float")
+  M.validate_profiles(config.profiles)
 
   -- Legacy diff options (accept if present to avoid breaking old configs)
   if config.diff_opts.auto_close_on_accept ~= nil then
@@ -746,6 +834,8 @@ function M.validate(config)
         "focus_term",
         "next_session",
         "prev_session",
+        "new_as",
+        "resume_as",
       }
       for _, field in ipairs(fields) do
         checker(ag.keymaps, "agents.keymaps")(field, is_keymap, "must be a string or false")

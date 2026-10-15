@@ -521,6 +521,22 @@ describe("agents.render", function()
         expect(vim.fn.strdisplaywidth(lines[1])).to_be(vim.fn.strdisplaywidth(lines[2]))
         expect(lines[1]:sub(1, 1)).to_be(" ")
       end)
+
+      it("draws a launch profile's mark after the others, in its own colour", function()
+        local marked = in_worktree({ at = 1 })
+        marked[1].mark = "$"
+        marked[2].mark = "$"
+        render.sessions(buf, marked, { width = 60 })
+        local lines = lines_of(buf)
+        local all = "○ " .. render.FLAG_MARK .. " " .. render.WORKTREE_MARK .. " $ Port upstream"
+        expect(lines[1]:find(all, 1, true) ~= nil).to_be_true()
+        expect(lines[2]:find("○ $ Refactor fade", 1, true) ~= nil).to_be_true()
+        local mark = mark_in(0, "ClaudeCodeProfileMark")
+        expect(lines[1]:sub(mark.col + 1, mark.opts.end_col)).to_be("$")
+        local title = mark_in(0, "ClaudeCodeAgentsTitle")
+        expect(lines[1]:sub(title.col + 1, title.opts.end_col)).to_be("Port upstream")
+        expect(vim.fn.strdisplaywidth(lines[1])).to_be(60)
+      end)
     end)
 
     describe("fitting a title and a flag's note into one row", function()

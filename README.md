@@ -15,6 +15,7 @@ Claude Code connects to Neovim the way it connects to VS Code: it sees what you 
 - **Per-tab status** for your tabline: which tab's Claude is working, which one needs you, and which answer you have not read yet.
 - **Clickable paths.** File paths in Claude's terminal open in Neovim, not in your file manager.
 - **Conversations that come back.** Restore a Neovim session and each tab's Claude resumes where it left off.
+- **Subscription or API key, per session.** Start any Claude on either, or switch a running one without losing the conversation. The key stays in your OS keychain, out of your config and out of reach of the commands Claude runs.
 
 ## In your editor
 
@@ -58,6 +59,7 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
     { "<leader>ac", "<cmd>ClaudeCode<cr>", desc = "Claude: toggle terminal" },
     { "<leader>as", "<cmd>ClaudeCodeSend<cr>", mode = "v", desc = "Claude: send selection" },
     { "<leader>aA", "<cmd>ClaudeCodeAgents<cr>", desc = "Claude: agents view" },
+    { "<leader>ap", "<cmd>ClaudeCodeProfile<cr>", desc = "Claude: subscription or API key" },
   },
 }
 ```
@@ -68,7 +70,7 @@ You need Neovim 0.11 or newer and the [Claude Code CLI](https://docs.anthropic.c
 
 ## Good to know
 
-The plan view and per-tab status are on; the live cursor and session persistence are off until you turn them on. All four hear from Claude through hooks the plugin adds when it launches Claude (`claude --settings`; your own settings are left alone), so they only work for a Claude started from Neovim, and a change applies to the next Claude you start. Per-tab status runs a short hook on every tool call; switch it off if you never look at it.
+The plan view and per-tab status are on; the live cursor and session persistence are off until you turn them on. All four hear from Claude through hooks the plugin adds when it launches Claude (`claude --settings`; your own settings are left alone, and a `--settings` of your own in `terminal_cmd` is merged in), so they only work for a Claude started from Neovim, and a change applies to the next Claude you start. Per-tab status runs a short hook on every tool call; switch it off if you never look at it.
 
 The [guide](docs/guide.md) has every command, the configuration, diffs, terminal providers and each of those features. The [agents guide](docs/agents.md) walks through the agents view.
 

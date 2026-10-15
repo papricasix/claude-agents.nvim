@@ -5,6 +5,7 @@
 local M = {}
 
 local claudecode_main = require("claude_agents")
+local utils = require("claude_agents.utils")
 
 ---@type ClaudeCodeTerminalConfig
 local defaults = {
@@ -332,9 +333,15 @@ M._no_proxy_with_loopback = no_proxy_with_loopback
 ---@param instance table? Server instance this launch should talk to. Defaults to
 ---       the current tab's; agents mode passes its own so each agent connects to
 ---       its own server rather than sharing the tab's.
+---@param launch { profile: string|table|nil }|nil Which launch profile to run under
+---       (`profiles.resolve`: else the one the resumed conversation last used,
+---       else `profiles.default`).
 ---@return string cmd_string The command string
 ---@return table env_table The environment variables table
-local function get_claude_command_and_env(cmd_args, effective_config, instance)
+---@return string|nil profile The name of the launch profile it runs under.
+local function get_claude_command_and_env(cmd_args, effective_config, instance, launch)
+  -- A tab's own Claude, as opposed to an agent, which brings its own instance.
+  local for_tab = instance == nil
   -- Inline get_claude_command logic
   local cmd_from_config = defaults.terminal_cmd
   local base_cmd
@@ -388,17 +395,6 @@ local function get_claude_command_and_env(cmd_args, effective_config, instance)
     env_table[key] = value
   end
 
-  -- Claude honours http_proxy/all_proxy with proxy-from-env semantics, and without a
-  -- loopback exclusion it tunnels even its own ws://127.0.0.1:<port> IDE connection
-  -- through the proxy, so the handshake never reaches our server and queued @ mentions
-  -- time out (upstream issue #70). This runs after the config merge and regardless of
-  -- the inherited environment (termopen layers env_table over the parent's), and merges
-  -- rather than clobbers every existing source.
-  local combined_no_proxy =
-    no_proxy_with_loopback(os.getenv("no_proxy"), os.getenv("NO_PROXY"), env_table["no_proxy"], env_table["NO_PROXY"])
-  env_table["no_proxy"] = combined_no_proxy
-  env_table["NO_PROXY"] = combined_no_proxy
-
   -- Session persistence: name this tab's conversation (`--session-id`), or pick
   -- the one a restored Neovim session handed back (`--resume`). No-op when the
   -- feature is off or the command already chooses a conversation itself.
@@ -410,32 +406,69 @@ local function get_claude_command_and_env(cmd_args, effective_config, instance)
     end
   end
 
-  -- Live-cursor: inject the hook settings + RPC address (no-op when disabled).
-  -- This single seam covers every provider, since they all launch from these two values.
-  local lc_ok, live_cursor = pcall(require, "claude_agents.live_cursor")
-  if lc_ok then
-    local injection = live_cursor.build_launch_injection()
-    if injection then
-      cmd_string = cmd_string .. " " .. injection.args
-      for key, value in pairs(injection.env) do
-        env_table[key] = value
-      end
+  -- Launch profile: which account this Claude runs on. After the session flags,
+  -- since a resumed conversation goes back to the profile it last ran under.
+  local profiles = require("claude_agents.profiles")
+  local argv = utils.shell_split(cmd_string)
+  local profile = profiles.resolve(launch and launch.profile, argv)
+  local parts = profiles.launch_parts(profile, argv)
+  if parts then
+    if parts.args ~= "" then
+      cmd_string = cmd_string .. " " .. parts.args
+    end
+    for key, value in pairs(parts.env) do
+      env_table[key] = value
+    end
+    if parts.workspace then
+      env_table.ANTHROPIC_CUSTOM_HEADERS = profiles.custom_headers(
+        env_table.ANTHROPIC_CUSTOM_HEADERS or os.getenv("ANTHROPIC_CUSTOM_HEADERS"),
+        parts.workspace
+      )
     end
   end
 
-  return cmd_string, env_table
+  -- Claude honours http_proxy/all_proxy with proxy-from-env semantics, and without a
+  -- loopback exclusion it tunnels even its own ws://127.0.0.1:<port> IDE connection
+  -- through the proxy, so the handshake never reaches our server and queued @ mentions
+  -- time out (upstream issue #70). This runs after the config and profile merges and
+  -- regardless of the inherited environment (termopen layers env_table over the
+  -- parent's), and merges rather than clobbers every existing source.
+  local combined_no_proxy =
+    no_proxy_with_loopback(os.getenv("no_proxy"), os.getenv("NO_PROXY"), env_table["no_proxy"], env_table["NO_PROXY"])
+  env_table["no_proxy"] = combined_no_proxy
+  env_table["NO_PROXY"] = combined_no_proxy
+
+  -- The plugin's hooks (live cursor, plan view, status, agents) and the profile's
+  -- settings, merged with the user's own `--settings` into the one file the CLI
+  -- reads: a second `--settings` would replace the first (see launch_settings).
+  -- This single seam covers every provider, since they all launch from these values.
+  local lc_ok, live_cursor = pcall(require, "claude_agents.live_cursor")
+  local hooks = lc_ok and live_cursor.build_launch_hooks() or nil
+  if hooks then
+    for key, value in pairs(hooks.env) do
+      env_table[key] = value
+    end
+  end
+  if lc_ok then
+    cmd_string = require("claude_agents.launch_settings").apply(cmd_string, {
+      hooks = hooks and hooks.settings or nil,
+      profile = parts and parts.settings or nil,
+      cwd = (effective_config and effective_config.cwd) or vim.fn.getcwd(),
+      write = live_cursor.write_settings_file,
+    })
+  end
+
+  local profile_name = profile and profile.name or nil
+  if for_tab then
+    profiles.set_pending_tab_launch(
+      vim.api.nvim_get_current_tabpage(),
+      profile_name,
+      profiles.session_of_argv(utils.shell_split(cmd_string))
+    )
+  end
+  return cmd_string, env_table, profile_name
 end
 
----Record which tabpage a freshly opened terminal buffer belongs to.
----
----`TermClose` reports only the buffer, and by then the terminal may not be in any
----window, so the tab has to be stamped while we still know it. Every provider
----keys its state by the *current* tabpage, so that is this terminal's tab by
----construction. Read back by the `TermClose` watcher in `init.lua` to forget a
----conversation the user ended.
----
----Also the point where this tab first counts as "has a Claude", which is what
----status tracking reports until the CLI's own hooks start arriving.
 ---What `<S-CR>` does in a Claude terminal: insert a newline rather than submit.
 ---
 ---Exported because it is applied through two different mechanisms — the snacks
@@ -451,17 +484,48 @@ function M.send_newline()
   end, 10)
 end
 
-local function tag_terminal_tab()
+---The current tab's terminal buffer, if its provider has one.
+---@return integer|nil
+local function active_bufnr()
   local ok, bufnr = pcall(function()
     return get_provider().get_active_bufnr()
   end)
-  if ok and bufnr and vim.api.nvim_buf_is_valid(bufnr) then
-    pcall(function()
-      vim.b[bufnr].claudecode_tab = vim.api.nvim_get_current_tabpage()
-    end)
+  return (ok and bufnr and vim.api.nvim_buf_is_valid(bufnr)) and bufnr or nil
+end
+
+---Record which tabpage a freshly opened terminal buffer belongs to.
+---
+---`TermClose` reports only the buffer, and by then the terminal may not be in any
+---window, so the tab has to be stamped while we still know it. Every provider
+---keys its state by the *current* tabpage, so that is this terminal's tab by
+---construction. Read back by the `TermClose` watcher in `init.lua` to forget a
+---conversation the user ended.
+---
+---Also the point where this tab first counts as "has a Claude", which is what
+---status tracking reports until the CLI's own hooks start arriving, and where the
+---launch profile the command was built with becomes the tab's.
+---
+---Called after **every** provider call that can start a process — `open`, both
+---toggles, `ensure_visible`. Only `open` and `ensure_visible` used to stamp, so a
+---Claude started by `:ClaudeCode` (a toggle) was never stamped: closing it did
+---not forget its conversation, and its tab counted as having no Claude until a
+---hook arrived. A stamp is taken only when the call produced a new buffer, since
+---toggles mostly just hide and show the one that is there.
+---@param before integer|nil The tab's terminal buffer before the provider call.
+local function tag_terminal_tab(before)
+  local bufnr = active_bufnr()
+  if not bufnr or bufnr == before then
+    return
   end
+  local tab = vim.api.nvim_get_current_tabpage()
   pcall(function()
-    require("claude_agents.status").note_launch(vim.api.nvim_get_current_tabpage())
+    vim.b[bufnr].claudecode_tab = tab
+  end)
+  pcall(function()
+    require("claude_agents.status").note_launch(tab)
+  end)
+  pcall(function()
+    require("claude_agents.profiles").note_tab_terminal(tab, bufnr)
   end)
 end
 
@@ -478,9 +542,9 @@ local function ensure_terminal_visible_no_focus(opts_override, cmd_args)
     return true
   end
 
-  local active_bufnr = provider.get_active_bufnr()
+  local current = provider.get_active_bufnr()
 
-  if is_terminal_visible(active_bufnr) then
+  if is_terminal_visible(current) then
     -- Terminal is already visible, do nothing
     return true
   end
@@ -489,8 +553,9 @@ local function ensure_terminal_visible_no_focus(opts_override, cmd_args)
   local effective_config = build_config(opts_override)
   local cmd_string, claude_env_table = get_claude_command_and_env(cmd_args, effective_config)
 
+  local before = active_bufnr()
   provider.open(cmd_string, claude_env_table, effective_config, false) -- false = don't focus
-  tag_terminal_tab()
+  tag_terminal_tab(before)
   return true
 end
 
@@ -656,12 +721,14 @@ end
 ---Opens or focuses the Claude terminal.
 ---@param opts_override table? Overrides for terminal appearance (split_side, split_width_percentage).
 ---@param cmd_args string? Arguments to append to the claude command.
-function M.open(opts_override, cmd_args)
+---@param launch { profile: string|table|nil }|nil Launch profile for a Claude this starts.
+function M.open(opts_override, cmd_args, launch)
   local effective_config = build_config(opts_override)
-  local cmd_string, claude_env_table = get_claude_command_and_env(cmd_args, effective_config)
+  local cmd_string, claude_env_table = get_claude_command_and_env(cmd_args, effective_config, nil, launch)
 
+  local before = active_bufnr()
   get_provider().open(cmd_string, claude_env_table, effective_config)
-  tag_terminal_tab()
+  tag_terminal_tab(before)
 end
 
 ---Closes the managed Claude terminal if it's open and valid.
@@ -676,7 +743,9 @@ function M.simple_toggle(opts_override, cmd_args)
   local effective_config = build_config(opts_override)
   local cmd_string, claude_env_table = get_claude_command_and_env(cmd_args, effective_config)
 
+  local before = active_bufnr()
   get_provider().simple_toggle(cmd_string, claude_env_table, effective_config)
+  tag_terminal_tab(before)
 end
 
 ---Smart focus toggle: switches to terminal if not focused, hides if currently focused.
@@ -686,7 +755,230 @@ function M.focus_toggle(opts_override, cmd_args)
   local effective_config = build_config(opts_override)
   local cmd_string, claude_env_table = get_claude_command_and_env(cmd_args, effective_config)
 
+  local before = active_bufnr()
   get_provider().focus_toggle(cmd_string, claude_env_table, effective_config)
+  tag_terminal_tab(before)
+end
+
+--- Tabs whose Claude is being restarted under another profile: [tabpage] = true.
+--- Its process ending is not the user closing the conversation, so the
+--- `TermClose` watcher must not forget it.
+local restarting = {}
+
+---@param tab integer|nil
+---@return boolean
+function M.is_restarting(tab)
+  return restarting[tab or vim.api.nvim_get_current_tabpage()] == true
+end
+
+--- How long a stopped CLI may take to exit before it is killed outright (ms).
+M._restart_grace_ms = 5000
+
+---The process behind a terminal buffer, and its pid.
+---@param bufnr integer
+---@return integer|nil job
+---@return integer|nil pid
+local function terminal_job(bufnr)
+  local ok, job = pcall(function()
+    return vim.b[bufnr].terminal_job_id
+  end)
+  if not ok or type(job) ~= "number" then
+    return nil, nil
+  end
+  local ok_pid, pid = pcall(vim.fn.jobpid, job)
+  return job, (ok_pid and type(pid) == "number" and pid > 0) and pid or nil
+end
+
+---Stop a terminal's process and call `done` once it has exited.
+---
+---Waits for the exit rather than starting the next CLI straight away: two CLIs on
+---one conversation interleave their writes to its transcript, and the CLI may
+---hold writes until it exits. `TermClose` is the exit; a CLI still running after
+---the grace period is killed outright.
+---@param bufnr integer
+---@param done fun()
+function M._stop_and_wait(bufnr, done)
+  local job, pid = terminal_job(bufnr)
+  local finished = false
+  local function finish()
+    if finished then
+      return
+    end
+    finished = true
+    vim.schedule(done)
+  end
+  if not job or vim.fn.jobwait({ job }, 0)[1] ~= -1 then
+    finish()
+    return
+  end
+  pcall(vim.api.nvim_create_autocmd, "TermClose", {
+    buffer = bufnr,
+    once = true,
+    callback = finish,
+  })
+  pcall(vim.fn.jobstop, job)
+  vim.defer_fn(function()
+    if finished then
+      return
+    end
+    if pid then
+      pcall((vim.uv or vim.loop).kill, pid, "sigkill")
+    end
+    vim.defer_fn(finish, 500)
+  end, M._restart_grace_ms)
+end
+
+---Whether this tab has a Claude process running.
+---@return boolean
+function M.is_running()
+  local bufnr = active_bufnr()
+  if not bufnr then
+    return false
+  end
+  local job = terminal_job(bufnr)
+  return job ~= nil and vim.fn.jobwait({ job }, 0)[1] == -1
+end
+
+---The conversation this tab's Claude is having, as far as anything was told:
+---the launch hook's report (`status`), or the id session persistence chose.
+---@param tab integer
+---@return string|nil
+local function tab_session_id(tab)
+  local ok_status, status = pcall(require, "claude_agents.status")
+  local entry = ok_status and status.get and status.get(tab)
+  if entry and type(entry.session_id) == "string" and entry.session_id ~= "" then
+    return entry.session_id
+  end
+  local ok_ss, session_state = pcall(require, "claude_agents.session_state")
+  local record = ok_ss and session_state.get(tab)
+  return record and record.session_id or nil
+end
+
+---Start this tab's Claude under a launch profile, or switch the running one to it.
+---
+---Not running: started under the profile. Running under it already: shown.
+---Running under another: restarted with its conversation carried on — after a
+---question when it is busy or waiting on you, since that cuts a turn off.
+---@param name string Profile name (or menu key).
+function M.launch_profile(name)
+  local profiles = require("claude_agents.profiles")
+  local profile = profiles.get(name)
+  if not profile then
+    vim.notify("ClaudeCode: no launch profile called " .. tostring(name), vim.log.levels.ERROR)
+    return
+  end
+  -- The agents view's tab has no Claude of its own: there the command is about
+  -- the selected agent, like every command typed from an agent's terminal.
+  local ok_view, agents_view = pcall(require, "claude_agents.agents_view")
+  if ok_view and agents_view.is_view_tab() then
+    agents_view.resume_selected_as(profile.name)
+    return
+  end
+  if profiles.refuse_if_missing(profile) then
+    return
+  end
+  local tab = vim.api.nvim_get_current_tabpage()
+  if not M.is_running() then
+    M.open({}, nil, { profile = profile.name })
+    return
+  end
+  if profiles.of_tab(tab) == profile.name then
+    M.open({}, nil)
+    return
+  end
+  local provider_name = defaults.provider
+  if provider_name == "external" or provider_name == "none" then
+    vim.notify("ClaudeCode: a Claude in an external terminal cannot be switched; close it first", vim.log.levels.WARN)
+    return
+  end
+  local session_id = tab_session_id(tab)
+  if not session_id then
+    vim.notify(
+      "ClaudeCode: cannot tell which conversation this tab's Claude is having, so it cannot be carried over "
+        .. "(it is reported by status tracking). Close it and start it again under "
+        .. profile.name,
+      vim.log.levels.WARN
+    )
+    return
+  end
+
+  local function go()
+    M.restart(profile.name, session_id)
+  end
+  local ok_status, status = pcall(require, "claude_agents.status")
+  local entry = ok_status and status.get and status.get(tab)
+  local state = entry and entry.state
+  if state == "busy" or state == "waiting" then
+    require("claude_agents.agents.confirm").ask({
+      title = "Switch account",
+      message = {
+        "This Claude is " .. (state == "busy" and "working" or "waiting on you") .. ".",
+        "Restart it under " .. profile.name .. "? The conversation carries on.",
+      },
+      confirm = "restart",
+    }, function(yes)
+      if yes then
+        go()
+      end
+    end)
+    return
+  end
+  go()
+end
+
+---Pick a launch profile for this tab's Claude from the profile menu.
+function M.choose_profile()
+  local ok_view, agents_view = pcall(require, "claude_agents.agents_view")
+  if ok_view and agents_view.is_view_tab() then
+    agents_view.resume_as_menu()
+    return
+  end
+  local profiles = require("claude_agents.profiles")
+  local running = M.is_running()
+  local current = running and profiles.of_tab() or profiles.default_name()
+  local notes = {}
+  if running and current then
+    notes[current] = "running"
+  end
+  require("claude_agents.profile_menu").open({
+    title = running and "Switch this Claude to" or "Start Claude as",
+    current = current,
+    notes = notes,
+    on_pick = M.launch_profile,
+  })
+end
+
+---Restart this tab's Claude under another launch profile, carrying its
+---conversation on with `--resume`.
+---
+---Needs the conversation id, which the CLI reports through the launch hook
+---(`status`, on by default) or session persistence chose itself.
+---@param profile_name string
+---@param session_id string
+---@param on_done fun(ok: boolean, err: string|nil)|nil
+function M.restart(profile_name, session_id, on_done)
+  on_done = on_done or function() end
+  local tab = vim.api.nvim_get_current_tabpage()
+  local bufnr = active_bufnr()
+  if not bufnr then
+    M.open({}, "--resume " .. session_id, { profile = profile_name })
+    on_done(true)
+    return
+  end
+  restarting[tab] = true
+  M._stop_and_wait(bufnr, function()
+    -- The dead terminal goes, so the provider forgets it and opens a new one
+    -- rather than showing the old buffer's "[Process exited]".
+    if vim.api.nvim_buf_is_valid(bufnr) then
+      pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+    end
+    if vim.api.nvim_tabpage_is_valid(tab) then
+      pcall(vim.api.nvim_set_current_tabpage, tab)
+      M.open({}, "--resume " .. session_id, { profile = profile_name })
+    end
+    restarting[tab] = nil
+    on_done(true)
+  end)
 end
 
 ---Toggle open terminal without focus if not already visible, otherwise do nothing.
@@ -720,18 +1012,20 @@ end
 ---the providers hold exactly one terminal per tabpage, and agents mode runs
 ---several in one tab.
 ---@param cmd_args string? Extra arguments (e.g. "--resume <id>").
----@param opts { overrides: table?, cwd: string?, instance: table? }|nil
+---@param opts { overrides: table?, cwd: string?, instance: table?, profile: string|table|nil }|nil
 ---@return string cmd_string
 ---@return table env_table
 ---@return table effective_config The resolved terminal config, including the spawn cwd.
+---@return string|nil profile The launch profile it runs under.
 function M.build_launch(cmd_args, opts)
   opts = opts or {}
   local effective_config = build_config(opts.overrides)
   if type(opts.cwd) == "string" and opts.cwd ~= "" then
     effective_config.cwd = vim.fn.expand(opts.cwd)
   end
-  local cmd_string, env_table = get_claude_command_and_env(cmd_args, effective_config, opts.instance)
-  return cmd_string, env_table, effective_config
+  local cmd_string, env_table, profile =
+    get_claude_command_and_env(cmd_args, effective_config, opts.instance, { profile = opts.profile })
+  return cmd_string, env_table, effective_config, profile
 end
 
 ---Gets the buffer number of the currently active Claude Code terminal.

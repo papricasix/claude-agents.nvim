@@ -9,6 +9,7 @@ Everything the [README](../README.md) leaves out except the agents view, which h
 :ClaudeCodeFocus                " jump to the terminal, or hide it when you are in it
 :ClaudeCodeOpen [args] / :ClaudeCodeClose
 :ClaudeCodeSelectModel          " pick a model, then open Claude with it
+:ClaudeCodeProfile [name]       " start this tab's Claude on your subscription or an API key, or switch it
 :'<,'>ClaudeCodeSend            " send the selection to Claude
 :ClaudeCodeAdd {file} [from] [to]   " add a file, or some of its lines; % is the current buffer
 :ClaudeCodeTreeAdd              " add the file(s) under the cursor in nvim-tree, neo-tree, oil, mini.files or netrw
@@ -38,6 +39,34 @@ opts = {
 ```
 
 For a fixed directory, `terminal.cwd = "~/src/app"`; to compute one, `terminal.cwd_provider = function(ctx) ... end`, handed `{ file, file_dir, cwd }`.
+
+## Subscription or API key
+
+Each Claude can run on your Claude subscription or on an API key, chosen per launch by a launch profile. Plain launches (`:ClaudeCode`, `a` in the agents view) are left as they are: Claude Code decides, which means your subscription unless an API key is in your environment.
+
+`:ClaudeCodeProfile` opens a menu of profiles for this tab's Claude (`:ClaudeCodeProfile API key` picks one directly). It starts the Claude under that profile, or switches a running one by restarting it with its conversation carried on, asking first when it is busy. In the agents view, `ga` starts a new agent under a profile and `gi` resumes or switches a session. A conversation goes back to the profile it last ran under whenever it is resumed. The plugin binds no key for it; `{ "<leader>ap", "<cmd>ClaudeCodeProfile<cr>" }` is one.
+
+Two profiles exist out of the box, `subscription` and `API key`. The key lives in your OS keychain, not in your config or Neovim's environment, and the plugin never reads it: Claude Code fetches it itself through a helper the plugin hands it, so the commands Claude runs cannot read it either. Store it once, in a terminal; each tool asks for it with hidden input:
+
+- macOS: `security add-generic-password -U -s claudecode.nvim -a default -w`
+- Linux: `secret-tool store --label='claudecode.nvim API key (default)' service claudecode.nvim account default`
+- Windows: `cmdkey /generic:claudecode.nvim/default /user:claudecode.nvim /pass`
+
+`:checkhealth claude_agents` says whether it is there. Create the key in a Console workspace with a monthly spend limit, so a leaked key costs at most that. A key that belongs to the whole organisation rather than one workspace needs `workspace = "wrkspc_…"` on its profile.
+
+```lua
+profiles = {
+  default = nil, -- what plain launches use: nil leaves them alone, or a profile name
+  list = {
+    { name = "subscription", key = "s", auth = "subscription" },
+    { name = "API key", key = "a", auth = "api", keychain = "default" },
+    { name = "API · Opus", key = "o", auth = "api", model = "opus",
+      api_key_cmd = "op read op://Private/Anthropic/credential" },
+  },
+}
+```
+
+`keychain` names the entry (the `default` in the commands above). `api_key_cmd` is any command that prints the key. A profile can also carry `args` and `env`. Sessions run on an API key are marked `$` in the agents view, and `require("claude_agents.profiles").of_tab()` names the current tab's profile for a tabline. While a Claude runs on an API key, Claude Code switches off your claude.ai connectors.
 
 ## Diffs
 
