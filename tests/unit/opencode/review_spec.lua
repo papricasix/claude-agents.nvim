@@ -63,6 +63,7 @@ describe("opencode.review", function()
     expect(opened[1].params.old_file_path).to_be("/proj/a.txt")
     expect(opened[1].params.new_file_contents).to_be("goodbye\n")
     assert_contains(opened[1].params.tab_name, "[OpenCode]")
+    expect(opened[1].params.agent).to_be("OpenCode")
   end)
 
   it("lets the edit through when it is accepted as proposed", function()
@@ -152,11 +153,9 @@ describe("diff answer hint", function()
   it("names who wants the change, the file, and the two answers", function()
     package.loaded["claude_agents.diff"] = nil
     local diff = require("claude_agents.diff")
-    expect(diff._answer_hint("✻ [OpenCode] a.txt (abc123) ⧉", "/p/a.txt", false)).to_be(
+    expect(diff._answer_hint("OpenCode", "/p/a.txt", false)).to_be(
       "OpenCode wants to change a.txt  ·  :w accept  ·  :q reject"
     )
-    expect(diff._answer_hint("✻ [Claude Code] x.py ⧉", "/p/x.py", true)).to_be(
-      "Claude wants to create x.py  ·  :w accept  ·  :q reject"
-    )
+    expect(diff._answer_hint(nil, "/p/x.py", true)).to_be("Claude wants to create x.py  ·  :w accept  ·  :q reject")
   end)
 end)

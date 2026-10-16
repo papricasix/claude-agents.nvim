@@ -161,43 +161,48 @@ function M.dechunker()
   local remaining = 0
   return function(data)
     buffer = buffer .. data
+    -- Walked by position and trimmed once per feed: copying the rest of the
+    -- buffer after every chunk is quadratic in a burst.
+    local pos = 1
     local out = {}
     while phase ~= "done" do
       if phase == "size" then
-        local line_end = buffer:find("\r\n", 1, true)
+        local line_end = buffer:find("\r\n", pos, true)
         if not line_end then
           break
         end
-        local hex = buffer:sub(1, line_end - 1):match("^%s*(%x+)")
+        local hex = buffer:sub(pos, line_end - 1):match("^%s*(%x+)")
         local size = hex and tonumber(hex, 16)
         if not size then
           return table.concat(out), false, "bad chunk size"
         end
-        buffer = buffer:sub(line_end + 2)
+        pos = line_end + 2
         if size == 0 then
           phase = "done"
         else
           phase, remaining = "data", size
         end
       elseif phase == "data" then
-        if buffer == "" then
+        local available = #buffer - pos + 1
+        if available <= 0 then
           break
         end
-        local take = math.min(remaining, #buffer)
-        out[#out + 1] = buffer:sub(1, take)
-        buffer = buffer:sub(take + 1)
+        local take = math.min(remaining, available)
+        out[#out + 1] = buffer:sub(pos, pos + take - 1)
+        pos = pos + take
         remaining = remaining - take
         if remaining == 0 then
           phase = "crlf"
         end
       else
-        if #buffer < 2 then
+        if #buffer - pos + 1 < 2 then
           break
         end
-        buffer = buffer:sub(3)
+        pos = pos + 2
         phase = "size"
       end
     end
+    buffer = buffer:sub(pos)
     return table.concat(out), phase == "done", nil
   end
 end
@@ -215,14 +220,18 @@ function M.sse_parser(on_event)
     data_lines, event_name, event_id = {}, nil, nil
   end
   return function(data)
+    -- What is left from the last feed holds no newline: the search starts at
+    -- the new bytes, and lines are walked by position, the rest kept once.
+    local from = #buffer + 1
     buffer = buffer .. data
+    local pos = 1
     while true do
-      local line_end = buffer:find("\n", 1, true)
+      local line_end = buffer:find("\n", math.max(pos, from), true)
       if not line_end then
         break
       end
-      local line = buffer:sub(1, line_end - 1):gsub("\r$", "")
-      buffer = buffer:sub(line_end + 1)
+      local line = buffer:sub(pos, line_end - 1):gsub("\r$", "")
+      pos = line_end + 1
       if line == "" then
         dispatch()
       elseif line:sub(1, 1) ~= ":" then
@@ -237,6 +246,7 @@ function M.sse_parser(on_event)
         end
       end
     end
+    buffer = buffer:sub(pos)
   end
 end
 
@@ -348,6 +358,40 @@ end
 ---@field body string
 ---@field json any The decoded body, when it is JSON.
 
+---Stop reading from a connection and close it, unless it is closing already.
+---@param tcp uv_tcp_t|nil
+local function close_tcp(tcp)
+  if tcp then
+    pcall(tcp.read_stop, tcp)
+    if not tcp:is_closing() then
+      pcall(tcp.close, tcp)
+    end
+  end
+end
+
+---A response head collected across reads: `feed(data)` answers nothing until
+---the head is complete, then `true`, its status and headers, and the body
+---bytes that came with it.
+---@return fun(data: string): boolean|nil, integer|nil, table|nil, string|nil
+local function head_reader()
+  local raw = ""
+  return function(data)
+    raw = raw .. data
+    local head_end = raw:find("\r\n\r\n", 1, true)
+    if not head_end then
+      return nil
+    end
+    local status, headers = M.parse_head(raw:sub(1, head_end - 1))
+    return true, status, headers, raw:sub(head_end + 4)
+  end
+end
+
+---@param headers table<string, string>
+---@return boolean
+local function is_chunked(headers)
+  return (headers["transfer-encoding"] or ""):lower():find("chunked", 1, true) ~= nil
+end
+
 ---Send one request; `cb(err, response)` on the main loop.
 ---@param opts ClaudeCodeHttpOptions
 ---@param cb fun(err: string|nil, res: ClaudeCodeHttpResponse|nil)
@@ -371,12 +415,7 @@ function M.request(opts, cb)
       pcall(timer.stop, timer)
       pcall(timer.close, timer)
     end
-    if tcp then
-      pcall(tcp.read_stop, tcp)
-      if not tcp:is_closing() then
-        pcall(tcp.close, tcp)
-      end
-    end
+    close_tcp(tcp)
     vim.schedule(function()
       cb(err, res)
     end)
@@ -392,7 +431,7 @@ function M.request(opts, cb)
     end
   end
 
-  local raw, head_done, status, headers = "", false, nil, nil
+  local read_head, head_done, status, headers = head_reader(), false, nil, nil
   local body_parts, body_len, length, chunked = {}, 0, nil, nil
   local function complete()
     local body = table.concat(body_parts)
@@ -419,16 +458,11 @@ function M.request(opts, cb)
         return
       end
       if not head_done then
-        raw = raw .. data
-        local head_end = raw:find("\r\n\r\n", 1, true)
-        if not head_end then
+        head_done, status, headers, data = read_head(data)
+        if not head_done then
           return
         end
-        status, headers = M.parse_head(raw:sub(1, head_end - 1))
-        head_done = true
-        data = raw:sub(head_end + 4)
-        raw = nil
-        if (headers["transfer-encoding"] or ""):lower():find("chunked", 1, true) then
+        if is_chunked(headers) then
           chunked = M.dechunker()
         else
           length = tonumber(headers["content-length"])
@@ -457,29 +491,6 @@ function M.request(opts, cb)
   end)
 end
 
----Send one request and wait for its answer, for the few callers that must have
----it in the tick they ask (a launch building its command). Never from a fast
----context.
----@param opts ClaudeCodeHttpOptions
----@param timeout_ms integer|nil Default 3000.
----@return string|nil err
----@return ClaudeCodeHttpResponse|nil res
-function M.request_sync(opts, timeout_ms)
-  timeout_ms = timeout_ms or 3000
-  local finished, result_err, result = false, nil, nil
-  opts = vim.tbl_extend("force", opts, { timeout_ms = timeout_ms })
-  M.request(opts, function(err, res)
-    finished, result_err, result = true, err, res
-  end)
-  local ok = vim.wait(timeout_ms + 200, function()
-    return finished
-  end, 5)
-  if not ok and not finished then
-    return "timed out after " .. timeout_ms .. " ms", nil
-  end
-  return result_err, result
-end
-
 ---@class ClaudeCodeHttpStream
 ---@field close fun()
 
@@ -496,12 +507,7 @@ function M.stream(opts, handlers)
       return
     end
     closed = true
-    if tcp then
-      pcall(tcp.read_stop, tcp)
-      if not tcp:is_closing() then
-        pcall(tcp.close, tcp)
-      end
-    end
+    close_tcp(tcp)
     if handlers.on_close then
       vim.schedule(function()
         handlers.on_close(err)
@@ -520,7 +526,7 @@ function M.stream(opts, handlers)
     return handle
   end
 
-  local raw, head_done, chunked = "", false, nil
+  local read_head, head_done, chunked = head_reader(), false, nil
   local parse = M.sse_parser(function(event)
     vim.schedule(function()
       if not closed then
@@ -545,15 +551,11 @@ function M.stream(opts, handlers)
         return
       end
       if not head_done then
-        raw = raw .. data
-        local head_end = raw:find("\r\n\r\n", 1, true)
-        if not head_end then
+        local status, headers
+        head_done, status, headers, data = read_head(data)
+        if not head_done then
           return
         end
-        local status, headers = M.parse_head(raw:sub(1, head_end - 1))
-        head_done = true
-        data = raw:sub(head_end + 4)
-        raw = nil
         if status ~= 200 then
           close("HTTP " .. tostring(status))
           return
@@ -563,7 +565,7 @@ function M.stream(opts, handlers)
             handlers.on_open(status, headers)
           end)
         end
-        if (headers["transfer-encoding"] or ""):lower():find("chunked", 1, true) then
+        if is_chunked(headers) then
           chunked = M.dechunker()
         end
       end

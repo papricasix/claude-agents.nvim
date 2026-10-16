@@ -469,7 +469,7 @@ function M.session_of_argv(argv)
     elseif flag == "--session" or flag == "-s" then
       -- OpenCode names its conversation with `--session <ses_…>`.
       local value = inline or argv[i + 1]
-      if type(value) == "string" and value:match("^ses_[%w]+$") then
+      if require("claude_agents.opencode").is_session_id(value) then
         return value
       end
     end

@@ -29,15 +29,7 @@ M._diff = function()
   return require("claude_agents.diff")
 end
 M._io = {
-  read = function(path)
-    local f = io.open(path, "rb")
-    if not f then
-      return nil
-    end
-    local data = f:read("*a")
-    f:close()
-    return data
-  end,
+  read = require("claude_agents.store_io").read,
   write = function(path, data)
     local dir = vim.fn.fnamemodify(path, ":h")
     if dir ~= "" and vim.fn.isdirectory(dir) == 0 then
@@ -63,7 +55,6 @@ M.APPLIED_OWN = "The user accepted this edit in Neovim with changes of their own
 ---@field root string
 ---@field files { path: string, tab_name: string, proposed: string, result: table|nil }[]
 ---@field answered boolean
----@field replied_here boolean
 
 --- [request id] = ClaudeCodeOpencodeReview
 local reviews = {}
@@ -96,7 +87,6 @@ local function reply(review, decision, message)
     return
   end
   review.answered = true
-  review.replied_here = true
   M._api.reply_permission(review.session_id, review.request_id, decision, message, function(err)
     if err then
       logger.error("opencode", "could not answer OpenCode's edit request:", err)
@@ -187,7 +177,6 @@ function M.asked(data, entry)
     root = entry.root,
     files = {},
     answered = false,
-    replied_here = false,
   }
   for _, item in ipairs(files) do
     local path = tools.absolute(item.file, entry.cwd)
@@ -195,8 +184,7 @@ function M.asked(data, entry)
       return
     end
     local current = M._io.read(path) or ""
-    local patched, order = tools.parse_patch(item.patch)
-    local hunks = patched[order[1]] or {}
+    local hunks = tools.first_hunks(item.patch) or {}
     local proposed, err = tools.apply_hunks(current, hunks)
     if not proposed then
       logger.warn("opencode", "cannot show OpenCode's edit of " .. path .. " as a diff (" .. tostring(err) .. ")")
@@ -225,6 +213,7 @@ function M.asked(data, entry)
       new_file_path = file.path,
       new_file_contents = file.proposed,
       tab_name = file.tab_name,
+      agent = "OpenCode",
     }, function(result)
       on_result(review, file, result)
     end)
@@ -248,9 +237,6 @@ function M.replied(data)
     return
   end
   reviews[data.requestID] = nil
-  if review.replied_here then
-    return
-  end
   review.answered = true
   close_all(review, "dismiss")
 end

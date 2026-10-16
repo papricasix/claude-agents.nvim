@@ -29,7 +29,6 @@ M.CONNECTED = "stream.connected"
 local subscribers = {}
 local next_id = 0
 local stream = nil
-local connected = false
 local backoff = 1000
 local MAX_BACKOFF = 15000
 local generation = 0
@@ -82,7 +81,6 @@ open = function()
         if gen ~= generation then
           return
         end
-        connected = true
         backoff = 1000
         emit({ type = M.CONNECTED, data = {} })
       end,
@@ -100,7 +98,6 @@ open = function()
           return
         end
         stream = nil
-        connected = false
         logger.debug("opencode", "event stream closed:", tostring(close_err))
         -- The service may have restarted on another port: read its registration
         -- again rather than knocking on the old one.
@@ -131,12 +128,6 @@ function M.subscribe(fn)
   end
 end
 
----Whether the stream is open now.
----@return boolean
-function M.is_connected()
-  return connected
-end
-
 ---Close the stream; listeners stay registered only if they subscribe again.
 function M.stop()
   generation = generation + 1
@@ -144,7 +135,6 @@ function M.stop()
     pcall(stream.close)
   end
   stream = nil
-  connected = false
   backoff = 1000
 end
 

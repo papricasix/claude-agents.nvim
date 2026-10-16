@@ -92,6 +92,21 @@ M._spawn = function(cmd, opts)
   return vim.fn.termopen(cmd, opts)
 end
 
+---An OpenCode agent's process is gone, or going: its launch is wound down.
+---@param session_id string
+---@param term ClaudeCodeAgentTerminal
+local function end_opencode(session_id, term)
+  if term.backend ~= "opencode" then
+    return
+  end
+  pcall(function()
+    require("claude_agents.opencode.launch").ended(session_id, {
+      instance = term.instance,
+      keep = term.relaunching == true,
+    })
+  end)
+end
+
 ---A directory the CLI can actually be started in, or nil.
 ---
 ---A conversation records the directory it ran in, and that directory can be
@@ -365,7 +380,7 @@ function M.launch(session_id, opts)
   if is_opencode then
     term.backend = "opencode"
     pcall(function()
-      require("claude_agents.opencode.launch").started(target_id, { agent_key = agent_key, bufnr = buf })
+      require("claude_agents.opencode.launch").started(target_id, { agent_key = agent_key })
     end)
   end
 
@@ -485,14 +500,7 @@ function M._on_exit(session_id, job_id, code)
   pcall(function()
     require("claude_agents.agents.float").close_all(session_id)
   end)
-  if term.backend == "opencode" then
-    pcall(function()
-      require("claude_agents.opencode.launch").ended(session_id, {
-        instance = term.instance,
-        keep = term.relaunching == true,
-      })
-    end)
-  end
+  end_opencode(session_id, term)
   -- The server outlives nothing: an agent that ended has no client, and leaving
   -- its port and lock file behind would advertise an editor that cannot answer.
   pcall(function()
@@ -512,13 +520,8 @@ function M.stop(session_id)
   if term.jobid and not term.exited then
     pcall(vim.fn.jobstop, term.jobid)
   end
-  if term.backend == "opencode" and not term.exited then
-    pcall(function()
-      require("claude_agents.opencode.launch").ended(session_id, {
-        instance = term.instance,
-        keep = term.relaunching == true,
-      })
-    end)
+  if not term.exited then
+    end_opencode(session_id, term)
   end
   pcall(function()
     require("claude_agents").stop_agent_instance(session_id)

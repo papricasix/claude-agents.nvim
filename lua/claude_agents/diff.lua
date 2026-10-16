@@ -1259,12 +1259,12 @@ local active_diffs = {}
 
 ---What a review diff says about itself: who wants to change which file, and
 ---the two answers. Shown in the proposal window (`winbar`) or a float's border.
----@param tab_name string The diff's name; OpenCode's carry `[OpenCode]`.
+---@param agent string|nil Who asks (`open_review`'s `agent`); nil for Claude.
 ---@param file_path string|nil
 ---@param is_new_file boolean|nil
 ---@return string
-function M._answer_hint(tab_name, file_path, is_new_file)
-  local who = (type(tab_name) == "string" and tab_name:find("[OpenCode]", 1, true)) and "OpenCode" or "Claude"
+function M._answer_hint(agent, file_path, is_new_file)
+  local who = agent or "Claude"
   local name = type(file_path) == "string" and vim.fn.fnamemodify(file_path, ":t") or "this file"
   return string.format(
     "%s wants to %s %s  ·  :w accept  ·  :q reject",
@@ -2359,7 +2359,7 @@ function M._setup_blocking_diff_unified(params, resolution_callback)
       end)
     end
 
-    local hint = M._answer_hint(tab_name, params.old_file_path, is_new_file)
+    local hint = M._answer_hint(params.agent, params.old_file_path, is_new_file)
     local saved_winbar = show_answer_hint(target_window, hint)
     announce_if_elsewhere(target_window, hint)
 
@@ -2690,7 +2690,7 @@ function M._setup_blocking_diff(params, resolution_callback)
 
     -- The proposal window is the diff's own split, closed with it: no winbar to
     -- restore afterwards.
-    local hint = M._answer_hint(tab_name, params.old_file_path, is_new_file)
+    local hint = M._answer_hint(params.agent, params.old_file_path, is_new_file)
     show_answer_hint(diff_info.new_window, hint)
     announce_if_elsewhere(diff_info.new_window, hint)
 
@@ -2900,7 +2900,7 @@ end
 ---call of ours, so there is no coroutine to suspend. The view, `:w` and `:q`
 ---are exactly `openDiff`'s. Where the diff goes follows the request context the
 ---caller sets, as it does for a message.
----@param params { old_file_path: string, new_file_path: string, new_file_contents: string, tab_name: string }
+---@param params { old_file_path: string, new_file_path: string, new_file_contents: string, tab_name: string, agent: string|nil }
 ---@param on_result fun(result: { saved: boolean, content: string|nil })
 ---@return boolean ok
 ---@return string|nil err
@@ -2923,6 +2923,7 @@ function M.open_review(params, on_result)
     new_file_path = params.new_file_path,
     new_file_contents = params.new_file_contents,
     tab_name = tab_name,
+    agent = params.agent,
   }, function(result)
     local content = type(result) == "table" and result.content or {}
     local verdict = content[1] and content[1].text
@@ -2961,14 +2962,6 @@ function M.dismiss_review(tab_name)
     return true
   end
   return M.close_diff_by_tab_name(tab_name)
-end
-
----Whether a review diff of this name is still waiting for an answer.
----@param tab_name string
----@return boolean
-function M.is_pending(tab_name)
-  local diff_data = active_diffs[tab_name]
-  return diff_data ~= nil and diff_data.status == "pending"
 end
 
 -- Set up global autocmds for shutdown handling

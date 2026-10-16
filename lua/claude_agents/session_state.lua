@@ -221,7 +221,7 @@ end
 local function transcript_exists(session_id)
   -- An OpenCode conversation lives in OpenCode's service, not in a transcript
   -- file: resumable once it holds a prompt.
-  if type(session_id) == "string" and session_id:match("^ses_") then
+  if require("claude_agents.opencode").is_session_id(session_id) then
     local ok_oc, resumable = pcall(function()
       return require("claude_agents.opencode.sessions").resumable(session_id)
     end)
@@ -274,7 +274,7 @@ end
 ---@param id any
 ---@return boolean
 local function is_opencode_id(id)
-  return type(id) == "string" and id:match("^ses_") ~= nil
+  return require("claude_agents.opencode").is_session_id(id)
 end
 
 ---Whether a command line already picks a conversation itself.

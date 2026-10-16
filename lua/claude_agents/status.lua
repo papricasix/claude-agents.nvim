@@ -406,16 +406,6 @@ local function redraw()
   end)
 end
 
----Which CLI a conversation id belongs to, for the icon it is drawn with.
----@param session_id string|nil
----@return "opencode"|nil
-local function backend_of(session_id)
-  if type(session_id) == "string" and session_id:match("^ses_") then
-    return "opencode"
-  end
-  return nil
-end
-
 ---The configured icon for a state: either a glyph or a list of frames.
 ---
 ---An OpenCode conversation reads `opencode_icons` first, whose `busy` defaults
@@ -424,7 +414,7 @@ end
 ---@param session_id string|nil The conversation drawn, when one is known.
 ---@return string|string[]
 local function icon_spec(state, session_id)
-  if backend_of(session_id) == "opencode" then
+  if require("claude_agents.opencode").is_session_id(session_id) then
     local own = (config and config.opencode_icons) or {}
     local spec = own[state]
     if spec == nil and state == "busy" then

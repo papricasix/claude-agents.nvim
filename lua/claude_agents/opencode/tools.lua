@@ -12,12 +12,6 @@
 
 local M = {}
 
----@param s string
----@return string
-local function trim(s)
-  return (s:gsub("^%s+", ""):gsub("%s+$", ""))
-end
-
 --- OpenCode tool -> the Claude Code tool that does the same job.
 M.NAMES = {
   read = "Read",
@@ -123,10 +117,10 @@ function M.parse_patch(patch)
     local plus = line:match("^%+%+%+ (.+)$")
     local index = line:match("^Index: (.+)$")
     if index then
-      current = trim(index)
+      current = vim.trim(index)
       hunk = nil
     elseif plus then
-      local path = trim((plus:gsub("^b/", ""):gsub("\t.*$", "")))
+      local path = vim.trim((plus:gsub("^b/", ""):gsub("\t.*$", "")))
       if path ~= "/dev/null" then
         current = path
       end
@@ -210,23 +204,13 @@ function M.apply_hunks(text, hunks)
   return result, nil
 end
 
----Count added and removed lines in hunks.
----@param hunks table[]|nil
----@return integer added
----@return integer removed
-function M.count(hunks)
-  local added, removed = 0, 0
-  for _, hunk in ipairs(hunks or {}) do
-    for _, line in ipairs(hunk.lines or {}) do
-      local mark = line:sub(1, 1)
-      if mark == "+" then
-        added = added + 1
-      elseif mark == "-" then
-        removed = removed + 1
-      end
-    end
-  end
-  return added, removed
+---The hunks of a patch's first file — the file, for a patch of one; nil when it
+---names none.
+---@param patch string|nil
+---@return table[]|nil
+function M.first_hunks(patch)
+  local files, order = M.parse_patch(patch)
+  return order[1] and files[order[1]] or nil
 end
 
 return M

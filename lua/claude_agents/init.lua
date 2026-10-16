@@ -575,10 +575,7 @@ function M.setup(opts)
         -- An OpenCode tab terminal: its session stops being followed, its
         -- server stops letting a tokenless client in, and a session it never
         -- used is deleted (unless Neovim is going, which is no verdict on it).
-        local oc_session
-        pcall(function()
-          oc_session = vim.b[args.buf].claudecode_opencode_session
-        end)
+        local oc_session = vim.b[args.buf].claudecode_opencode_session
         if oc_session then
           pcall(function()
             local oc_launch = require("claude_agents.opencode.launch")
@@ -990,10 +987,6 @@ M._aliases = M._aliases or {}
 local function command_taken(name)
   if M._aliases[name] then
     return false
-  end
-  local ok, user = pcall(vim.api.nvim_get_commands, {})
-  if ok and type(user) == "table" and user[name] then
-    return true
   end
   local ok_exists, exists = pcall(vim.fn.exists, ":" .. name)
   return ok_exists and exists == 2
@@ -1760,7 +1753,7 @@ end
 function M._open_opencode_with_model(additional_args)
   local cwd = vim.fn.getcwd()
   local api = require("claude_agents.opencode.api")
-  api.call("GET", "/api/model", { query = { ["location[directory]"] = cwd } }, function(err, data)
+  api.models(cwd, function(err, data)
     if err or type(data) ~= "table" then
       logger.error("command", "Could not list OpenCode's models: " .. tostring(err))
       return

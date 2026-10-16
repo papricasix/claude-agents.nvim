@@ -1224,7 +1224,7 @@ local function show_start_prompt(session_id)
     if mark ~= "" then
       marks[#marks + 1] = { row = at - 1, col = 2, end_col = 2 + #mark, hl = "ClaudeCodeProfileMark" }
     end
-  elseif type(session_id) == "string" and session_id:match("^ses_") then
+  elseif require("claude_agents.opencode").is_session_id(session_id) then
     local at = #lines
     local mark = require("claude_agents.opencode").MARK
     table.insert(lines, at, "  " .. mark .. " an OpenCode conversation")
@@ -4377,6 +4377,11 @@ function M.forget()
   state.sizes_locked = false
   state.sizes_at = nil
   model.detach()
+  -- OpenCode's events are followed for the panes; the next read follows them again.
+  local opencode_store = package.loaded["claude_agents.agents.opencode_store"]
+  if opencode_store then
+    opencode_store.stop()
+  end
   if tab then
     pcall(function()
       require("claude_agents.session_state").reclaim_tab(tab)

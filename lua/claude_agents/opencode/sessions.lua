@@ -53,12 +53,6 @@ function M.note_agent(id, agent)
   end
 end
 
----@param id string
----@return string|nil
-function M.agent_of(id)
-  return agents[id]
-end
-
 ---Whether a session was created by this Neovim.
 ---@param id string
 ---@return boolean
@@ -245,7 +239,7 @@ function M.ensure_sync(id, opts, timeout_ms)
   if ready[id] then
     return nil
   end
-  timeout_ms = timeout_ms or (tonumber(opencode().config().service_timeout_ms) or 15000)
+  timeout_ms = timeout_ms or opencode().config().service_timeout_ms
   local done, result = false, nil
   M.ensure(id, opts, function(err)
     done, result = true, err
@@ -267,7 +261,8 @@ function M.resumable(id)
   if used[id] then
     return true
   end
-  local err, data = M._api.call_sync("GET", "/api/session/" .. id .. "/message", { query = { limit = 5 } }, 2000)
+  local err, data =
+    M._api.call_sync("GET", "/api/session/" .. id .. "/message", { query = { limit = 5 }, no_start = true }, 2000)
   if err then
     if tostring(err):match("^HTTP 404") then
       return false

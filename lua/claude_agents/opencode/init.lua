@@ -38,13 +38,6 @@ function M.setup(full_config)
   full = type(full_config) == "table" and full_config or nil
   local opts = full and full.opencode or nil
   config = vim.tbl_deep_extend("force", vim.deepcopy(M.DEFAULTS), type(opts) == "table" and opts or {})
-  -- Kept as given: `false` means "none", and a table is used as it is rather than
-  -- merged with a default.
-  if type(opts) == "table" then
-    config.agent_keybinds = opts.agent_keybinds
-  else
-    config.agent_keybinds = nil
-  end
   default_backend = (full and full.backend == "opencode") and "opencode" or "claude"
 end
 

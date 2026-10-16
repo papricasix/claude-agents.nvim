@@ -122,7 +122,7 @@ function M.arm(session_id)
   end
   -- OpenCode reports an interrupt as an event of its own (`opencode.bridge`),
   -- and has no transcript here to read one from.
-  if session_id:match("^ses_") then
+  if require("claude_agents.opencode").is_session_id(session_id) then
     return
   end
   local path = M._resolve(session_id)

@@ -125,7 +125,7 @@ function M.build(cmd_args, ctx)
   if not decides then
     if ctx.for_tab then
       local ok_ss, session_state = pcall(require, "claude_agents.session_state")
-      if ok_ss and session_state.is_enabled() and not session_state.is_disowned(tab) then
+      if ok_ss then
         session_id = session_state.opencode_session(tab, ctx.cwd)
       end
       session_id = session_id or tab_ids[tab] or require("claude_agents.opencode.ids").new_session_id()
@@ -199,7 +199,6 @@ function M.build(cmd_args, ctx)
       )
     end
     pending[session_id] = {
-      session_id = session_id,
       tab = tab,
       for_tab = ctx.for_tab,
       instance = ctx.instance,
@@ -218,7 +217,7 @@ end
 ---A built launch's process started: follow its session and let its editor
 ---connection in.
 ---@param session_id string|nil
----@param opts { agent_key: string|nil, bufnr: integer|nil }|nil
+---@param opts { agent_key: string|nil }|nil
 function M.started(session_id, opts)
   local launch = session_id and pending[session_id]
   if not launch then
@@ -256,7 +255,7 @@ function M.tab_started(tab, bufnr)
         vim.b[bufnr].claudecode_opencode_session = session_id
       end)
     end
-    M.started(session_id, { bufnr = bufnr })
+    M.started(session_id)
   end
 end
 

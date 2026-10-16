@@ -270,7 +270,6 @@ local OPENCODE_PREFIX = "opencode://"
 local function is_opencode(path)
   return type(path) == "string" and path:sub(1, #OPENCODE_PREFIX) == OPENCODE_PREFIX
 end
-M._is_opencode = is_opencode
 
 local function opencode_store()
   return require("claude_agents.agents.opencode_store")
@@ -629,7 +628,7 @@ end
 ---@param session_id string
 ---@return string path
 function M.session_path(cwd, session_id)
-  if type(session_id) == "string" and session_id:match("^ses_") then
+  if require("claude_agents.opencode").is_session_id(session_id) then
     return opencode_store().path(session_id)
   end
   local dir = M.project_dir(cwd)
@@ -755,7 +754,7 @@ function M.locate(session_id, hint)
   if type(session_id) ~= "string" or session_id == "" then
     return nil
   end
-  if session_id:match("^ses_") then
+  if require("claude_agents.opencode").is_session_id(session_id) then
     return opencode_store().path(session_id)
   end
   if type(hint) == "string" and M._io.stat(hint) then
@@ -2463,23 +2462,6 @@ local function fold_summary(path, cb)
   fold_chunks(sum, st, job, finish)
 end
 
----Fold a transcript up to date, calling back with its summary.
----
----An OpenCode conversation's transcript is first brought up to date with the
----service (`opencode_store.refresh`), then folded like any other.
----@param path string
----@param cb fun(summary: ClaudeCodeAgentsSummary|nil)
-function M.summary(path, cb)
-  if is_opencode(path) then
-    local store = opencode_store()
-    store.refresh(store.id_of(path), function()
-      fold_summary(path, cb)
-    end)
-    return
-  end
-  fold_summary(path, cb)
-end
-
 ---Run `fn` once an OpenCode transcript is up to date with the service; at once
 ---for any other.
 ---@param path string
@@ -2493,6 +2475,18 @@ local function when_current(path, fn)
     return
   end
   fn()
+end
+
+---Fold a transcript up to date, calling back with its summary.
+---
+---An OpenCode conversation's transcript is first brought up to date with the
+---service (`opencode_store.refresh`), then folded like any other.
+---@param path string
+---@param cb fun(summary: ClaudeCodeAgentsSummary|nil)
+function M.summary(path, cb)
+  when_current(path, function()
+    fold_summary(path, cb)
+  end)
 end
 
 ---Whether a transcript has moved on since it was last folded: one stat, no read.

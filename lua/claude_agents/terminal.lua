@@ -505,10 +505,7 @@ end
 ---terminal would quietly behave differently from every other Claude.
 function M.send_newline()
   -- OpenCode's prompt takes Ctrl+J as a newline (and reads a backslash as text).
-  local ok_backend, backend = pcall(function()
-    return vim.b.claudecode_backend
-  end)
-  if ok_backend and backend == "opencode" then
+  if vim.b.claudecode_backend == "opencode" then
     vim.api.nvim_feedkeys("\n", "t", true)
     return
   end

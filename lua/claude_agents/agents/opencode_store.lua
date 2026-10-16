@@ -156,7 +156,6 @@ end
 ---@field gen integer The transcript's inode: bumped when it is written afresh.
 ---@field emitted table<string, boolean>
 ---@field complete table<string, boolean> Message ids nothing more will be written for.
----@field seen table<string, boolean> Every message id written about.
 ---@field title string|nil The title last written.
 ---@field parent string|nil The previous user message's id (for `parentUuid`).
 ---@field dirty boolean The service has moved on since the last fetch.
@@ -168,6 +167,8 @@ end
 
 ---@type table<string, ClaudeCodeOpencodeStore>
 local stores = {}
+--- A project's session list, by the directory asked for.
+local lists = {}
 
 local function new_store(id)
   return {
@@ -177,7 +178,6 @@ local function new_store(id)
     gen = 1,
     emitted = {},
     complete = {},
-    seen = {},
     dirty = true,
     fetched = false,
     updated = 0,
@@ -241,8 +241,7 @@ local function result_hunks(metadata)
   if not patch then
     return nil
   end
-  local files, order = tools.parse_patch(patch)
-  return order[1] and files[order[1]] or {}
+  return tools.first_hunks(patch) or {}
 end
 
 ---`toolUseResult` for a finished OpenCode call, in the shape Claude records for
@@ -313,6 +312,9 @@ local function write_tool(store, message, part)
   if state.status ~= "running" and state.status ~= "completed" and state.status ~= "error" then
     return
   end
+  if store.emitted[part.id .. ":result"] then
+    return
+  end
   local cwd = cwd_of_store(store)
   local raw_input = type(state.input) == "table" and state.input or {}
   local time = type(part.time) == "table" and part.time or {}
@@ -329,8 +331,7 @@ local function write_tool(store, message, part)
       -- V2: a patch per file.
       for _, item in ipairs(metadata.files) do
         if type(item) == "table" and type(item.file) == "string" then
-          local parsed, parsed_order = tools.parse_patch(type(item.patch) == "string" and item.patch or "")
-          files[item.file] = parsed_order[1] and parsed[parsed_order[1]] or {}
+          files[item.file] = tools.first_hunks(item.patch) or {}
           order[#order + 1] = item.file
         end
       end
@@ -444,7 +445,6 @@ function M._write_message(store, message)
     return
   end
   local mid = message.id
-  store.seen[mid] = true
   if store.complete[mid] then
     return
   end
@@ -545,12 +545,10 @@ end
 ---@param store ClaudeCodeOpencodeStore
 local function restart(store)
   local gen = store.gen + 1
-  local info, waiters = store.info, store.waiters
-  local fresh = new_store(store.id)
-  for key, value in pairs(fresh) do
+  for key, value in pairs(new_store(store.id)) do
     store[key] = value
   end
-  store.gen, store.info, store.waiters = gen, info, waiters
+  store.gen = gen
   store.content = nil
 end
 
@@ -558,50 +556,27 @@ end
 -- Fetching
 --------------------------------------------------------------------------------
 
----Every message of a session, oldest first.
-local function fetch_all(id, cb)
-  local all = {}
+---A session's messages in `order`, page after page until the last, or until a
+---page holds one `stop` says is far enough.
+---@param id string
+---@param order "asc"|"desc"
+---@param limit integer
+---@param stop (fun(message: table): boolean)|nil
+---@param cb fun(err: string|nil, messages: table[]|nil)
+local function fetch_pages(id, order, limit, stop, cb)
+  local got = {}
   local function page(cursor)
-    local query = cursor and { cursor = cursor, limit = FULL_PAGE } or { order = "asc", limit = FULL_PAGE }
+    local query = cursor and { cursor = cursor, limit = limit } or { order = order, limit = limit }
     M._api()
       .call("GET", "/api/session/" .. id .. "/message", { query = query, no_start = true }, function(err, data, res)
         if err then
           cb(err, nil)
           return
         end
-        for _, message in ipairs(type(data) == "table" and data or {}) do
-          all[#all + 1] = message
-        end
-        local cursor_info = res and type(res.json) == "table" and res.json.cursor or nil
-        local next_cursor = type(cursor_info) == "table" and cursor_info.next or nil
-        if type(next_cursor) == "string" and next_cursor ~= "" and type(data) == "table" and #data > 0 then
-          page(next_cursor)
-        else
-          cb(nil, all)
-        end
-      end)
-  end
-  page(nil)
-end
-
----The newest messages, back to (and including) the first one already complete
----here; oldest first.
-local function fetch_tail(store, cb)
-  local newest = {}
-  local function page(cursor)
-    local query = cursor and { cursor = cursor, limit = TAIL_PAGE } or { order = "desc", limit = TAIL_PAGE }
-    M._api()
-      .call("GET", "/api/session/" .. store.id .. "/message", { query = query, no_start = true }, function(err, data, res)
-        if err then
-          cb(err, nil)
-          return
-        end
         local reached = false
         for _, message in ipairs(type(data) == "table" and data or {}) do
-          newest[#newest + 1] = message
-          if type(message) == "table" and store.complete[message.id] then
-            reached = true
-          end
+          got[#got + 1] = message
+          reached = reached or (stop ~= nil and type(message) == "table" and stop(message))
         end
         local cursor_info = res and type(res.json) == "table" and res.json.cursor or nil
         local next_cursor = type(cursor_info) == "table" and cursor_info.next or nil
@@ -613,16 +588,35 @@ local function fetch_tail(store, cb)
           and #data > 0
         then
           page(next_cursor)
-          return
+        else
+          cb(nil, got)
         end
-        local ordered = {}
-        for i = #newest, 1, -1 do
-          ordered[#ordered + 1] = newest[i]
-        end
-        cb(nil, ordered)
       end)
   end
   page(nil)
+end
+
+---Every message of a session, oldest first.
+local function fetch_all(store, cb)
+  fetch_pages(store.id, "asc", FULL_PAGE, nil, cb)
+end
+
+---The newest messages, back to (and including) the first one already complete
+---here; oldest first.
+local function fetch_tail(store, cb)
+  fetch_pages(store.id, "desc", TAIL_PAGE, function(message)
+    return store.complete[message.id] == true
+  end, function(err, newest)
+    if err then
+      cb(err, nil)
+      return
+    end
+    local ordered = {}
+    for i = #newest, 1, -1 do
+      ordered[#ordered + 1] = newest[i]
+    end
+    cb(nil, ordered)
+  end)
 end
 
 local function settle(store, err)
@@ -695,11 +689,7 @@ function M.refresh(id, cb)
   store.waiters = { cb }
   store.dirty = false
 
-  M._api().call("GET", "/api/session/" .. id, { no_start = true }, function(info_err, info)
-    if info_err or type(info) ~= "table" then
-      settle(store, info_err or "no such session")
-      return
-    end
+  local function fetch_messages(info)
     -- A history taken back (OpenCode's revert) is not an append: the transcript
     -- is written afresh, under a new inode the fold reads as another file.
     local reverted = store.fetched and vim.inspect(info.revert) ~= vim.inspect(store.revert)
@@ -710,13 +700,8 @@ function M.refresh(id, cb)
     store.info = info
     store.revert = info.revert
     store.updated = info.time and info.time.updated or store.updated
-    local full = not store.fetched
-    local fetch = full and function(done)
-      fetch_all(id, done)
-    end or function(done)
-      fetch_tail(store, done)
-    end
-    fetch(function(err, messages)
+    local fetch = store.fetched and fetch_tail or fetch_all
+    fetch(store, function(err, messages)
       if err then
         store.dirty = true
         settle(store, err)
@@ -735,6 +720,20 @@ function M.refresh(id, cb)
         settle(store, nil)
       end)
     end)
+  end
+
+  -- A first read of a listed session: the list already said what it is (the
+  -- revert check only matters once something has been written).
+  if not store.fetched and store.info then
+    fetch_messages(store.info)
+    return
+  end
+  M._api().call("GET", "/api/session/" .. id, { no_start = true }, function(info_err, info)
+    if info_err or type(info) ~= "table" then
+      settle(store, info_err or "no such session")
+      return
+    end
+    fetch_messages(info)
   end)
 end
 
@@ -872,7 +871,7 @@ function M.delete(path)
     return false, "could not delete the OpenCode session: " .. tostring(err)
   end
   stores[id] = nil
-  for _, list in pairs(M._lists()) do
+  for _, list in pairs(lists) do
     list.dirty = true
   end
   return true, nil
@@ -883,19 +882,10 @@ end
 --------------------------------------------------------------------------------
 
 ---@type table<string, { rows: table[], at: integer, fetching: boolean, dirty: boolean, project: string|nil }>
-local lists = {}
-
-function M._lists()
-  return lists
-end
-
 local function row_of(info)
   local updated = info.time and info.time.updated or 0
-  local store = stores[info.id]
-  if store and not store.fetched then
-    store.info = info
-  elseif not store then
-    store = store_for(info.id)
+  local store = store_for(info.id)
+  if not store.fetched then
     store.info = info
   end
   -- A session that moved since it was written out is read again when next asked.
@@ -1134,6 +1124,14 @@ function M.listen()
   end
   local ok, events = pcall(M._events)
   if ok then
+    -- What happened while nothing listened is not known: all of it is read
+    -- again. (A stream already open for the bridge announces nothing new.)
+    for _, store in pairs(stores) do
+      store.dirty = true
+    end
+    for _, list in pairs(lists) do
+      list.dirty = true
+    end
     unsubscribe = events.subscribe(M.handle)
   end
 end

@@ -106,7 +106,7 @@ local function hook_event(entry, session_id, fields)
   local event = {
     session_id = entry.root,
     cwd = entry.cwd,
-    transcript_path = "opencode://" .. entry.root .. ".jsonl",
+    transcript_path = require("claude_agents.agents.opencode_store").path(entry.root),
     -- Says the launch reports every state change (see `agents_view.note`).
     opencode = true,
   }
@@ -170,25 +170,23 @@ function M.handle(event)
     return
   end
 
-  if etype == "form.created" or etype == "form.replied" or etype == "form.cancelled" then
+  if etype == "form.created" then
     local form = type(data.form) == "table" and data.form or data
     local entry = tracked[form.sessionID]
     if not entry then
       return
     end
-    if etype == "form.created" then
-      local tool = type(form.metadata) == "table" and type(form.metadata.tool) == "table" and form.metadata.tool or {}
-      local call = tool.id and calls[tool.id] or {}
-      dispatch(
-        entry,
-        hook_event(entry, form.sessionID, {
-          hook_event_name = "PermissionRequest",
-          tool_name = "AskUserQuestion",
-          tool_use_id = tool.id,
-          tool_input = call.input or { questions = form.fields },
-        })
-      )
-    end
+    local tool = type(form.metadata) == "table" and type(form.metadata.tool) == "table" and form.metadata.tool or {}
+    local call = tool.id and calls[tool.id] or {}
+    dispatch(
+      entry,
+      hook_event(entry, form.sessionID, {
+        hook_event_name = "PermissionRequest",
+        tool_name = "AskUserQuestion",
+        tool_use_id = tool.id,
+        tool_input = call.input or { questions = form.fields },
+      })
+    )
     return
   end
 
@@ -269,8 +267,7 @@ function M.handle(event)
     local patch = tools.metadata_patch(data.metadata)
     local file_path = input.file_path
     if type(patch) == "string" and file_path then
-      local files, order = tools.parse_patch(patch)
-      local hunks = files[order[1]]
+      local hunks = tools.first_hunks(patch)
       if hunks then
         response.filePath = file_path
         response.structuredPatch = hunks
@@ -412,19 +409,6 @@ function M.untrack(session_id)
   if next(tracked) == nil and unsubscribe then
     unsubscribe()
     unsubscribe = nil
-  end
-end
-
----Re-point a tracked launch at another tab or agent key (the agents view moving
----a terminal); nil fields stay.
----@param session_id string
----@param opts { tab: integer|nil, agent_key: string|nil }
-function M.retarget(session_id, opts)
-  for _, entry in pairs(tracked) do
-    if entry.root == session_id then
-      entry.tab = opts.tab or entry.tab
-      entry.agent_key = opts.agent_key or entry.agent_key
-    end
   end
 end
 

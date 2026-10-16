@@ -23,12 +23,6 @@ local M = {}
 
 M.USER = "opencode"
 
----@param s string
----@return string
-local function trim(s)
-  return (s:gsub("^%s+", ""):gsub("%s+$", ""))
-end
-
 ---@class ClaudeCodeOpencodeConnection
 ---@field url string
 ---@field password string
@@ -45,15 +39,7 @@ local state = {
 M._system = function(argv, opts, on_exit)
   return vim.system(argv, opts or { text = true }, on_exit)
 end
-M._read_file = function(path)
-  local f = io.open(path, "r")
-  if not f then
-    return nil
-  end
-  local data = f:read("*a")
-  f:close()
-  return data
-end
+M._read_file = require("claude_agents.store_io").read
 M._http = http
 M._defer = function(fn, ms)
   vim.defer_fn(fn, ms)
@@ -77,7 +63,7 @@ function M.state_dir()
     return M._system(argv, { text = true }):wait(5000)
   end)
   local out = ok and type(res) == "table" and res.code == 0 and type(res.stdout) == "string" and res.stdout or nil
-  local dir = out and trim(out) or ""
+  local dir = out and vim.trim(out) or ""
   if dir == "" then
     local xdg = os.getenv("XDG_STATE_HOME")
     local home = os.getenv("HOME") or os.getenv("USERPROFILE") or "~"
@@ -102,12 +88,6 @@ function M.read_registration()
     return nil, "unreadable service registration at " .. path
   end
   return { url = info.url, password = info.password, pid = tonumber(info.pid), version = info.version }, nil
-end
-
----The connection last found healthy, if any.
----@return ClaudeCodeOpencodeConnection|nil
-function M.connection()
-  return state.conn
 end
 
 ---Forget the cached connection (the service restarted, or refused us).
@@ -190,12 +170,12 @@ function M.ensure(cb)
     argv[#argv + 1] = "service"
     argv[#argv + 1] = "start"
     logger.debug("opencode", "starting the OpenCode service:", table.concat(argv, " "))
-    local timeout = tonumber(opencode().config().service_timeout_ms) or 15000
+    local timeout = opencode().config().service_timeout_ms
     local deadline = (vim.uv or vim.loop).now() + timeout
     local ok, err = pcall(M._system, argv, { text = true }, function(res)
       vim.schedule(function()
         if type(res) == "table" and res.code ~= 0 then
-          local detail = trim((res.stderr or "") .. " " .. (res.stdout or ""))
+          local detail = vim.trim((res.stderr or "") .. " " .. (res.stdout or ""))
           settle("`" .. table.concat(argv, " ") .. "` failed" .. (detail ~= "" and (": " .. detail) or ""), nil)
           return
         end
@@ -247,28 +227,6 @@ function M.find(cb)
       cb("the OpenCode service is not running (" .. tostring(probe_err) .. ")", nil)
     end
   end)
-end
-
----`ensure`, waited for. For the launch path, which builds a command in one tick.
----@param timeout_ms integer|nil
----@return string|nil err
----@return ClaudeCodeOpencodeConnection|nil conn
-function M.ensure_sync(timeout_ms)
-  if state.conn then
-    return nil, state.conn
-  end
-  timeout_ms = timeout_ms or (tonumber(opencode().config().service_timeout_ms) or 15000)
-  local done, result_err, result = false, nil, nil
-  M.ensure(function(err, conn)
-    done, result_err, result = true, err, conn
-  end)
-  vim.wait(timeout_ms + 500, function()
-    return done
-  end, 10)
-  if not done then
-    return "timed out waiting for the OpenCode service", nil
-  end
-  return result_err, result
 end
 
 ---Test/reload helper.

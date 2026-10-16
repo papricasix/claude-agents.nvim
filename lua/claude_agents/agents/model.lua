@@ -1307,9 +1307,10 @@ local function profile_mark(session_id, live)
   local term = live and require("claude_agents.agents.registry").get(session_id)
   local name = term and term.profile or (not term and profiles.of(session_id)) or nil
   local mark = name and profiles.mark(name) or ""
-  if mark == "" and type(session_id) == "string" and session_id:match("^ses_") then
+  local opencode = require("claude_agents.opencode")
+  if mark == "" and opencode.is_session_id(session_id) then
     -- Which CLI holds it, when no profile says more: the list mixes both.
-    mark = require("claude_agents.opencode").MARK
+    mark = opencode.MARK
   end
   return mark ~= "" and mark or nil
 end

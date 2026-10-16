@@ -129,16 +129,6 @@ function M.delete_session(id, cb)
   M.call("DELETE", "/api/session/" .. enc(id), nil, cb)
 end
 
----`POST /api/session/<id>/fork` — `{ before? }`; answers the new session.
-function M.fork_session(id, body, cb)
-  M.call("POST", "/api/session/" .. enc(id) .. "/fork", { body = body or {} }, cb)
-end
-
----`GET /api/session` — query `directory`, `project`, `parentID` (`"null"` for top level), `limit`, `order`, `cursor`, `search`.
-function M.list_sessions(query, cb)
-  M.call("GET", "/api/session", { query = query }, cb)
-end
-
 ---`GET /api/session/<id>/message` — query `limit`, `order`, `cursor`, `type`.
 function M.messages(id, query, cb)
   M.call("GET", "/api/session/" .. enc(id) .. "/message", { query = query }, cb)
@@ -151,10 +141,6 @@ end
 
 function M.set_agent(id, agent, cb)
   M.call("POST", "/api/session/" .. enc(id) .. "/agent", { body = { agent = agent } }, cb)
-end
-
-function M.interrupt(id, cb)
-  M.call("POST", "/api/session/" .. enc(id) .. "/interrupt", { body = {} }, cb)
 end
 
 --------------------------------------------------------------------------------
@@ -189,23 +175,8 @@ function M.agent(agent_id, directory, cb)
   }, cb)
 end
 
----The location a directory resolves to: `{ directory, project = { id, directory, canonical } }`.
-function M.location(directory, cb)
-  M.call("GET", "/api/location", { query = { ["location[directory]"] = directory } }, cb)
-end
-
 function M.models(directory, cb)
   M.call("GET", "/api/model", { query = directory and { ["location[directory]"] = directory } or nil }, cb)
-end
-
----Running shell commands of a location (background shells).
-function M.shells(directory, cb)
-  M.call("GET", "/api/shell", { query = directory and { ["location[directory]"] = directory } or nil }, cb)
-end
-
-function M.shell_output(shell_id, directory, query, cb)
-  local q = vim.tbl_extend("force", query or {}, directory and { ["location[directory]"] = directory } or {})
-  M.call("GET", "/api/shell/" .. enc(shell_id) .. "/output", { query = q }, cb)
 end
 
 return M
