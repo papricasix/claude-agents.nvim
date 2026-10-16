@@ -4,9 +4,12 @@
 --- Every local OpenCode client connects to one service per user; it writes where
 --- it listens to `<state>/service.json` (`{ id, version, url, pid, password }`),
 --- and accepts HTTP Basic auth as user `opencode` with that password. `<state>`
---- is whatever `opencode debug paths state` prints — asked once, since that
---- command starts nothing — so a relocated XDG directory or another platform's
---- layout needs no rule of ours.
+--- is looked for at the standard place first (`$XDG_STATE_HOME/opencode`, else
+--- `~/.local/state/opencode`), where a live registration settles it without
+--- running anything. Only when nothing there answers is OpenCode asked (`opencode
+--- debug paths state`, which starts nothing; once, without blocking), so a
+--- relocated directory or another platform's layout needs no rule of ours, and a
+--- stale `service.json` at the standard place does not hide the real one.
 ---
 --- A user can switch the service off (`opencode service set disabled true`).
 --- TUIs then run private servers nothing else can reach, and the plugin says so
@@ -31,6 +34,7 @@ M.USER = "opencode"
 
 local state = {
   state_dir = nil, ---@type string|nil
+  asking = nil, ---@type (fun(dir: string))[]|nil
   conn = nil, ---@type ClaudeCodeOpencodeConnection|nil
   waiters = nil, ---@type (fun(err: string|nil, conn: ClaudeCodeOpencodeConnection|nil))[]|nil
 }
@@ -49,36 +53,85 @@ local function opencode()
   return require("claude_agents.opencode")
 end
 
----Where OpenCode keeps its state, `service.json` among it.
+---Where OpenCode keeps its state unless told otherwise: the XDG layout it uses,
+---under the user's profile where there is no `$HOME` (Windows). Anywhere else is
+---found by asking it.
 ---@return string
-function M.state_dir()
-  if state.state_dir then
-    return state.state_dir
-  end
-  local argv = opencode().cmd_argv()
-  argv[#argv + 1] = "debug"
-  argv[#argv + 1] = "paths"
-  argv[#argv + 1] = "state"
-  local ok, res = pcall(function()
-    return M._system(argv, { text = true }):wait(5000)
-  end)
-  local out = ok and type(res) == "table" and res.code == 0 and type(res.stdout) == "string" and res.stdout or nil
+function M.standard_state_dir()
+  local xdg = os.getenv("XDG_STATE_HOME")
+  local home = os.getenv("HOME") or os.getenv("USERPROFILE") or "~"
+  return ((xdg and xdg ~= "") and xdg or (home .. "/.local/state")) .. "/opencode"
+end
+
+---Take OpenCode's answer to `debug paths state` as the state directory.
+---@param res table|nil `vim.system`'s result.
+---@return string
+local function answered(res)
+  local out = type(res) == "table" and res.code == 0 and type(res.stdout) == "string" and res.stdout or nil
   local dir = out and vim.trim(out) or ""
   if dir == "" then
-    local xdg = os.getenv("XDG_STATE_HOME")
-    local home = os.getenv("HOME") or os.getenv("USERPROFILE") or "~"
-    dir = ((xdg and xdg ~= "") and xdg or (home .. "/.local/state")) .. "/opencode"
+    dir = M.standard_state_dir()
     logger.debug("opencode", "could not ask OpenCode for its state directory; assuming", dir)
   end
   state.state_dir = dir
   return dir
 end
 
----The service's registration, as written. No health check.
+local function paths_argv()
+  local argv = opencode().cmd_argv()
+  argv[#argv + 1] = "debug"
+  argv[#argv + 1] = "paths"
+  argv[#argv + 1] = "state"
+  return argv
+end
+
+---Ask OpenCode where its state directory is, without blocking. Concurrent
+---callers share one question.
+---@param cb fun(dir: string)
+local function ask_state_dir(cb)
+  if state.asking then
+    table.insert(state.asking, cb)
+    return
+  end
+  state.asking = { cb }
+  local function done(res)
+    local dir = answered(res)
+    local waiters = state.asking or {}
+    state.asking = nil
+    for _, waiter in ipairs(waiters) do
+      pcall(waiter, dir)
+    end
+  end
+  local ok = pcall(M._system, paths_argv(), { text = true }, function(res)
+    vim.schedule(function()
+      done(res)
+    end)
+  end)
+  if not ok then
+    done(nil)
+  end
+end
+
+---Where OpenCode keeps its state, `service.json` among it. Waits for OpenCode's
+---answer when it has not been asked yet (`:checkhealth`); the service lookups
+---below never do.
+---@return string
+function M.state_dir()
+  if state.state_dir then
+    return state.state_dir
+  end
+  local ok, res = pcall(function()
+    return M._system(paths_argv(), { text = true }):wait(5000)
+  end)
+  return answered(ok and res or nil)
+end
+
+---The registration in `dir`, as written. No health check.
+---@param dir string
 ---@return ClaudeCodeOpencodeConnection|nil
 ---@return string|nil error
-function M.read_registration()
-  local path = M.state_dir() .. "/service.json"
+local function registration_in(dir)
+  local path = dir .. "/service.json"
   local data = M._read_file(path)
   if not data then
     return nil, "no OpenCode service is registered (" .. path .. ")"
@@ -88,6 +141,13 @@ function M.read_registration()
     return nil, "unreadable service registration at " .. path
   end
   return { url = info.url, password = info.password, pid = tonumber(info.pid), version = info.version }, nil
+end
+
+---The service's registration, as written. No health check.
+---@return ClaudeCodeOpencodeConnection|nil
+---@return string|nil error
+function M.read_registration()
+  return registration_in(M.state_dir())
 end
 
 ---Forget the cached connection (the service restarted, or refused us).
@@ -112,6 +172,46 @@ local function probe(conn, cb)
     else
       cb(true, nil)
     end
+  end)
+end
+
+---Find the registration and ask whether it answers, without blocking: the known
+---state directory, else the standard one, and only when nothing answers there
+---the one OpenCode names. Whatever answers settles the directory.
+---@param cb fun(conn: ClaudeCodeOpencodeConnection|nil, err: string|nil, alive: boolean)
+---       `conn`: the registration last read (dead unless `alive`).
+local function lookup(cb)
+  local function try(dir, on_dead)
+    local conn, err = registration_in(dir)
+    if not conn then
+      on_dead(nil, err)
+      return
+    end
+    probe(conn, function(ok, probe_err)
+      if ok then
+        state.state_dir = dir
+        cb(conn, nil, true)
+      else
+        on_dead(conn, probe_err)
+      end
+    end)
+  end
+  local function dead(conn, err)
+    cb(conn, err, false)
+  end
+  if state.state_dir then
+    try(state.state_dir, dead)
+    return
+  end
+  local standard = M.standard_state_dir()
+  try(standard, function(standard_conn, standard_err)
+    ask_state_dir(function(dir)
+      if dir == standard then
+        dead(standard_conn, standard_err)
+      else
+        try(dir, dead)
+      end
+    end)
   end)
 end
 
@@ -164,7 +264,6 @@ function M.ensure(cb)
   end
   state.waiters = { cb }
 
-  local conn = M.read_registration()
   local function start()
     local argv = opencode().cmd_argv()
     argv[#argv + 1] = "service"
@@ -187,12 +286,10 @@ function M.ensure(cb)
     end
   end
 
-  if not conn then
-    start()
-    return
-  end
-  probe(conn, function(ok)
-    if ok then
+  -- A lookup that finds nothing alive has settled the state directory, so the
+  -- wait for the started service reads its registration without asking again.
+  lookup(function(conn, _, alive)
+    if alive then
       settle(nil, conn)
     else
       start()
@@ -214,24 +311,21 @@ function M.find(cb)
     table.insert(state.waiters, cb)
     return
   end
-  local conn, err = M.read_registration()
-  if not conn then
-    cb(err, nil)
-    return
-  end
-  probe(conn, function(ok, probe_err)
-    if ok then
+  lookup(function(conn, err, alive)
+    if alive then
       state.conn = conn
       cb(nil, conn)
+    elseif conn then
+      cb("the OpenCode service is not running (" .. tostring(err) .. ")", nil)
     else
-      cb("the OpenCode service is not running (" .. tostring(probe_err) .. ")", nil)
+      cb(err, nil)
     end
   end)
 end
 
 ---Test/reload helper.
 function M._reset()
-  state = { state_dir = nil, conn = nil, waiters = nil }
+  state = { state_dir = nil, asking = nil, conn = nil, waiters = nil }
 end
 
 return M
