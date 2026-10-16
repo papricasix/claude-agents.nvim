@@ -147,3 +147,16 @@ describe("opencode.review", function()
     expect(next(review._reviews())).to_be_nil()
   end)
 end)
+
+describe("diff answer hint", function()
+  it("names who wants the change, the file, and the two answers", function()
+    package.loaded["claude_agents.diff"] = nil
+    local diff = require("claude_agents.diff")
+    expect(diff._answer_hint("✻ [OpenCode] a.txt (abc123) ⧉", "/p/a.txt", false)).to_be(
+      "OpenCode wants to change a.txt  ·  :w accept  ·  :q reject"
+    )
+    expect(diff._answer_hint("✻ [Claude Code] x.py ⧉", "/p/x.py", true)).to_be(
+      "Claude wants to create x.py  ·  :w accept  ·  :q reject"
+    )
+  end)
+end)

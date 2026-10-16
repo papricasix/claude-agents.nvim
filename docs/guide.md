@@ -112,7 +112,7 @@ OpenCode's terminal connects back to Neovim without the token Claude Code sends 
 
 ## Diffs
 
-Claude's proposed edit opens as a diff. Write it (`:w`) to accept, close it (`:q`) to reject, and change it before writing if you want something slightly different.
+Claude's proposed edit opens as a diff. Write it (`:w`) to accept, close it (`:q`) to reject, and change it before writing if you want something slightly different. The proposal says so at its top (in a float, in its border), and answering it takes you back to the terminal you were typing in. An agent's diff that opens in another tab is announced with the tab it is in.
 
 `diff_opts.provider` picks how it looks. `"unified"` shows the proposal in one buffer with the changes marked inline, and needs [unified.nvim](https://github.com/papricasix/unified.nvim). `"native"` is a side-by-side vimdiff. `"auto"`, the default, uses unified.nvim when it is installed. `diff_opts.layout` is `"vertical"`, `"horizontal"` or `"float"`; a float needs unified.nvim too, and is sized by the top-level `float` block.
 

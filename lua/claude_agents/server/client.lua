@@ -109,7 +109,11 @@ function M.process_data(client, data, on_message, on_close, on_error, auth_token
           client.state = "closing"
           logger.debug("client", "Closing connection for client due to failed handshake:", client.id)
           vim.schedule(function()
-            client.tcp_handle:close()
+            -- The client usually hangs up on reading the refusal, and its EOF
+            -- closes the handle first (`tcp._disconnect_client`).
+            if not client.tcp_handle:is_closing() then
+              client.tcp_handle:close()
+            end
           end)
         end
       end)

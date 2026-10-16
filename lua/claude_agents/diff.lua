@@ -1257,6 +1257,59 @@ end
 ---@type table<string, table>
 local active_diffs = {}
 
+---What a review diff says about itself: who wants to change which file, and
+---the two answers. Shown in the proposal window (`winbar`) or a float's border.
+---@param tab_name string The diff's name; OpenCode's carry `[OpenCode]`.
+---@param file_path string|nil
+---@param is_new_file boolean|nil
+---@return string
+function M._answer_hint(tab_name, file_path, is_new_file)
+  local who = (type(tab_name) == "string" and tab_name:find("[OpenCode]", 1, true)) and "OpenCode" or "Claude"
+  local name = type(file_path) == "string" and vim.fn.fnamemodify(file_path, ":t") or "this file"
+  return string.format(
+    "%s wants to %s %s  ·  :w accept  ·  :q reject",
+    who,
+    is_new_file and "create" or "change",
+    name
+  )
+end
+
+---Put the hint on the window that shows a proposal. A float gets it in its
+---bottom border; any other window as its own `winbar` (window-local, so a
+---winbar of the user's elsewhere is untouched), the previous value handed back
+---for the cleanup to restore when the window is not one the diff created.
+---@param win integer|nil
+---@param hint string
+---@return { win: integer, winbar: string }|nil saved
+local function show_answer_hint(win, hint)
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return nil
+  end
+  local ok_cfg, cfg = pcall(vim.api.nvim_win_get_config, win)
+  if ok_cfg and cfg.relative and cfg.relative ~= "" then
+    pcall(vim.api.nvim_win_set_config, win, { footer = " " .. hint .. " ", footer_pos = "center" })
+    return nil
+  end
+  local ok_get, previous = pcall(vim.api.nvim_get_option_value, "winbar", { win = win })
+  -- A statusline expression: a `%` in a file name has to be doubled.
+  pcall(vim.api.nvim_set_option_value, "winbar", " " .. hint:gsub("%%", "%%%%") .. " ", { win = win })
+  return { win = win, winbar = ok_get and previous or "" }
+end
+
+---Say where a diff is when it opened in a tab the user is not looking at (an
+---agent's diff, sent to the tab the agents view was opened from).
+---@param win integer|nil
+---@param hint string
+local function announce_if_elsewhere(win, hint)
+  if not win or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+  local tab = vim.api.nvim_win_get_tabpage(win)
+  if tab ~= vim.api.nvim_get_current_tabpage() then
+    vim.notify(hint .. "  (the diff is in tab " .. vim.api.nvim_tabpage_get_number(tab) .. ")", vim.log.levels.INFO)
+  end
+end
+
 ---Register diff state for tracking
 ---@param tab_name string Unique identifier for the diff
 ---@param diff_data table Diff state data
@@ -1945,6 +1998,41 @@ function M._cleanup_diff_state(tab_name, reason)
     end
   end
 
+  -- The winbar the answer hint replaced, on a window the diff did not create.
+  local saved_winbar = diff_data.saved_winbar
+  if saved_winbar and vim.api.nvim_win_is_valid(saved_winbar.win) then
+    pcall(vim.api.nvim_set_option_value, "winbar", saved_winbar.winbar, { win = saved_winbar.win })
+  end
+
+  -- Back to the terminal the user was typing in when the diff opened, in insert
+  -- mode: an agent's terminal too, which `find_claudecode_terminal_window` (the
+  -- tab's own terminal) never finds. Left in normal mode, the next keys meant for
+  -- the agent hit a terminal buffer that cannot be changed (E21). Across tabs only
+  -- from the tab the diff was shown in (an agent's diff goes to the tab the agents
+  -- view was opened from): answering it there is a visit, not a move.
+  local return_win, diff_tab = diff_data.return_win, diff_data.diff_tab
+  if return_win then
+    vim.schedule(function()
+      if not vim.api.nvim_win_is_valid(return_win) then
+        return
+      end
+      local ok_buf, buf = pcall(vim.api.nvim_win_get_buf, return_win)
+      if not ok_buf or vim.bo[buf].buftype ~= "terminal" then
+        return
+      end
+      local current_tab = vim.api.nvim_get_current_tabpage()
+      local return_tab = vim.api.nvim_win_get_tabpage(return_win)
+      if current_tab ~= return_tab and current_tab ~= diff_tab then
+        return
+      end
+      if current_tab ~= return_tab then
+        pcall(vim.api.nvim_set_current_tabpage, return_tab)
+      end
+      pcall(vim.api.nvim_set_current_win, return_win)
+      pcall(vim.cmd, "startinsert")
+    end)
+  end
+
   -- ALWAYS clean up buffers regardless of tab mode (fixes buffer leak)
   -- Clean up the new buffer (proposed changes)
   if diff_data.new_buffer and vim.api.nvim_buf_is_valid(diff_data.new_buffer) then
@@ -2271,7 +2359,15 @@ function M._setup_blocking_diff_unified(params, resolution_callback)
       end)
     end
 
+    local hint = M._answer_hint(tab_name, params.old_file_path, is_new_file)
+    local saved_winbar = show_answer_hint(target_window, hint)
+    announce_if_elsewhere(target_window, hint)
+
     M._register_diff_state(tab_name, {
+      -- The terminal the user was typing in, given back on close (see cleanup).
+      return_win = term_win,
+      diff_tab = vim.api.nvim_win_is_valid(target_window) and vim.api.nvim_win_get_tabpage(target_window) or nil,
+      saved_winbar = saved_winbar,
       old_file_path = params.old_file_path,
       new_file_path = params.new_file_path,
       new_file_contents = params.new_file_contents,
@@ -2337,6 +2433,9 @@ function M._setup_blocking_diff(params, resolution_callback)
   logger.debug("diff", "Setting up diff for:", params.old_file_path)
 
   dismiss_live_cursor_preview(params.old_file_path)
+
+  -- Before any window moves: the terminal the user is typing in, if they are.
+  local return_win = require("claude_agents.float").terminal_mode_window()
 
   -- Determine target tab from the active Claude instance without switching the current tab.
   -- Falls back to current tab when no active-tab hint is available.
@@ -2589,7 +2688,17 @@ function M._setup_blocking_diff(params, resolution_callback)
       original_cursor_pos = vim.api.nvim_win_get_cursor(diff_info.target_window)
     end
 
+    -- The proposal window is the diff's own split, closed with it: no winbar to
+    -- restore afterwards.
+    local hint = M._answer_hint(tab_name, params.old_file_path, is_new_file)
+    show_answer_hint(diff_info.new_window, hint)
+    announce_if_elsewhere(diff_info.new_window, hint)
+
     M._register_diff_state(tab_name, {
+      return_win = return_win,
+      diff_tab = (diff_info.new_window and vim.api.nvim_win_is_valid(diff_info.new_window))
+          and vim.api.nvim_win_get_tabpage(diff_info.new_window)
+        or nil,
       old_file_path = params.old_file_path,
       new_file_path = params.new_file_path,
       new_file_contents = params.new_file_contents,
