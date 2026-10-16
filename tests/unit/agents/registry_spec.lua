@@ -484,4 +484,25 @@ describe("agents.registry", function()
       expect(registry.stop("nobody")).to_be(false)
     end)
   end)
+
+  describe("resume_mode = fork", function()
+    before_each(function()
+      package.loaded["claude_agents"].state = { config = { agents = { resume_mode = "fork" } } }
+    end)
+
+    it("forks a Claude conversation with --resume and --fork-session together", function()
+      registry.launch("abc", { win = 1000, tab = 1, resume = true })
+      local cmd = table.concat(spawned[1].cmd, " ")
+      -- `--fork-session` is a switch on `--resume`; given the id alone the CLI
+      -- started a new conversation with the id as its prompt.
+      expect(cmd:find("--resume abc --fork-session", 1, true) ~= nil).to_be_true()
+    end)
+
+    it("still names a fresh conversation with --session-id", function()
+      registry.launch("abc", { win = 1000, tab = 1 })
+      local cmd = table.concat(spawned[1].cmd, " ")
+      expect(cmd:find("--session-id abc", 1, true) ~= nil).to_be_true()
+      expect(cmd:find("--fork-session", 1, true)).to_be(nil)
+    end)
+  end)
 end)

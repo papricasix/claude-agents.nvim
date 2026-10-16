@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `agents.resume_mode = "fork"` started a brand new conversation, with the session id typed in as its first message, instead of a copy of the session: `--fork-session` was passed without the `--resume` it belongs to.
+
 ## [1.2.1] - 2026-10-16
 
 ### Fixed

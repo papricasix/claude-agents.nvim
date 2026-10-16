@@ -214,10 +214,20 @@ function M.launch(session_id, opts)
   -- explicitly is also what makes session_state stand down for this launch.
   -- `--fork-session` resumes the conversation into a *new* one, leaving the
   -- original transcript untouched — which is what a user who set
-  -- `resume_mode = "fork"` asked for. Without consulting it the setting was
-  -- documented, validated and inert.
-  local resume_flag = (agents_opts().resume_mode == "fork") and "--fork-session " or "--resume "
-  local flag = opts.resume and (resume_flag .. session_id) or ("--session-id " .. session_id)
+  -- `resume_mode = "fork"` asked for. It is a switch on `--resume`, not a
+  -- flag with a value of its own (`claude --help`, 2.1.301: "use with
+  -- --resume or --continue"): given the id alone, the CLI started a brand new
+  -- conversation with the id as its first prompt. Keeping `--resume <id>` also
+  -- lets the profile lookup find the conversation's profile.
+  local flag
+  if opts.resume then
+    flag = "--resume " .. session_id
+    if agents_opts().resume_mode == "fork" then
+      flag = flag .. " --fork-session"
+    end
+  else
+    flag = "--session-id " .. session_id
+  end
   -- What the conversation is called from its first line on: the CLI writes the
   -- same `agent-name` entry `/rename` does (measured against 2.1.295), so the
   -- name needs no second way of reaching the list. As `--name=<value>`, one
