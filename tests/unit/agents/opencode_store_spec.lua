@@ -4,7 +4,7 @@ require("tests.busted_setup")
 describe("agents.opencode_store", function()
   local store, transcript
   local real_decode
-  local sessions, messages
+  local sessions, messages, children
 
   local PATCH = "Index: a.txt\n--- a.txt\n+++ a.txt\n@@ -1,1 +1,1 @@\n-hello\n+goodbye\n"
 
@@ -70,8 +70,38 @@ describe("agents.opencode_store", function()
     }
   end
 
+  ---A turn whose `subagent` call is still running: OpenCode names the session it
+  ---started only once the call ends.
+  local function a_running_subagent()
+    return {
+      { id = "msg_1", type = "user", text = "go", time = { created = 1 } },
+      {
+        id = "msg_2",
+        type = "assistant",
+        time = { created = 2 },
+        content = {
+          {
+            type = "tool",
+            id = "toolu_sub",
+            name = "subagent",
+            state = {
+              status = "running",
+              input = { agent = "explore", description = "Look around", prompt = "List files" },
+              metadata = {},
+            },
+            time = { created = 3, ran = 4 },
+          },
+        },
+      },
+    }
+  end
+
   local fake_api = {
-    call = function(method, path, _, cb)
+    call = function(method, path, opts, cb)
+      if method == "GET" and path == "/api/session" then
+        cb(nil, children[opts.query.parentID] or {})
+        return
+      end
       local id = path:match("^/api/session/(ses_[%w]+)$")
       if method == "GET" and id then
         if sessions[id] then
@@ -118,6 +148,7 @@ describe("agents.opencode_store", function()
     end
     sessions = { ses_root = info("ses_root", "Goodbye edit"), ses_child = info("ses_child", "Look around") }
     messages = { ses_root = a_turn(), ses_child = {} }
+    children = {}
   end)
 
   after_each(function()
@@ -202,6 +233,48 @@ describe("agents.opencode_store", function()
     local after = store.content(path)
     expect(after:sub(1, #before)).to_be(before)
     assert_contains(after, '"tool_result"')
+  end)
+
+  it("writes a call only once its input is in, never with what has streamed so far", function()
+    messages.ses_root = a_running_subagent()
+    local call = messages.ses_root[2].content[1]
+    call.state = { status = "streaming", input = '{"agent":"explore","descr' }
+    local path = store.path("ses_root")
+    fold(path)
+    assert_not_contains(store.content(path), '"tool_use"')
+    call.state = a_running_subagent()[2].content[1].state
+    store.handle({ type = "session.tool.called", data = { sessionID = "ses_root" } })
+    fold(path)
+    assert_contains(store.content(path), '"description":"Look around"')
+  end)
+
+  it("lists a subagent while it runs, by the session its progress event names", function()
+    messages.ses_root = a_running_subagent()
+    fold(store.path("ses_root"))
+    expect(#transcript._io.scandir("opencode://ses_root/subagents")).to_be(0)
+    store.handle({
+      type = "session.tool.progress",
+      data = { sessionID = "ses_root", id = "toolu_sub", metadata = { sessionID = "ses_child", status = "running" } },
+    })
+    fold(store.path("ses_root"))
+    expect(#transcript._io.scandir("opencode://ses_root/subagents")).to_be(2)
+    local meta =
+      _G.json_decode(transcript._io.read_sync("opencode://ses_root/subagents/agent-ses_child.meta.json", 4096))
+    expect(meta.toolUseId).to_be("toolu_sub")
+    expect(meta.description).to_be("Look around")
+  end)
+
+  it("finds a running subagent's session among the children when its progress event was missed", function()
+    messages.ses_root = a_running_subagent()
+    children.ses_root = {
+      { id = "ses_other", parentID = "ses_root", title = "Something else", agent = "explore" },
+      { id = "ses_child", parentID = "ses_root", title = "Look around", agent = "explore" },
+    }
+    fold(store.path("ses_root"))
+    local meta =
+      _G.json_decode(transcript._io.read_sync("opencode://ses_root/subagents/agent-ses_child.meta.json", 4096))
+    expect(meta.toolUseId).to_be("toolu_sub")
+    expect(transcript._io.stat("opencode://ses_root/subagents/agent-ses_other.meta.json")).to_be_nil()
   end)
 
   it("writes a declined call in the words the fold reads as declined", function()

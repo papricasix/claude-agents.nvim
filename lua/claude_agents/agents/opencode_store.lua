@@ -99,6 +99,24 @@ end
 local subagents_of = {}
 --- `[child] = root`, for a subagent's own subagents.
 local root_of = {}
+--- `[call id] = child`, for a `subagent` call still running: its own record names
+--- the child only once it has ended. `false`: looked for, not found.
+local child_of_call = {}
+
+---A `subagent` call's descriptor, before the session it started is known.
+---@param id string The call's id.
+---@param input table The call's input, as OpenCode records it.
+---@param time table The part's `time`.
+---@return table
+local function subagent_meta(id, input, time)
+  return {
+    agentType = input.agent or "general",
+    description = input.description,
+    toolUseId = id,
+    requestShape = "foreground",
+    started = time.ran or time.created,
+  }
+end
 
 ---Record a subagent session a `subagent` call started.
 ---@param store_id string The session that made the call.
@@ -144,6 +162,7 @@ end
 ---@field dirty boolean The service has moved on since the last fetch.
 ---@field fetched boolean
 ---@field waiters function[]|nil
+---@field unlinked table[]|nil Descriptors of running `subagent` calls whose session is not known yet.
 ---@field updated integer The session's `time.updated` when last fetched (ms).
 ---@field revert any The session's revert marker when last fetched.
 
@@ -287,8 +306,14 @@ end
 ---@param message table An assistant message.
 ---@param part table A `tool` content part.
 local function write_tool(store, message, part)
-  local cwd = cwd_of_store(store)
   local state = type(part.state) == "table" and part.state or {}
+  -- Written once the call is made. Until then its input is still streaming in
+  -- (2.0.30 `streaming`, the input so far a string; V1 `pending`), and a call
+  -- written then would keep an empty input for good: a `Task` with no description.
+  if state.status ~= "running" and state.status ~= "completed" and state.status ~= "error" then
+    return
+  end
+  local cwd = cwd_of_store(store)
   local raw_input = type(state.input) == "table" and state.input or {}
   local time = type(part.time) == "table" and part.time or {}
   local claude_name = tools.name(part.name)
@@ -367,16 +392,18 @@ local function write_tool(store, message, part)
     return
   end
 
-  -- A subagent runs as a session of its own; the call names it once started.
+  -- A subagent runs as a session of its own, which the Tasks pane lists from the
+  -- moment it is known: by the call once ended, by its progress event while it
+  -- runs, or — that event missed — by `link_children` after this pass.
   local metadata = type(state.metadata) == "table" and state.metadata or {}
-  if part.name == "subagent" and type(metadata.sessionID) == "string" then
-    note_subagent(store.id, metadata.sessionID, {
-      agentType = raw_input.agent or "general",
-      description = raw_input.description,
-      toolUseId = id,
-      requestShape = "foreground",
-      started = time.ran or time.created,
-    })
+  if part.name == "subagent" then
+    local child = type(metadata.sessionID) == "string" and metadata.sessionID or child_of_call[id]
+    if child then
+      note_subagent(store.id, child, subagent_meta(id, raw_input, time))
+    elseif child_of_call[id] == nil and state.status == "running" then
+      store.unlinked = store.unlinked or {}
+      table.insert(store.unlinked, subagent_meta(id, raw_input, time))
+    end
   end
 
   once(store, id .. ":use", function()
@@ -606,6 +633,50 @@ local function settle(store, err)
   end
 end
 
+---Find the sessions of running `subagent` calls whose progress event this
+---Neovim never saw (the view opened while they ran), among the session's
+---children: a child's title is the call's description, its agent the call's.
+---Asked once per call.
+---@param store ClaudeCodeOpencodeStore
+---@param done fun()
+local function link_children(store, done)
+  local calls = store.unlinked or {}
+  store.unlinked = nil
+  if #calls == 0 then
+    done()
+    return
+  end
+  for _, call in ipairs(calls) do
+    child_of_call[call.toolUseId] = false
+  end
+  local query = { parentID = store.id, limit = 100, order = "asc" }
+  M._api().call("GET", "/api/session", { query = query, no_start = true }, function(err, children)
+    if not err and type(children) == "table" then
+      local taken = {}
+      for child in pairs(subagents_of[root_of[store.id] or store.id] or {}) do
+        taken[child] = true
+      end
+      for _, call in ipairs(calls) do
+        for _, child in ipairs(children) do
+          if
+            type(child) == "table"
+            and type(child.id) == "string"
+            and not taken[child.id]
+            and child.title == call.description
+            and child.agent == call.agentType
+          then
+            taken[child.id] = true
+            child_of_call[call.toolUseId] = child.id
+            note_subagent(store.id, child.id, call)
+            break
+          end
+        end
+      end
+    end
+    done()
+  end)
+end
+
 ---Bring a session's transcript up to date with the service, then call back.
 ---Answers at once when nothing is known to have changed.
 ---@param id string
@@ -651,6 +722,7 @@ function M.refresh(id, cb)
         settle(store, err)
         return
       end
+      store.unlinked = nil
       for _, message in ipairs(messages) do
         local ok, write_err = pcall(M._write_message, store, message)
         if not ok then
@@ -659,7 +731,9 @@ function M.refresh(id, cb)
       end
       write_info(store)
       store.fetched = true
-      settle(store, nil)
+      link_children(store, function()
+        settle(store, nil)
+      end)
     end)
   end)
 end
@@ -1034,6 +1108,17 @@ function M.handle(event)
     return
   end
   local store = data.sessionID and stores[data.sessionID]
+  if etype == "session.tool.progress" then
+    -- A `subagent` call names its session here, as soon as it has one.
+    local child = type(data.metadata) == "table" and data.metadata.sessionID or nil
+    if type(child) == "string" and type(data.id) == "string" and child_of_call[data.id] ~= child then
+      child_of_call[data.id] = child
+      if store then
+        store.dirty = true
+      end
+    end
+    return
+  end
   if store and MOVES[etype] then
     store.dirty = true
     if etype == "session.renamed" and store.info and type(data.title) == "string" then
@@ -1065,7 +1150,7 @@ end
 function M._reset()
   M.stop()
   stores, lists = {}, {}
-  subagents_of, root_of = {}, {}
+  subagents_of, root_of, child_of_call = {}, {}, {}
 end
 
 ---@param id string
