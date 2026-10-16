@@ -945,6 +945,14 @@ function M.refresh_list()
       local row
       if path then
         row = row_at(session_id, path, { cwd = launch_cwd, title = term and term.name })
+        -- Nothing read from it yet: an OpenCode agent's transcript is found before
+        -- it holds a line (`transcript.locate` answers any `ses_` id). Undated, the
+        -- row was sorted in at the bottom and kept there; it is a new agent's row,
+        -- dated and called like the one below.
+        if row.last_ts == 0 then
+          row.last_ts = (term and term.started_at) or M._now_s()
+          row.title = row.title or NEW_SESSION_TITLE
+        end
       else
         row = {
           session_id = session_id,

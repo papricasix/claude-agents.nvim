@@ -424,6 +424,23 @@ describe("agents.model", function()
       expect(model.row("ccc").title).to_be("plan-2")
     end)
 
+    it("lists an agent whose transcript is found before it holds anything as a new agent", function()
+      -- An OpenCode agent: `transcript.locate` names its in-memory transcript at
+      -- once, empty until the store has read the session. Undated, it was sorted
+      -- in below every older conversation and pinned there.
+      summaries.old = summary_for("old", { last_ts = 900 })
+      model.refresh_list()
+      live.ses_new = true
+      launch_times.ses_new = 1000
+      elsewhere.ses_new = "opencode://ses_new.jsonl"
+      model.refresh_list()
+
+      local rows = model.rows()
+      expect(rows[1].session_id).to_be("ses_new")
+      expect(rows[1].last_ts).to_be(1000)
+      expect(rows[1].title).to_be("New session")
+    end)
+
     it("dates such an agent by when it was started, and keeps that date", function()
       -- Dated "now" on every rebuild, two new agents tied and were ordered by
       -- their ids, so the newer one could be sorted in below the older.
