@@ -21,6 +21,12 @@ M.defaults = {
     -- plugin asks OpenCode to ask before editing, for the sessions it launches.
     review_edits = true,
     service_timeout_ms = 15000, -- how long to wait for OpenCode's background service to start
+    -- OpenCode keybinds (cli.json ids and syntax) for the OpenCode agents the
+    -- agents view launches. nil: OpenCode's command palette moves from ctrl+p to
+    -- <leader>p (ctrl+x p) when ctrl+p switches sessions there
+    -- (`agents.keymaps.prev_session`). false: none. A table: exactly these, e.g.
+    -- { ["command.palette.show"] = "ctrl+y" }.
+    agent_keybinds = nil,
   },
   -- Also create backend-neutral names for the commands: :Agent, :AgentSend,
   -- :Agents, :AgentNew, ... (ClaudeCode -> Agent). Off by default; a name some
@@ -485,6 +491,16 @@ function M.validate(config)
         type(oc.service_timeout_ms) == "number" and oc.service_timeout_ms > 0,
         "opencode.service_timeout_ms must be a positive number"
       )
+    end
+    if oc.agent_keybinds ~= nil and oc.agent_keybinds ~= false then
+      assert(type(oc.agent_keybinds) == "table", "opencode.agent_keybinds must be a table, false or nil")
+      for id, value in pairs(oc.agent_keybinds) do
+        assert(type(id) == "string", "opencode.agent_keybinds keys must be OpenCode keybind ids")
+        assert(
+          type(value) == "string" or type(value) == "boolean" or type(value) == "table",
+          "opencode.agent_keybinds." .. id .. " must be a key string, false, or a cli.json keybind object"
+        )
+      end
     end
   end
   if config.command_aliases ~= nil then

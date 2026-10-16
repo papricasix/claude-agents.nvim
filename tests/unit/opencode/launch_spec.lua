@@ -208,6 +208,61 @@ describe("opencode launch and sessions", function()
       assert_not_contains(cmd, "--session")
     end)
 
+    describe("OpenCode's palette in an agent's terminal", function()
+      local real_decode
+
+      before_each(function()
+        real_decode = vim.json.decode
+        vim.json.decode = _G.json_decode
+      end)
+
+      after_each(function()
+        vim.json.decode = real_decode
+      end)
+
+      it("moves off ctrl+p, which switches sessions there", function()
+        local _, env = launch.build(nil, ctx({ for_tab = false }))
+        assert_contains(env.OPENCODE_CLI_CONFIG_CONTENT, '"command.palette.show":"<leader>p"')
+      end)
+
+      it("stays where it is in a tab's terminal, where nothing takes ctrl+p", function()
+        local _, env = launch.build(nil, ctx())
+        expect(env.OPENCODE_CLI_CONFIG_CONTENT).to_be_nil()
+      end)
+
+      it("stays when ctrl+p switches no sessions", function()
+        opencode.setup({
+          backend = "opencode",
+          agents = { keymaps = { next_session = "<C-j>", prev_session = "<C-k>" } },
+        })
+        local _, env = launch.build(nil, ctx({ for_tab = false }))
+        expect(env.OPENCODE_CLI_CONFIG_CONTENT).to_be_nil()
+      end)
+
+      it("follows agent_keybinds: none with false, exactly the table otherwise", function()
+        opencode.setup({ backend = "opencode", opencode = { agent_keybinds = false } })
+        local _, none = launch.build(nil, ctx({ for_tab = false }))
+        expect(none.OPENCODE_CLI_CONFIG_CONTENT).to_be_nil()
+        opencode.setup({ backend = "opencode", opencode = { agent_keybinds = { ["command.palette.show"] = "ctrl+y" } } })
+        local _, custom = launch.build(nil, ctx({ for_tab = false }))
+        assert_contains(custom.OPENCODE_CLI_CONFIG_CONTENT, '"command.palette.show":"ctrl+y"')
+      end)
+
+      it("keeps whatever the variable already held", function()
+        local _, env = launch.build(
+          nil,
+          ctx({
+            for_tab = false,
+            user_env = { OPENCODE_CLI_CONFIG_CONTENT = '{"theme":"nord","keybinds":{"app.exit":"ctrl+q"}}' },
+          })
+        )
+        local merged = _G.json_decode(env.OPENCODE_CLI_CONFIG_CONTENT)
+        expect(merged.theme).to_be("nord")
+        expect(merged.keybinds["app.exit"]).to_be("ctrl+q")
+        expect(merged.keybinds["command.palette.show"]).to_be("<leader>p")
+      end)
+    end)
+
     it("lets the launch's TUI in through the tokenless door once it runs", function()
       local armed
       local tracked = {}

@@ -25,6 +25,9 @@ M.DEFAULTS = {
   service_timeout_ms = 15000,
 }
 
+---@type table|nil The full plugin config, for the few answers that need more than the `opencode` block.
+local full = nil
+
 ---@type table
 local config = vim.deepcopy(M.DEFAULTS)
 ---@type "claude"|"opencode"
@@ -32,9 +35,85 @@ local default_backend = "claude"
 
 ---@param full_config table|nil
 function M.setup(full_config)
-  local opts = type(full_config) == "table" and full_config.opencode or nil
+  full = type(full_config) == "table" and full_config or nil
+  local opts = full and full.opencode or nil
   config = vim.tbl_deep_extend("force", vim.deepcopy(M.DEFAULTS), type(opts) == "table" and opts or {})
-  default_backend = (type(full_config) == "table" and full_config.backend == "opencode") and "opencode" or "claude"
+  -- Kept as given: `false` means "none", and a table is used as it is rather than
+  -- merged with a default.
+  if type(opts) == "table" then
+    config.agent_keybinds = opts.agent_keybinds
+  else
+    config.agent_keybinds = nil
+  end
+  default_backend = (full and full.backend == "opencode") and "opencode" or "claude"
+end
+
+---A Neovim key (`<C-p>`) in OpenCode's notation (`ctrl+p`); nil for anything
+---that is not a single Ctrl or Alt chord.
+---@param lhs any
+---@return string|nil
+function M.opencode_key(lhs)
+  if type(lhs) ~= "string" then
+    return nil
+  end
+  local mod, key = lhs:match("^<([CcMmAa])%-(.)>$")
+  if not mod then
+    return nil
+  end
+  mod = mod:lower()
+  return (mod == "c" and "ctrl+" or "alt+") .. key:lower()
+end
+
+---The OpenCode keybinds an agent launch overrides, as cli.json takes them; nil
+---for none.
+---
+---The agents view takes its session-switching keys inside an agent's terminal,
+---so OpenCode never sees them there. By default those are `<C-n>`/`<C-p>`, and
+---OpenCode opens its command palette — its way to settings and every command —
+---with ctrl+p (its lists also take ctrl+n/ctrl+p, beside the arrow keys, which
+---keep working). So unless told otherwise, an agent's palette moves to
+---`<leader>p` (OpenCode's leader, ctrl+x, then p) whenever ctrl+p is one of
+---those keys. Tab terminals keep ctrl+p: nothing takes it there.
+---@return table<string, any>|nil
+function M.agent_keybinds()
+  local setting = config.agent_keybinds
+  if setting == false then
+    return nil
+  end
+  if type(setting) == "table" then
+    return next(setting) ~= nil and setting or nil
+  end
+  local agents = full and type(full.agents) == "table" and full.agents or {}
+  local keys = type(agents.keymaps) == "table" and agents.keymaps or {}
+  local next_key = keys.next_session == nil and "<C-n>" or keys.next_session
+  local prev_key = keys.prev_session == nil and "<C-p>" or keys.prev_session
+  if M.opencode_key(next_key) == "ctrl+p" or M.opencode_key(prev_key) == "ctrl+p" then
+    return { ["command.palette.show"] = "<leader>p" }
+  end
+  return nil
+end
+
+---`OPENCODE_CLI_CONFIG_CONTENT` (OpenCode's inline `cli.json`, which the TUI
+---merges over the user's file) with keybinds merged in: whatever the variable
+---held already — the user's own, from the environment or the config's `env` —
+---with these keybinds over its own.
+---@param existing string|nil
+---@param keybinds table<string, any>
+---@return string
+function M.cli_config_content(existing, keybinds)
+  local base = nil
+  if type(existing) == "string" and existing ~= "" then
+    local ok, decoded = pcall(vim.json.decode, existing)
+    if ok and type(decoded) == "table" then
+      base = decoded
+    end
+  end
+  base = base or {}
+  base.keybinds = type(base.keybinds) == "table" and base.keybinds or {}
+  for id, value in pairs(keybinds) do
+    base.keybinds[id] = value
+  end
+  return vim.json.encode(base)
 end
 
 ---The `opencode` config block.
@@ -121,6 +200,7 @@ M.MARK = "◇"
 function M._reset()
   config = vim.deepcopy(M.DEFAULTS)
   default_backend = "claude"
+  full = nil
 end
 
 return M
