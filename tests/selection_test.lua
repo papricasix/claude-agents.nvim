@@ -292,6 +292,15 @@ if not _G.vim then
         return nil
       end,
     }),
+    b = setmetatable({}, { -- Mock for vim.b[bufnr]
+      __index = function(t, k)
+        if type(k) == "number" then
+          rawset(t, k, {})
+          return rawget(t, k)
+        end
+        return nil
+      end,
+    }),
     diagnostic = { -- Mock for vim.diagnostic
       get = function()
         return {}

@@ -162,6 +162,16 @@ describe("claude_agents.terminal.native toggle behavior", function()
       schedule = function(callback)
         callback() -- Execute immediately in tests
       end,
+      b = setmetatable({}, {
+        __index = function(_, bufnr)
+          local buf = mock_state.buffers[bufnr]
+          if not buf then
+            return {}
+          end
+          buf.vars = buf.vars or {}
+          return buf.vars
+        end,
+      }),
       bo = setmetatable({}, {
         __index = function(_, bufnr)
           return setmetatable({}, {
@@ -392,6 +402,55 @@ describe("claude_agents.terminal.native toggle behavior", function()
       -- Close should kill the process (cleanup_state called)
       native_provider.close()
       assert.is_nil(native_provider.get_active_bufnr())
+    end)
+  end)
+
+  describe("recovering the tab's agent terminal", function()
+    local config = { split_side = "right", split_width_percentage = 0.3 }
+
+    local function show_terminal(name, vars)
+      local mock_state = _G.get_mock_state()
+      mock_state.buffers[5] = { name = name, options = { buftype = "terminal" }, vars = vars }
+      mock_state.windows[1] = { bufnr = 5 }
+      local opened = false
+      mock_vim.fn.termopen = function()
+        opened = true
+        return 12345
+      end
+      return function()
+        return opened
+      end
+    end
+
+    it("finds an OpenCode terminal by its stamp when its name does not say opencode", function()
+      local opened = show_terminal("term://~/project//4242:oc-wrapper", { claudecode_backend = "opencode" })
+
+      native_provider.open("oc-wrapper", {}, config)
+
+      assert.are.equal(5, native_provider.get_active_bufnr())
+      assert.is_false(opened())
+    end)
+
+    it("still finds a terminal by the agent CLI in its name", function()
+      for _, name in ipairs({ "term://~/project//4242:claude", "term://~/project//4242:opencode" }) do
+        package.loaded["claude_agents.terminal.native"] = nil
+        native_provider = require("claude_agents.terminal.native")
+        native_provider.setup({})
+        local opened = show_terminal(name)
+
+        native_provider.open("claude", {}, config)
+
+        assert.are.equal(5, native_provider.get_active_bufnr())
+        assert.is_false(opened())
+      end
+    end)
+
+    it("does not take an unstamped terminal running something else", function()
+      local opened = show_terminal("term://~/project//4242:htop")
+
+      native_provider.open("claude", {}, config)
+
+      assert.is_true(opened())
     end)
   end)
 

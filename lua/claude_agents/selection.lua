@@ -200,12 +200,15 @@ function M.update_selection()
   local buf_name = vim.api.nvim_buf_get_name(current_buf)
 
   -- If the buffer name starts with "term://" and names an agent CLI (claude, or
-  -- opencode), do not update selection
+  -- opencode), do not update selection. Nor in a terminal the plugin stamped as
+  -- OpenCode's: its command may be a wrapper or alias that names neither.
   local lower_name = buf_name and buf_name:lower() or ""
   if
-    buf_name
-    and buf_name:match("^term://")
-    and (lower_name:find("claude", 1, true) or lower_name:find("opencode", 1, true))
+    (
+      buf_name
+      and buf_name:match("^term://")
+      and (lower_name:find("claude", 1, true) or lower_name:find("opencode", 1, true))
+    ) or vim.b[current_buf].claudecode_backend == "opencode"
   then
     -- Optionally, cancel demotion timer like for the terminal
     M._cancel_demotion_timer()
