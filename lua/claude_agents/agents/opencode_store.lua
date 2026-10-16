@@ -541,15 +541,25 @@ local function write_info(store)
   end
 end
 
----Start the transcript over (the session's history was taken back).
+--- What a restart carries over: the session and the fetch under way. Every
+--- other field describes the transcript written so far, and goes with it.
+local KEPT_ON_RESTART = { "id", "info", "revert", "updated", "waiters" }
+
+---Start the transcript over (the session's history was taken back). The same
+---table is kept, since `stores` and a running fetch hold it.
 ---@param store ClaudeCodeOpencodeStore
 local function restart(store)
-  local gen = store.gen + 1
-  for key, value in pairs(new_store(store.id)) do
+  local fresh = new_store(store.id)
+  for _, key in ipairs(KEPT_ON_RESTART) do
+    fresh[key] = store[key]
+  end
+  fresh.gen = store.gen + 1
+  for key in pairs(store) do
+    store[key] = nil
+  end
+  for key, value in pairs(fresh) do
     store[key] = value
   end
-  store.gen = gen
-  store.content = nil
 end
 
 --------------------------------------------------------------------------------

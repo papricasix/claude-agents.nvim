@@ -205,6 +205,35 @@ describe("agents.opencode_store", function()
     expect(store.content(path)).to_be(first)
   end)
 
+  it("writes a reverted session afresh, as a new transcript with its title", function()
+    local turns = a_turn()
+    table.insert(turns, { id = "msg_3", type = "user", text = "Now undo it", time = { created = 1792179020000 } })
+    messages.ses_root = turns
+    local path = store.path("ses_root")
+    fold(path)
+    local ino = transcript._io.stat(path).ino
+
+    -- OpenCode's undo: the session gets a revert marker, the history is taken back.
+    sessions.ses_root.revert = { messageID = "msg_3" }
+    messages.ses_root = a_turn()
+    store.handle({ type = "session.step.ended", data = { sessionID = "ses_root" } })
+    fold(path)
+
+    assert.are_not.equal(ino, transcript._io.stat(path).ino)
+    local first_user, title
+    for line in store.content(path):gmatch("[^\n]+") do
+      local record = _G.json_decode(line)
+      if record.type == "user" and not first_user then
+        first_user = record
+      elseif record.type == "ai-title" then
+        title = record.aiTitle
+      end
+    end
+    expect(first_user.uuid).to_be("msg_1")
+    expect(first_user.parentUuid).to_be_nil()
+    expect(title).to_be("Goodbye edit")
+  end)
+
   it("writes a call as it starts and its result when it ends", function()
     messages.ses_root = {
       { id = "msg_1", type = "user", text = "go", time = { created = 1 } },
