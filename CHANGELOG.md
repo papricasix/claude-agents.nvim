@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-16
+
 ### Fixed
 
 - A subagent that is waiting for a background command of its own to finish is shown as running in Tasks, not as done while its command is still going.
