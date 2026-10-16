@@ -2784,6 +2784,84 @@ function M.open_diff_blocking(old_file_path, new_file_path, new_file_contents, t
   return user_action_result
 end
 
+---Open a review diff outside any MCP call, and hand the answer to a callback.
+---
+---What OpenCode's edits are reviewed with: OpenCode asks permission before an
+---edit and waits on the service for the answer, rather than blocking a tool
+---call of ours, so there is no coroutine to suspend. The view, `:w` and `:q`
+---are exactly `openDiff`'s. Where the diff goes follows the request context the
+---caller sets, as it does for a message.
+---@param params { old_file_path: string, new_file_path: string, new_file_contents: string, tab_name: string }
+---@param on_result fun(result: { saved: boolean, content: string|nil })
+---@return boolean ok
+---@return string|nil err
+function M.open_review(params, on_result)
+  release_saved_diffs()
+  local tab_name = params.tab_name
+  if active_diffs[tab_name] then
+    if active_diffs[tab_name].status == "pending" then
+      M._resolve_diff_as_rejected(tab_name)
+    end
+    M._cleanup_diff_state(tab_name, "replaced by new diff")
+  end
+  local provider_ok, provider = pcall(M._resolve_provider)
+  if not provider_ok then
+    return false, tostring(provider)
+  end
+  local setup_fn = provider == "unified" and M._setup_blocking_diff_unified or M._setup_blocking_diff
+  local ok, err = pcall(setup_fn, {
+    old_file_path = params.old_file_path,
+    new_file_path = params.new_file_path,
+    new_file_contents = params.new_file_contents,
+    tab_name = tab_name,
+  }, function(result)
+    local content = type(result) == "table" and result.content or {}
+    local verdict = content[1] and content[1].text
+    pcall(on_result, {
+      saved = verdict == "FILE_SAVED",
+      content = verdict == "FILE_SAVED" and content[2] and content[2].text or nil,
+    })
+  end)
+  if not ok then
+    local message = type(err) == "table" and (err.data or err.message) or err
+    return false, tostring(message)
+  end
+  return true, nil
+end
+
+---Take a review diff down after its answer was handed on: an accepted one once
+---its text is on disk (as `close_tab` does for Claude), a rejected one now.
+---@param tab_name string
+function M.finish_review(tab_name)
+  M.close_diff_by_tab_name(tab_name)
+end
+
+---Take a review diff down that was answered somewhere else (in OpenCode's own
+---prompt), without answering it again.
+---@param tab_name string
+---@return boolean closed
+function M.dismiss_review(tab_name)
+  local diff_data = active_diffs[tab_name]
+  if not diff_data then
+    return false
+  end
+  if diff_data.status == "pending" then
+    diff_data.status = "dismissed"
+    diff_data.resolution_callback = nil
+    M._cleanup_diff_state(tab_name, "answered in OpenCode")
+    return true
+  end
+  return M.close_diff_by_tab_name(tab_name)
+end
+
+---Whether a review diff of this name is still waiting for an answer.
+---@param tab_name string
+---@return boolean
+function M.is_pending(tab_name)
+  local diff_data = active_diffs[tab_name]
+  return diff_data ~= nil and diff_data.status == "pending"
+end
+
 -- Set up global autocmds for shutdown handling
 vim.api.nvim_create_autocmd("VimLeavePre", {
   group = get_autocmd_group(),

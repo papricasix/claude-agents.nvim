@@ -1224,6 +1224,11 @@ local function show_start_prompt(session_id)
     if mark ~= "" then
       marks[#marks + 1] = { row = at - 1, col = 2, end_col = 2 + #mark, hl = "ClaudeCodeProfileMark" }
     end
+  elseif type(session_id) == "string" and session_id:match("^ses_") then
+    local at = #lines
+    local mark = require("claude_agents.opencode").MARK
+    table.insert(lines, at, "  " .. mark .. " an OpenCode conversation")
+    marks[#marks + 1] = { row = at - 1, col = 2, end_col = 2 + #mark, hl = "ClaudeCodeProfileMark" }
   end
   local hints
   if foreign_state then
@@ -2179,7 +2184,7 @@ end
 local function anything_moving(rows, ages)
   local ok_status, status = pcall(require, "claude_agents.status")
   for _, row in ipairs(rows) do
-    if ok_status and status.is_animated and status.is_animated(row.state) then
+    if ok_status and status.is_animated and status.is_animated(row.state, row.session_id) then
       return true
     end
     if fade.animating(row.added_age_ms) or fade.animating(row.removed_age_ms) then
@@ -2780,7 +2785,7 @@ function M.select(session_id)
 end
 
 ---Start a conversation that does not exist yet in the centre pane, and select it.
----@param launch { name: string|nil, cwd: string|nil, profile: string|nil }|nil What it is called, where it runs and on which account: unnamed, in the view's directory, under the default profile, unless told.
+---@param launch { name: string|nil, cwd: string|nil, profile: string|nil, backend: string|nil }|nil What it is called, where it runs and on which account: unnamed, in the view's directory, under the default profile, unless told. `backend` decides the CLI when no profile does (a follow-up continues in its session's).
 ---@return string|nil session_id nil when nothing was started.
 local function start_agent(launch)
   launch = launch or {}
@@ -2798,7 +2803,12 @@ local function start_agent(launch)
   if not ok then
     return nil
   end
-  local session_id = session_state.new_session_id()
+  -- The conversation is named before the CLI starts, in the form the CLI that
+  -- will run it expects.
+  local backend = (launch.profile == nil and launch.backend)
+    or require("claude_agents.backend").resolve({ profile = launch.profile })
+  local session_id = backend == "opencode" and require("claude_agents.opencode.ids").new_session_id()
+    or session_state.new_session_id()
 
   local term, err = registry.launch(session_id, {
     win = center,
@@ -2888,11 +2898,33 @@ function M.resume_as(session_id, name)
     return
   end
 
+  local row = model.row(session_id)
+  -- A conversation only continues in the CLI that holds it. A profile on the
+  -- other backend can start a new conversation from where this one ran.
+  local own_backend = require("claude_agents.opencode").backend_of(session_id)
+  if own_backend and own_backend ~= profiles.backend(profile) then
+    local backend = require("claude_agents.backend")
+    require("claude_agents.agents.confirm").ask({
+      title = "Start in " .. backend.label(profiles.backend(profile)),
+      message = {
+        "This conversation is " .. backend.label(own_backend) .. "'s and cannot move to " .. backend.label(
+          profiles.backend(profile)
+        ) .. ".",
+        "Start a new agent under " .. profile.name .. " instead?",
+      },
+      confirm = "start",
+    }, function(yes)
+      if yes then
+        start_agent({ cwd = usable_dir(row and row.cwd), profile = profile.name })
+      end
+    end)
+    return
+  end
+
   local center = ensure_center()
   if not center then
     return
   end
-  local row = model.row(session_id)
   local launch = {
     win = center,
     tab = state.tab,
@@ -3049,8 +3081,15 @@ function M.new_follow_up(session_id)
     return nil
   end
   local row = model.row(session_id)
-  -- On the same account as the work it continues.
-  if not start_agent({ name = name, cwd = usable_dir(row and row.cwd), profile = M.profile_of(session_id) }) then
+  -- On the same account, and in the same CLI, as the work it continues.
+  if
+    not start_agent({
+      name = name,
+      cwd = usable_dir(row and row.cwd),
+      profile = M.profile_of(session_id),
+      backend = require("claude_agents.opencode").backend_of(session_id),
+    })
+  then
     return nil
   end
   return name
@@ -4059,8 +4098,10 @@ function M.note(event, source_tab, agent_id)
   -- live cursor's file-tool `PreToolUse` still arrives and marked the row busy,
   -- and nothing that reached Neovim ever ended it: the agent read busy through
   -- permission prompts and long after its turn was over. The panes still follow
-  -- the event.
-  model.note(event, source_tab, { classify = hooks_report_state() })
+  -- the event. An OpenCode launch always reports how a state ends: its events
+  -- come from the service's stream, which carries every one of them.
+  local reports = hooks_report_state() or (type(event) == "table" and event.opencode == true)
+  model.note(event, source_tab, { classify = reports })
 end
 
 ---A running agent is having a different conversation than it was.

@@ -8,8 +8,8 @@ Everything the [README](../README.md) leaves out except the agents view, which h
 :ClaudeCode [args]              " toggle the Claude terminal; args go to the CLI (--resume, --continue, ...)
 :ClaudeCodeFocus                " jump to the terminal, or hide it when you are in it
 :ClaudeCodeOpen [args] / :ClaudeCodeClose
-:ClaudeCodeSelectModel          " pick a model, then open Claude with it
-:ClaudeCodeProfile [name]       " start this tab's Claude on your subscription or an API key, or switch it
+:ClaudeCodeSelectModel          " pick a model, then open Claude with it (OpenCode: switch a running one)
+:ClaudeCodeProfile [name]       " start this tab's Claude on a profile (subscription, API key, OpenCode), or switch it
 :'<,'>ClaudeCodeSend            " send the selection to Claude
 :ClaudeCodeAdd {file} [from] [to]   " add a file, or some of its lines; % is the current buffer
 :ClaudeCodeTreeAdd              " add the file(s) under the cursor in nvim-tree, neo-tree, oil, mini.files or netrw
@@ -26,6 +26,8 @@ Everything the [README](../README.md) leaves out except the agents view, which h
 ```
 
 The agents commands are in the [agents guide](agents.md). The plugin binds `<leader>aF` to `:ClaudeCodeToggleFileTracking` itself, and `<leader>aA` / `<leader>aR` when the agents view or session persistence are on.
+
+With `command_aliases = true` every command also gets a name without `ClaudeCode` in it: `:Agent`, `:AgentSend`, `:AgentAdd`, `:AgentProfile`, `:AgentDiffAccept`, `:Agents`, `:AgentNew`, `:AgentsFlag`, and so on (`ClaudeCode` becomes `Agent`, and `AgentAgent` becomes `Agent`). A name another plugin already uses is left to it.
 
 ## Setup
 
@@ -67,6 +69,45 @@ profiles = {
 ```
 
 `keychain` names the entry (the `default` in the commands above). `api_key_cmd` is any command that prints the key. A profile can also carry `args` and `env`. Sessions run on an API key are marked `$` in the agents view, and `require("claude_agents.profiles").of_tab()` names the current tab's profile for a tabline. While a Claude runs on an API key, Claude Code switches off your claude.ai connectors.
+
+## OpenCode
+
+The plugin can run [OpenCode](https://opencode.ai) instead of Claude Code, or next to it. `backend = "opencode"` makes every plain launch OpenCode; a profile with `backend = "opencode"` runs OpenCode for the launches you pick it for, whatever the default. When OpenCode is installed, a built-in `OpenCode` profile (key `o`) is in the profile menu, so `:ClaudeCodeProfile OpenCode`, or `ga` in the agents view, starts one without any setup.
+
+```lua
+opts = {
+  backend = "opencode",   -- plain launches run OpenCode; "claude" (the default) runs Claude Code
+  opencode = {
+    cmd = "opencode",     -- the executable, when it is not on your PATH
+    review_edits = true,  -- review OpenCode's edits as diffs in Neovim
+  },
+  profiles = {
+    list = {
+      { name = "subscription", key = "s", auth = "subscription" },
+      { name = "OpenCode", key = "o", backend = "opencode" },
+      { name = "OpenCode · plan", key = "p", backend = "opencode",
+        model = "anthropic/claude-sonnet-4-5", agent = "plan" },
+    },
+  },
+}
+```
+
+An OpenCode profile takes a `model` as OpenCode names it (`provider/model`, as `opencode models` lists them), an OpenCode `agent`, and `args` and `env`; `auth` and the key fields are Claude's. A conversation always continues in the CLI that holds it: resuming an OpenCode session runs OpenCode, a Claude one runs Claude, and picking a profile on the other backend for a running conversation starts a new one there instead.
+
+What works the same: the terminal, your selection and `:ClaudeCodeSend` / `:ClaudeCodeAdd` / `:ClaudeCodeTreeAdd` (OpenCode shows the selection under its prompt and sends it with your next message), per-tab status, the live cursor, session persistence, the agents view, and edits as diffs you accept with `:w` and reject with `:q`. `:ClaudeCodeSelectModel` lists the models OpenCode offers and switches a running OpenCode to the one you pick.
+
+What is different:
+
+- **Edits are reviewed through OpenCode's permissions.** For each session it launches the plugin asks OpenCode to ask before an edit; the request opens as a diff in Neovim, and OpenCode's own prompt shows it too, so either answers it. An agent that may not edit somewhere (the plan agent outside its plan folder, a read-only subagent, a `deny` in your OpenCode config) still may not: only edits that would have gone through unasked are asked about. If you change the proposal before `:w`, your version is written and OpenCode is told so. `opencode.review_edits = false` leaves OpenCode to its own rules.
+- **The plan view shows the plan files** OpenCode's plan agent writes (`~/.opencode/plan/`), until its next tool call. There is nothing to accept: OpenCode's plan agent asks nothing.
+- **Status comes from OpenCode's event stream**, not from hooks, so nothing extra runs per tool call. A busy OpenCode tab or agent shows OpenCode's own spinner, the braille snake `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏`; `status.opencode_icons` sets OpenCode's icons as `status.icons` sets Claude's.
+- **Only conversations the plugin launched are followed.** A session you start inside OpenCode with `/new` is not tied to the tab.
+- **No clickable paths** in its terminal: OpenCode prints none. `<S-CR>` inserts a newline as it does for Claude.
+- **The plugin's own tools** (open a file, read diagnostics) are not offered to OpenCode, which has its own.
+
+OpenCode runs a background service that every OpenCode client shares; the plugin talks to it too, and starts it (`opencode service start`) at the first OpenCode launch if it is not running. Listing OpenCode's sessions in the agents view never starts it. A service you switched off (`opencode service set disabled true`) leaves OpenCode's terminals on private servers the plugin cannot reach, and `:checkhealth claude_agents` says so.
+
+OpenCode's terminal connects back to Neovim without the token Claude Code sends (it only sends one when it finds the editor by scanning lock files). The plugin lets exactly one such connection in for each OpenCode it launches, on the loopback interface, never from a web page (browsers announce themselves with an `Origin` header), and offers it nothing but your selection and @ mentions.
 
 ## Diffs
 
@@ -128,7 +169,7 @@ status.get_state(tab) -- "busy" | "waiting" | "done" | "idle" | "none"
 status.icon(tab), status.hl_group(tab) -- the glyph and highlight for that state
 ```
 
-Every change fires `User ClaudeCodeStatusChanged`. `icons = { busy = status.SPINNER }` animates a working tab with the CLI's own spinner. It runs two short hook calls per tool call (before and after); `status = { enabled = false }` saves them.
+Every change fires `User ClaudeCodeStatusChanged`. `icons = { busy = status.SPINNER }` animates a working tab with the CLI's own spinner. It runs two short hook calls per tool call (before and after); `status = { enabled = false }` saves them. A tab running OpenCode is drawn with `opencode_icons` where it sets a state, and busy with OpenCode's own spinner (`status.OPENCODE_SPINNER`) unless it sets that too.
 
 ## Session persistence
 
@@ -143,6 +184,7 @@ With the agents view, also call `require("claude_agents.session_state").prepare_
 
 - **Claude does not connect:** `:checkhealth claude_agents`, then `:ClaudeCodeStatus`. The lock file it connects through is in `~/.claude/ide/` (or `$CLAUDE_CONFIG_DIR/ide/`).
 - **`claude` not found:** set `terminal_cmd` to the path `which claude` prints.
+- **OpenCode shows no status or diffs:** `:checkhealth claude_agents` reports its service; `opencode service restart` restarts it. Only an OpenCode the plugin launched is followed.
 - **Terminal misbehaves with snacks:** try `terminal.provider = "native"`.
 - **Anything else:** `log_level = "debug"` and read `:messages`.
 

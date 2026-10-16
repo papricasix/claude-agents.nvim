@@ -25,7 +25,7 @@ claude (CLI)
 - **MCP tools** (`tools/`): one file per tool, registered in `tools/init.lua`. A tool without a schema (`close_tab`) is internal and never offered to Claude. Each answers `{ content = { { type = "text", text = <JSON> } } }`.
 - **Selection** (`selection.lua`): sends `selection_changed`, debounced, as you move. `:ClaudeCodeSend`, `:ClaudeCodeAdd` and `:ClaudeCodeTreeAdd` send `at_mentioned`; `integrations.lua` reads the files under the cursor in a file explorer.
 - **Diffs** (`diff.lua`): `openDiff` holds the tool call open (its handler runs in a coroutine) until you write the proposal (`FILE_SAVED`) or close it (`DIFF_REJECTED`). The native provider is a vimdiff across two windows, the unified provider one buffer with inline marks from unified.nvim; `diff_opts.provider = "auto"` picks unified when it loads.
-- **Terminal** (`terminal.lua`, `terminal/`): builds the `claude` command and its environment (the port, the hook settings, the session flags) and hands it to a provider: `snacks.lua`, `native.lua`, `external.lua` or `none.lua`. A provider holds one terminal per tabpage.
+- **Terminal** (`terminal.lua`, `terminal/`): builds the `claude` command and its environment (the port, the hook settings, the session flags), or OpenCode's (see [OpenCode](#opencode)), and hands it to a provider: `snacks.lua`, `native.lua`, `external.lua` or `none.lua`. A provider holds one terminal per tabpage.
 
 `init.lua` holds setup, the commands and the instance registry, and `config.lua` every default and the validation of your options.
 
@@ -79,6 +79,26 @@ Every "where does this file go" question is answered by `diff.resolve_target_win
 A window that is not for editing (the live cursor's preview, the plan view's host, every agents pane, every float) carries the window variable `claudecode_live_preview` and is never picked as a target.
 
 `float.lua` draws the cascading floats: newest on top, titled with the path, one stack shared by agent floats and `diff_opts.layout = "float"`. `agents/float.lua` wraps it with the agents geometry and the agent's name.
+
+## OpenCode
+
+A launch runs Claude Code or [OpenCode](https://opencode.ai) (V2). `backend.lua` decides which, for each launch: the profile asked for, then the conversation it resumes (`ses_…` ids are OpenCode's), then the tab's persisted conversation, then `profiles.default`, then the `backend` option. `terminal.lua`'s `get_claude_command_and_env` hands an OpenCode launch to `opencode/launch.lua`; everything above the seam (providers, agents' `registry.launch`) is the same for both.
+
+OpenCode is a terminal client of a background service shared by every OpenCode on the machine, and the three channels map onto it like this:
+
+```text
+opencode (TUI) ── WebSocket, no token ──▶ server/ (selection_changed, at_mentioned only)
+OpenCode service ── HTTP ──▶ opencode/api.lua (sessions, permission replies, history)
+                 ── SSE /api/event ──▶ opencode/events.lua ─▶ bridge.lua ─▶ live_cursor.dispatch
+                                                                    └▶ review.lua ─▶ diff.open_review
+```
+
+- **Editor context**: OpenCode's TUI has a client for the IDE protocol built in, told the port in `OPENCODE_EDITOR_SSE_PORT`. It sends no token when given the port that way, so the instance's server is armed for one tokenless client per launch (`server/init.lua` `arm_tokenless`; `handshake.validate_upgrade_request` refuses any request with an `Origin` header that way) and serves it no tools. OpenCode never calls the MCP tools.
+- **The service** (`opencode/service.lua`): found from `<state>/service.json` (`opencode debug paths state`), HTTP Basic auth. `ensure` starts it (`opencode service start`), `find` never does; browsing (the agents view) uses `find`.
+- **Sessions** (`opencode/sessions.lua`): a launch names its session with an id minted the way OpenCode does (`opencode/ids.lua`) and creates it before the TUI starts, with the profile's model and agent and the review rules (`opencode/rules.lua`), since the TUI creates an unknown id only when the first prompt runs. One created and never used is deleted when its terminal closes.
+- **Events → hooks** (`opencode/bridge.lua`): the service's events for launched sessions and their subagent sessions become Claude-hook-shaped events (`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Stop`, …, OpenCode's tool names mapped by `opencode/tools.lua`), so status, the agents model, session persistence and the live cursor read one format. Plan files the plan agent writes go to the plan view.
+- **Diffs** (`opencode/review.lua`): an edit's `permission.asked` carries a unified patch per file; it opens as a diff through `diff.open_review`, the callback counterpart of `open_diff_blocking`, and `:w`/`:q` become a `once`/`reject` reply.
+- **The agents view** (`agents/opencode_store.lua`): each OpenCode session is written out in memory as the transcript Claude would have written for it and served through `transcript.lua`'s I/O seam at `opencode://<id>.jsonl` (subagents at `opencode://<root>/subagents/agent-<id>.jsonl`, with descriptors), so the fold, search, file and tool views read it unchanged. `transcript.list` lists OpenCode's sessions beside Claude's.
 
 ## Everything else
 

@@ -1307,6 +1307,10 @@ local function profile_mark(session_id, live)
   local term = live and require("claude_agents.agents.registry").get(session_id)
   local name = term and term.profile or (not term and profiles.of(session_id)) or nil
   local mark = name and profiles.mark(name) or ""
+  if mark == "" and type(session_id) == "string" and session_id:match("^ses_") then
+    -- Which CLI holds it, when no profile says more: the list mixes both.
+    mark = require("claude_agents.opencode").MARK
+  end
   return mark ~= "" and mark or nil
 end
 
@@ -1336,7 +1340,7 @@ function M.rows()
 
       local icon, group
       if ok_status and status.icon_for_state then
-        icon, group = status.icon_for_state(session_state)
+        icon, group = status.icon_for_state(session_state, row.session_id)
       end
       -- `status` draws nothing for a tab with no Claude, but a session list still
       -- needs a bullet in that column or the titles lose their left edge.

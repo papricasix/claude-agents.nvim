@@ -443,6 +443,9 @@ function M.setup(opts)
     logger.error("init", "Failed to load claudecode.terminal module for setup.")
   end
 
+  -- Before profiles: which built-in profiles exist depends on the backend.
+  require("claude_agents.opencode").setup(M.state.config)
+
   local diff = require("claude_agents.diff")
   diff.setup(M.state.config)
 
@@ -507,6 +510,11 @@ function M.setup(opts)
       pcall(function()
         require("claude_agents.agents_view").cleanup()
       end)
+      if package.loaded["claude_agents.opencode.events"] then
+        pcall(function()
+          require("claude_agents.opencode.events").stop()
+        end)
+      end
     end,
     desc = "Automatically stop Claude Code integration when exiting Neovim",
   })
@@ -564,6 +572,28 @@ function M.setup(opts)
         pcall(function()
           require("claude_agents.status").clear(tab)
         end)
+        -- An OpenCode tab terminal: its session stops being followed, its
+        -- server stops letting a tokenless client in, and a session it never
+        -- used is deleted (unless Neovim is going, which is no verdict on it).
+        local oc_session
+        pcall(function()
+          oc_session = vim.b[args.buf].claudecode_opencode_session
+        end)
+        if oc_session then
+          pcall(function()
+            local oc_launch = require("claude_agents.opencode.launch")
+            if M.state.shutting_down then
+              oc_launch.forget_tab(tab)
+            else
+              oc_launch.ended(oc_session, {
+                tab = tab,
+                instance = get_instance(tab),
+                -- Restarted under another profile: the session carries on.
+                keep = require("claude_agents.terminal").is_restarting(tab),
+              })
+            end
+          end)
+        end
         -- Stopped to start again under another profile: the conversation carries
         -- on, so it is neither forgotten nor its profile dropped.
         if M.state.shutting_down or require("claude_agents.terminal").is_restarting(tab) then
@@ -935,7 +965,76 @@ end
 
 ---Set up user commands.
 ---@private
+---The backend-neutral name of a command: `ClaudeCode` becomes `Agent`, and the
+---`AgentAgent` that leaves in the agents view's commands becomes `Agent`
+---(`:ClaudeCodeAgents` → `:Agents`, `:ClaudeCodeAgentNew` → `:AgentNew`).
+---@param name string
+---@return string|nil
+function M.alias_name(name)
+  if type(name) ~= "string" or name:sub(1, 10) ~= "ClaudeCode" then
+    return nil
+  end
+  local alias = "Agent" .. name:sub(11)
+  if alias:sub(1, 10) == "AgentAgent" then
+    alias = "Agent" .. alias:sub(11)
+  end
+  return alias
+end
+
+--- Aliases this plugin made, so a second `setup()` may make them again.
+M._aliases = M._aliases or {}
+
+---Whether a command name is taken by something other than our own aliases.
+---@param name string
+---@return boolean
+local function command_taken(name)
+  if M._aliases[name] then
+    return false
+  end
+  local ok, user = pcall(vim.api.nvim_get_commands, {})
+  if ok and type(user) == "table" and user[name] then
+    return true
+  end
+  local ok_exists, exists = pcall(vim.fn.exists, ":" .. name)
+  return ok_exists and exists == 2
+end
+
+local create_commands
+
+---Create the commands, and with `command_aliases` their `:Agent*` names too.
 function M._create_commands()
+  local created = {}
+  local create = vim.api.nvim_create_user_command
+  -- Recorded as they are made, so an alias is the very same command.
+  vim.api.nvim_create_user_command = function(name, fn, cmd_opts)
+    created[#created + 1] = { name = name, fn = fn, opts = cmd_opts }
+    return create(name, fn, cmd_opts)
+  end
+  local ok, err = pcall(create_commands)
+  vim.api.nvim_create_user_command = create
+  if not ok then
+    error(err)
+  end
+  if not (M.state.config and M.state.config.command_aliases) then
+    return
+  end
+  for _, command in ipairs(created) do
+    local alias = M.alias_name(command.name)
+    if alias and not command_taken(alias) then
+      local alias_opts = {}
+      for key, value in pairs(command.opts or {}) do
+        alias_opts[key] = value
+      end
+      alias_opts.desc = (alias_opts.desc or "") .. " (alias of :" .. command.name .. ")"
+      local made = pcall(create, alias, command.fn, alias_opts)
+      if made then
+        M._aliases[alias] = true
+      end
+    end
+  end
+end
+
+create_commands = function()
   vim.api.nvim_create_user_command("ClaudeCodeStart", function()
     M.start()
   end, {
@@ -1655,7 +1754,68 @@ function M._profile_names()
   return names
 end
 
+---Pick a model for the tab's OpenCode from the ones OpenCode offers: the
+---running session switches to it, or OpenCode starts on it.
+---@param additional_args string|nil
+function M._open_opencode_with_model(additional_args)
+  local cwd = vim.fn.getcwd()
+  local api = require("claude_agents.opencode.api")
+  api.call("GET", "/api/model", { query = { ["location[directory]"] = cwd } }, function(err, data)
+    if err or type(data) ~= "table" then
+      logger.error("command", "Could not list OpenCode's models: " .. tostring(err))
+      return
+    end
+    local models = {}
+    for _, model in ipairs(data) do
+      if type(model) == "table" and model.enabled ~= false and model.id and model.providerID then
+        models[#models + 1] = model
+      end
+    end
+    table.sort(models, function(a, b)
+      return (a.providerID .. "/" .. a.id) < (b.providerID .. "/" .. b.id)
+    end)
+    vim.ui.select(models, {
+      prompt = "Select OpenCode model:",
+      format_item = function(item)
+        return item.providerID .. "/" .. item.id .. (item.name and ("  " .. item.name) or "")
+      end,
+    }, function(choice)
+      if not choice then
+        return
+      end
+      local ref = { providerID = choice.providerID, id = choice.id }
+      local terminal = require("claude_agents.terminal")
+      local tab = vim.api.nvim_get_current_tabpage()
+      local session_id = require("claude_agents.opencode.launch").tab_session(tab)
+      if session_id and terminal.is_running() then
+        api.set_model(session_id, ref, function(set_err)
+          if set_err then
+            logger.error("command", "Could not switch OpenCode's model: " .. tostring(set_err))
+          else
+            vim.notify("OpenCode now runs " .. ref.providerID .. "/" .. ref.id, vim.log.levels.INFO)
+          end
+        end)
+        return
+      end
+      terminal.open({}, additional_args, { model = ref })
+    end)
+  end)
+end
+
 M.open_with_model = function(additional_args)
+  -- OpenCode names its models `provider/model` and lists them itself; Claude's
+  -- aliases in `models` mean nothing to it.
+  local ok_backend, backend = pcall(function()
+    return require("claude_agents.backend").resolve({
+      cmd_args = additional_args,
+      tab = vim.api.nvim_get_current_tabpage(),
+    })
+  end)
+  if ok_backend and backend == "opencode" then
+    M._open_opencode_with_model(additional_args)
+    return
+  end
+
   local models = M.state.config.models
 
   if not models or #models == 0 then

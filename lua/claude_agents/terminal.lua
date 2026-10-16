@@ -333,9 +333,11 @@ M._no_proxy_with_loopback = no_proxy_with_loopback
 ---@param instance table? Server instance this launch should talk to. Defaults to
 ---       the current tab's; agents mode passes its own so each agent connects to
 ---       its own server rather than sharing the tab's.
----@param launch { profile: string|table|nil }|nil Which launch profile to run under
----       (`profiles.resolve`: else the one the resumed conversation last used,
----       else `profiles.default`).
+---@param launch { profile: string|table|nil, session_id: string|nil, name: string|nil }|nil
+---       Which launch profile to run under (`profiles.resolve`: else the one the
+---       resumed conversation last used, else `profiles.default`); the
+---       conversation an agent launch names, and what a new one is called —
+---       both of which decide or shape an OpenCode launch (see `backend`).
 ---@return string cmd_string The command string
 ---@return table env_table The environment variables table
 ---@return string|nil profile The name of the launch profile it runs under.
@@ -370,6 +372,30 @@ local function get_claude_command_and_env(cmd_args, effective_config, instance, 
       end
     end
   end
+
+  -- OpenCode instead of Claude: its own command, environment and session
+  -- handling, from the same server instance.
+  local ok_backend, backend = pcall(function()
+    return require("claude_agents.backend").resolve({
+      profile = launch and launch.profile,
+      cmd_args = cmd_args,
+      session_id = launch and launch.session_id,
+      tab = for_tab and vim.api.nvim_get_current_tabpage() or nil,
+    })
+  end)
+  if ok_backend and backend == "opencode" then
+    return require("claude_agents.opencode.launch").build(cmd_args, {
+      instance = instance,
+      for_tab = for_tab,
+      cwd = (effective_config and effective_config.cwd) or vim.fn.getcwd(),
+      user_env = defaults.env,
+      no_proxy = no_proxy_with_loopback,
+      profile = launch and launch.profile,
+      name = launch and launch.name,
+      model = launch and launch.model,
+    })
+  end
+
   local sse_port_value = instance.port
   local env_table = {
     ENABLE_IDE_INTEGRATION = "true",
@@ -478,6 +504,14 @@ end
 ---that must not drift between them: change it in one place and an agent's
 ---terminal would quietly behave differently from every other Claude.
 function M.send_newline()
+  -- OpenCode's prompt takes Ctrl+J as a newline (and reads a backslash as text).
+  local ok_backend, backend = pcall(function()
+    return vim.b.claudecode_backend
+  end)
+  if ok_backend and backend == "opencode" then
+    vim.api.nvim_feedkeys("\n", "t", true)
+    return
+  end
   vim.api.nvim_feedkeys("\\", "t", true)
   vim.defer_fn(function()
     vim.api.nvim_feedkeys("\r", "t", true)
@@ -527,6 +561,12 @@ local function tag_terminal_tab(before)
   pcall(function()
     require("claude_agents.profiles").note_tab_terminal(tab, bufnr)
   end)
+  -- An OpenCode launch built for this tab is now running: follow its session.
+  if package.loaded["claude_agents.opencode.launch"] then
+    pcall(function()
+      require("claude_agents.opencode.launch").tab_started(tab, bufnr)
+    end)
+  end
 end
 
 ---Common helper to open terminal without focus if not already visible
@@ -851,7 +891,11 @@ local function tab_session_id(tab)
   end
   local ok_ss, session_state = pcall(require, "claude_agents.session_state")
   local record = ok_ss and session_state.get(tab)
-  return record and record.session_id or nil
+  if record and record.session_id then
+    return record.session_id
+  end
+  local oc_launch = package.loaded["claude_agents.opencode.launch"]
+  return oc_launch and oc_launch.tab_session(tab) or nil
 end
 
 ---Start this tab's Claude under a launch profile, or switch the running one to it.
@@ -892,7 +936,12 @@ function M.launch_profile(name)
     return
   end
   local session_id = tab_session_id(tab)
-  if not session_id then
+  -- A conversation only continues in the CLI that holds it: switching to a
+  -- profile on the other backend starts a new one there instead.
+  local target_backend = profiles.backend(profile)
+  local current_backend = session_id and require("claude_agents.opencode").backend_of(session_id) or nil
+  local crosses = current_backend ~= nil and current_backend ~= target_backend
+  if not session_id and not crosses then
     vim.notify(
       "ClaudeCode: cannot tell which conversation this tab's Claude is having, so it cannot be carried over "
         .. "(it is reported by status tracking). Close it and start it again under "
@@ -903,11 +952,27 @@ function M.launch_profile(name)
   end
 
   local function go()
-    M.restart(profile.name, session_id)
+    M.restart(profile.name, (not crosses) and session_id or nil)
   end
   local ok_status, status = pcall(require, "claude_agents.status")
   local entry = ok_status and status.get and status.get(tab)
   local state = entry and entry.state
+  if crosses then
+    local backend = require("claude_agents.backend")
+    require("claude_agents.agents.confirm").ask({
+      title = "Switch to " .. backend.label(target_backend),
+      message = {
+        "Restart this tab in " .. backend.label(target_backend) .. " under " .. profile.name .. "?",
+        "That starts a new conversation; this " .. backend.label(current_backend) .. " one can be resumed later.",
+      },
+      confirm = "restart",
+    }, function(yes)
+      if yes then
+        go()
+      end
+    end)
+    return
+  end
   if state == "busy" or state == "waiting" then
     require("claude_agents.agents.confirm").ask({
       title = "Switch account",
@@ -960,8 +1025,11 @@ function M.restart(profile_name, session_id, on_done)
   on_done = on_done or function() end
   local tab = vim.api.nvim_get_current_tabpage()
   local bufnr = active_bufnr()
+  -- nil: a fresh conversation (the profile runs the other backend). OpenCode's
+  -- launch reads `--resume <ses_…>` as its own `--session`.
+  local resume_args = session_id and ("--resume " .. session_id) or nil
   if not bufnr then
-    M.open({}, "--resume " .. session_id, { profile = profile_name })
+    M.open({}, resume_args, { profile = profile_name })
     on_done(true)
     return
   end
@@ -974,7 +1042,13 @@ function M.restart(profile_name, session_id, on_done)
     end
     if vim.api.nvim_tabpage_is_valid(tab) then
       pcall(vim.api.nvim_set_current_tabpage, tab)
-      M.open({}, "--resume " .. session_id, { profile = profile_name })
+      if not session_id then
+        -- The conversation stays where it was; this tab starts a new one.
+        pcall(function()
+          require("claude_agents.session_state").forget(tab)
+        end)
+      end
+      M.open({}, resume_args, { profile = profile_name })
     end
     restarting[tab] = nil
     on_done(true)
@@ -1012,7 +1086,7 @@ end
 ---the providers hold exactly one terminal per tabpage, and agents mode runs
 ---several in one tab.
 ---@param cmd_args string? Extra arguments (e.g. "--resume <id>").
----@param opts { overrides: table?, cwd: string?, instance: table?, profile: string|table|nil }|nil
+---@param opts { overrides: table?, cwd: string?, instance: table?, profile: string|table|nil, session_id: string?, name: string? }|nil
 ---@return string cmd_string
 ---@return table env_table
 ---@return table effective_config The resolved terminal config, including the spawn cwd.
@@ -1023,8 +1097,12 @@ function M.build_launch(cmd_args, opts)
   if type(opts.cwd) == "string" and opts.cwd ~= "" then
     effective_config.cwd = vim.fn.expand(opts.cwd)
   end
-  local cmd_string, env_table, profile =
-    get_claude_command_and_env(cmd_args, effective_config, opts.instance, { profile = opts.profile })
+  local cmd_string, env_table, profile = get_claude_command_and_env(
+    cmd_args,
+    effective_config,
+    opts.instance,
+    { profile = opts.profile, session_id = opts.session_id, name = opts.name }
+  )
   return cmd_string, env_table, effective_config, profile
 end
 

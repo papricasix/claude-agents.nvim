@@ -302,3 +302,79 @@ describe("WebSocket handshake authentication", function()
     end)
   end)
 end)
+
+describe("WebSocket handshake: a client let in without the token (OpenCode)", function()
+  local handshake
+  local TOKEN = "550e8400-e29b-41d4-a716-446655440000"
+
+  local function request(extra)
+    local lines = {
+      "GET / HTTP/1.1",
+      "Host: 127.0.0.1:8080",
+      "Upgrade: websocket",
+      "Connection: Upgrade",
+      "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
+      "Sec-WebSocket-Version: 13",
+    }
+    for _, line in ipairs(extra or {}) do
+      lines[#lines + 1] = line
+    end
+    lines[#lines + 1] = ""
+    lines[#lines + 1] = ""
+    return table.concat(lines, "\r\n")
+  end
+
+  before_each(function()
+    package.loaded["claude_agents.server.handshake"] = nil
+    handshake = require("claude_agents.server.handshake")
+  end)
+
+  it("refuses a request with no token when nothing allows it", function()
+    local valid, err = handshake.validate_upgrade_request(request(), TOKEN)
+    assert.is_false(valid)
+    assert_contains(err, "Missing authentication header")
+  end)
+
+  it("lets it in when the server is armed for it, and says so", function()
+    local valid, headers, tokenless = handshake.validate_upgrade_request(request(), TOKEN, function()
+      return true
+    end)
+    assert.is_true(valid)
+    assert.is_table(headers)
+    assert.is_true(tokenless)
+  end)
+
+  it("never lets a browser in that way: a request with an Origin header", function()
+    local valid = handshake.validate_upgrade_request(request({ "Origin: http://evil.example" }), TOKEN, function()
+      return true
+    end)
+    assert.is_false(valid)
+  end)
+
+  it("refuses when the server is not armed", function()
+    local valid = handshake.validate_upgrade_request(request(), TOKEN, function()
+      return false
+    end)
+    assert.is_false(valid)
+  end)
+
+  it("still checks a token that is sent, armed or not", function()
+    local valid = handshake.validate_upgrade_request(
+      request({ "x-claude-code-ide-authorization: wrong-token-value" }),
+      TOKEN,
+      function()
+        return true
+      end
+    )
+    assert.is_false(valid)
+  end)
+
+  it("reports the tokenless handshake through process_handshake", function()
+    local success, response, _, tokenless = handshake.process_handshake(request(), TOKEN, function()
+      return true
+    end)
+    assert.is_true(success)
+    assert_contains(response, "101 Switching Protocols")
+    assert.is_true(tokenless)
+  end)
+end)

@@ -505,4 +505,63 @@ describe("agents.registry", function()
       expect(cmd:find("--fork-session", 1, true)).to_be(nil)
     end)
   end)
+
+  describe("OpenCode conversations", function()
+    local started
+
+    before_each(function()
+      started = {}
+      package.loaded["claude_agents.opencode.launch"] = {
+        started = function(session_id, opts)
+          started[#started + 1] = { session_id = session_id, opts = opts }
+        end,
+        ended = function() end,
+      }
+    end)
+
+    after_each(function()
+      package.loaded["claude_agents.opencode.launch"] = nil
+      package.loaded["claude_agents.opencode.api"] = nil
+    end)
+
+    it("opens one with --session, and names a new one through the launch", function()
+      local term = registry.launch("ses_abc", { win = 1000, tab = 1, name = "plan-2" })
+      local cmd = table.concat(spawned[1].cmd, " ")
+      expect(cmd:find("--session ses_abc", 1, true) ~= nil).to_be_true()
+      expect(cmd:find("--session-id", 1, true)).to_be(nil)
+      expect(cmd:find("--name", 1, true)).to_be(nil)
+      expect(term.backend).to_be("opencode")
+      expect(started[1].session_id).to_be("ses_abc")
+      expect(started[1].opts.agent_key).to_be(term.agent_key)
+    end)
+
+    it("forks through the service, opening the copy", function()
+      package.loaded["claude_agents"].state = { config = { agents = { resume_mode = "fork" } } }
+      package.loaded["claude_agents.opencode.api"] = {
+        call_sync = function(method, path)
+          expect(method).to_be("POST")
+          expect(path).to_be("/api/session/ses_abc/fork")
+          return nil, { id = "ses_copy" }
+        end,
+      }
+      registry.launch("ses_abc", { win = 1000, tab = 1, resume = true })
+      local cmd = table.concat(spawned[1].cmd, " ")
+      expect(cmd:find("--session ses_copy", 1, true) ~= nil).to_be_true()
+      expect(started[1].session_id).to_be("ses_copy")
+    end)
+
+    it("refuses to start when the fork fails, and lets its server go", function()
+      package.loaded["claude_agents"].state = { config = { agents = { resume_mode = "fork" } } }
+      package.loaded["claude_agents.opencode.api"] = {
+        call_sync = function()
+          return "HTTP 500", nil
+        end,
+      }
+      local term, err = registry.launch("ses_abc", { win = 1000, tab = 1, resume = true })
+      expect(term).to_be(nil)
+      assert_contains(err, "could not fork")
+      expect(stopped_instances[1]).to_be("ses_abc")
+      expect(#spawned).to_be(0)
+    end)
+  end)
 end)

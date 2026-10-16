@@ -39,6 +39,10 @@ M.BUILTIN = {
   { name = "API key", key = "a", auth = "api", keychain = "default" },
 }
 
+--- Added to the built-ins when OpenCode is installed (or is the backend): a
+--- launch under it runs OpenCode, on whatever model and agent OpenCode is set to.
+M.OPENCODE_BUILTIN = { name = "OpenCode", key = "o", backend = "opencode" }
+
 --- Keys the profile menu needs for itself: moving the cursor (`hjkl`) and
 --- closing (`q`). A profile bound to one of them would take it from the menu.
 M.RESERVED_KEYS = { h = true, j = true, k = true, l = true, q = true }
@@ -56,7 +60,9 @@ local CHECK_TTL = 30
 ---@class ClaudeCodeProfile
 ---@field name string
 ---@field key string|nil Single-key accelerator in the profile menu.
----@field auth "subscription"|"api"
+---@field backend "claude"|"opencode"|nil Which CLI a launch under it runs; nil is Claude.
+---@field agent string|nil OpenCode: the agent its sessions start with (`build`, `plan`, …).
+---@field auth "subscription"|"api"|nil Claude only.
 ---@field keychain string|nil Keychain entry (api; "default" when neither this nor api_key_cmd is set).
 ---@field api_key_cmd string|nil A command printing the key (api).
 ---@field model string|nil Passed as `--model` unless the command already has one.
@@ -84,10 +90,53 @@ local function normalize(entry)
   return profile
 end
 
+--- Whether an executable is on PATH; false when it cannot be told. A seam for specs.
+M._executable = function(exe)
+  local ok, result = pcall(function()
+    return vim.fn.executable(exe)
+  end)
+  return ok and result == 1
+end
+
+---The built-ins this Neovim can use: the Claude ones unless only OpenCode is
+---there to run, and OpenCode's when it is installed or is the backend.
+---@param config table|nil
+---@return table[]
+function M.builtin_list(config)
+  config = type(config) == "table" and config or {}
+  ---The executable a command line starts with.
+  local function executable_of(cmd)
+    local ok, words = pcall(utils.shell_split, cmd)
+    if ok and type(words) == "table" and words[1] then
+      return words[1]
+    end
+    return cmd:match("^%s*(%S+)")
+  end
+  local opencode_backend = config.backend == "opencode"
+  local opencode_cmd = type(config.opencode) == "table" and config.opencode.cmd or "opencode"
+  local opencode_exe = executable_of(type(opencode_cmd) == "string" and opencode_cmd or "opencode")
+  local has_opencode = opencode_backend or (opencode_exe ~= nil and M._executable(opencode_exe))
+  local claude_cmd = type(config.terminal_cmd) == "string" and config.terminal_cmd ~= "" and config.terminal_cmd
+    or "claude"
+  local claude_exe = executable_of(claude_cmd)
+  local has_claude = not opencode_backend or (claude_exe ~= nil and M._executable(claude_exe))
+
+  local list = {}
+  if has_claude then
+    for _, entry in ipairs(M.BUILTIN) do
+      list[#list + 1] = entry
+    end
+  end
+  if has_opencode then
+    list[#list + 1] = M.OPENCODE_BUILTIN
+  end
+  return list
+end
+
 ---@param config table|nil The full plugin config.
 function M.setup(config)
   local opts = type(config) == "table" and type(config.profiles) == "table" and config.profiles or {}
-  local list = type(opts.list) == "table" and opts.list or M.BUILTIN
+  local list = type(opts.list) == "table" and opts.list or M.builtin_list(config)
   profiles = {}
   for _, entry in ipairs(list) do
     profiles[#profiles + 1] = normalize(entry)
@@ -140,6 +189,17 @@ end
 ---@return string|nil
 function M.default_name()
   return default_name
+end
+
+---Which CLI a launch under a profile runs.
+---@param profile ClaudeCodeProfile|string|nil
+---@return "claude"|"opencode"|nil backend nil for no profile.
+function M.backend(profile)
+  profile = type(profile) == "string" and M.get(profile) or profile
+  if type(profile) ~= "table" then
+    return nil
+  end
+  return profile.backend == "opencode" and "opencode" or "claude"
 end
 
 ---What a session run under a profile is marked with; "" for none.
@@ -406,6 +466,12 @@ function M.session_of_argv(argv)
       if type(value) == "string" and value:match("^%x+%-%x+%-%x+%-%x+%-%x+$") then
         return value
       end
+    elseif flag == "--session" or flag == "-s" then
+      -- OpenCode names its conversation with `--session <ses_…>`.
+      local value = inline or argv[i + 1]
+      if type(value) == "string" and value:match("^ses_[%w]+$") then
+        return value
+      end
     end
   end
   return nil
@@ -463,6 +529,27 @@ end
 function M.launch_parts(profile, argv)
   if type(profile) ~= "table" then
     return nil
+  end
+  if profile.backend == "opencode" then
+    -- OpenCode keeps its own credentials, so nothing is blanked or injected; the
+    -- model and agent are set on the session through the API (the TUI has no
+    -- flag for either), so they travel separately from the arguments.
+    local env = {}
+    for key, value in pairs(type(profile.env) == "table" and profile.env or {}) do
+      env[key] = value
+    end
+    local provider, model = nil, nil
+    if type(profile.model) == "string" then
+      provider, model = profile.model:match("^([^/]+)/(.+)$")
+    end
+    return {
+      args = (type(profile.args) == "string" and profile.args) or "",
+      env = env,
+      settings = nil,
+      workspace = nil,
+      model = provider and { providerID = provider, id = model } or nil,
+      agent = (type(profile.agent) == "string" and profile.agent ~= "") and profile.agent or nil,
+    }
   end
   local blank = { ANTHROPIC_API_KEY = "", ANTHROPIC_AUTH_TOKEN = "" }
   if profile.auth == "api" then

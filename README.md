@@ -16,6 +16,7 @@ Claude Code in Neovim, from one terminal to a whole team of agents.
 - **Clickable paths.** File paths in Claude's terminal open in Neovim, not in your file manager.
 - **Conversations that come back.** Restore a Neovim session and each tab's Claude resumes where it left off.
 - **Subscription or API key, per session.** Start any Claude on either, or switch a running one without losing the conversation. The key stays in your OS keychain, out of your config and out of reach of the commands Claude runs.
+- **OpenCode too.** Run [OpenCode](https://opencode.ai) instead of Claude Code (`backend = "opencode"`), or next to it under a launch profile: the same terminal, selection, status, edit diffs and agents view, with Claude's and OpenCode's conversations in one list.
 
 ## In the agents view
 
@@ -64,11 +65,11 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
 
 Coming from [coder/claudecode.nvim](https://github.com/coder/claudecode.nvim)? Change the repo line and keep everything else: the commands and the options are the same. The Lua module is now `claude_agents`; a `require("claudecode…")` in your config still works, with a one-time reminder to rename it.
 
-You need Neovim 0.11 or newer and the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code). [unified.nvim](https://github.com/papricasix/unified.nvim) is optional, and gives you inline diffs. `:checkhealth claude_agents` tells you what is missing.
+You need Neovim 0.11 or newer and the [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code), or [OpenCode](https://opencode.ai) 2.0 or newer with `backend = "opencode"` (the [guide](docs/guide.md#opencode) has the details). [unified.nvim](https://github.com/papricasix/unified.nvim) is optional, and gives you inline diffs. `:checkhealth claude_agents` tells you what is missing.
 
 ## Good to know
 
-The plan view and per-tab status are on; the live cursor and session persistence are off until you turn them on. All four hear from Claude through hooks the plugin adds when it launches Claude (`claude --settings`; your own settings are left alone, and a `--settings` of your own in `terminal_cmd` is merged in), so they only work for a Claude started from Neovim, and a change applies to the next Claude you start. Per-tab status runs a short hook on every tool call; switch it off if you never look at it.
+The plan view and per-tab status are on; the live cursor and session persistence are off until you turn them on. All four hear from Claude through hooks the plugin adds when it launches Claude (`claude --settings`; your own settings are left alone, and a `--settings` of your own in `terminal_cmd` is merged in), so they only work for a Claude started from Neovim, and a change applies to the next Claude you start. Per-tab status runs a short hook on every tool call; switch it off if you never look at it. OpenCode needs no hooks: the plugin follows the OpenCode it starts through OpenCode's own event stream.
 
 The [guide](docs/guide.md) has every command, the configuration, diffs, terminal providers and each of those features. The [agents guide](docs/agents.md) walks through the agents view.
 

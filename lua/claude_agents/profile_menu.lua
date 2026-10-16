@@ -47,6 +47,15 @@ local function trailer(profile, note)
     parts[#parts + 1] = note
   end
   local warn
+  if profile.backend == "opencode" then
+    parts[#parts + 1] = "OpenCode"
+    if type(profile.model) == "string" and profile.model ~= "" then
+      parts[#parts + 1] = profile.model
+    end
+    if type(profile.agent) == "string" and profile.agent ~= "" then
+      parts[#parts + 1] = profile.agent
+    end
+  end
   if profile.auth == "api" then
     local check = profiles.check_state(profile.name)
     if not check then

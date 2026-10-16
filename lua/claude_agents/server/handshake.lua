@@ -4,11 +4,21 @@ local utils = require("claude_agents.server.utils")
 local M = {}
 
 ---Check if an HTTP request is a valid WebSocket upgrade request
+---
+---`allow_tokenless` is the one exception to the token: OpenCode's TUI, told the
+---port through its environment, connects without the header (it sends the
+---lock file's token only when it found the editor by scanning lock files). A
+---server armed for such a launch passes a function that says whether this
+---connection may come in without it. A request carrying an `Origin` header is
+---never let in that way: every browser sends one on a WebSocket, and a page
+---reaching for a loopback port is exactly what the token is there to stop.
 ---@param request string The HTTP request string
 ---@param expected_auth_token string|nil Expected authentication token for validation
+---@param allow_tokenless (fun(headers: table): boolean)|nil
 ---@return boolean valid True if it's a valid WebSocket upgrade request
 ---@return table|string headers_or_error Headers table if valid, error message if not
-function M.validate_upgrade_request(request, expected_auth_token)
+---@return boolean|nil tokenless True when it was let in without the token.
+function M.validate_upgrade_request(request, expected_auth_token, allow_tokenless)
   local headers = utils.parse_http_headers(request)
 
   -- Check for required headers
@@ -43,6 +53,12 @@ function M.validate_upgrade_request(request, expected_auth_token)
 
     local auth_header = headers["x-claude-code-ide-authorization"]
     if not auth_header then
+      if type(allow_tokenless) == "function" and headers["origin"] == nil then
+        local ok_allow, allowed = pcall(allow_tokenless, headers)
+        if ok_allow and allowed then
+          return true, headers, true
+        end
+      end
       return false, "Missing authentication header: x-claude-code-ide-authorization"
     end
 
@@ -164,10 +180,12 @@ end
 ---Process a complete WebSocket handshake
 ---@param request string The HTTP request string
 ---@param expected_auth_token string|nil Expected authentication token for validation
+---@param allow_tokenless (fun(headers: table): boolean)|nil See `validate_upgrade_request`.
 ---@return boolean success True if handshake was successful
 ---@return string response The HTTP response to send
 ---@return table|nil headers The parsed headers if successful
-function M.process_handshake(request, expected_auth_token)
+---@return boolean|nil tokenless True when it was let in without the token.
+function M.process_handshake(request, expected_auth_token, allow_tokenless)
   -- Check if it's a valid WebSocket endpoint request
   if not M.is_websocket_endpoint(request) then
     local response = M.create_error_response(404, "WebSocket endpoint not found")
@@ -175,7 +193,8 @@ function M.process_handshake(request, expected_auth_token)
   end
 
   -- Validate the upgrade request
-  local is_valid_upgrade, validation_payload = M.validate_upgrade_request(request, expected_auth_token) ---@type boolean, table|string
+  local is_valid_upgrade, validation_payload, tokenless =
+    M.validate_upgrade_request(request, expected_auth_token, allow_tokenless) ---@type boolean, table|string, boolean|nil
   if not is_valid_upgrade then
     assert(type(validation_payload) == "string", "validation_payload should be a string on error")
     local error_message = validation_payload
@@ -197,7 +216,7 @@ function M.process_handshake(request, expected_auth_token)
     return false, error_response, nil -- error_response is string, nil is for headers
   end
 
-  return true, response, headers_table -- headers_table is 'table', compatible with 'table|nil'
+  return true, response, headers_table, tokenless -- headers_table is 'table', compatible with 'table|nil'
 end
 
 ---Check if a request buffer contains a complete HTTP request

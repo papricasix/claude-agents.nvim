@@ -188,7 +188,7 @@ function M._handle_new_connection(server)
     end, function(cl, error_msg)
       server.on_error("Client " .. cl.id .. " error: " .. error_msg)
       M._disconnect_client(server, cl, 1006, "Client error: " .. error_msg)
-    end, server.auth_token)
+    end, server.auth_token, server.allow_tokenless)
   end)
 
   -- Notify about new connection

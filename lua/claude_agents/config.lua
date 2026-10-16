@@ -10,6 +10,22 @@ local M = {}
 M.defaults = {
   port_range = { min = 10000, max = 65535 },
   auto_start = true,
+  -- Which agent plain launches run: "claude" (the Claude Code CLI) or
+  -- "opencode". A launch profile with its own `backend` overrides it for that
+  -- launch, and resuming a conversation runs it in the CLI it belongs to.
+  backend = "claude",
+  -- OpenCode, when a launch runs it (see `backend`).
+  opencode = {
+    cmd = "opencode", -- the OpenCode executable, leading arguments allowed
+    -- Review OpenCode's edits as diffs in Neovim (:w accepts, :q rejects). The
+    -- plugin asks OpenCode to ask before editing, for the sessions it launches.
+    review_edits = true,
+    service_timeout_ms = 15000, -- how long to wait for OpenCode's background service to start
+  },
+  -- Also create backend-neutral names for the commands: :Agent, :AgentSend,
+  -- :Agents, :AgentNew, ... (ClaudeCode -> Agent). Off by default; a name some
+  -- other plugin already uses is left alone.
+  command_aliases = false,
   terminal_cmd = nil,
   env = {}, -- Custom environment variables for Claude terminal
   log_level = "info",
@@ -76,6 +92,10 @@ M.defaults = {
     --   icons = { busy = require("claude_agents.status").SPINNER }
     -- animates a working tab with the CLI's own spinner.
     icons = { busy = "●", waiting = "◆", done = "●", idle = "○", none = "" },
+    -- The same for tabs and agents running OpenCode. A state left out is drawn
+    -- as `icons` draws it, except busy, which is OpenCode's own braille spinner
+    -- (`require("claude_agents.status").OPENCODE_SPINNER`) unless set here.
+    opencode_icons = nil,
     spinner_ms = 120, -- frame interval for animated icons (0 disables animation)
     highlights = {
       busy = "ClaudeCodeStatusBusy", -- defaults to a link to DiagnosticInfo
@@ -297,8 +317,11 @@ M.defaults = {
     -- the CLI decides — or a profile name below.
     default = nil,
     -- nil gives the built-ins: `subscription` (key `s`) and `API key` (key `a`,
-    -- keychain entry "default"). Each entry: { name, key, auth = "subscription" |
-    -- "api", keychain | api_key_cmd, model, args, env, workspace, mark }.
+    -- keychain entry "default"), and `OpenCode` (key `o`) when OpenCode is
+    -- installed. Each entry: { name, key, auth = "subscription" | "api",
+    -- keychain | api_key_cmd, model, args, env, workspace, mark }, or for
+    -- OpenCode { name, key, backend = "opencode", model = "provider/model",
+    -- agent, args, env, mark }.
     list = nil,
   },
   terminal = nil, -- Will be lazy-loaded to avoid circular dependency
@@ -358,7 +381,30 @@ function M.validate_profiles(profiles)
     assert(type(profile.name) == "string" and profile.name ~= "", label .. ".name must be a non-empty string")
     assert(not names[profile.name], label .. ": the name " .. profile.name .. " is used twice")
     names[profile.name] = true
-    assert(profile.auth == "subscription" or profile.auth == "api", label .. '.auth must be "subscription" or "api"')
+    if profile.backend ~= nil then
+      assert(
+        profile.backend == "claude" or profile.backend == "opencode",
+        label .. '.backend must be "claude" or "opencode"'
+      )
+    end
+    if profile.backend == "opencode" then
+      assert(
+        profile.auth == nil and profile.keychain == nil and profile.api_key_cmd == nil and profile.workspace == nil,
+        label .. ": auth, keychain, api_key_cmd and workspace are for Claude profiles, not OpenCode ones"
+      )
+      if profile.model ~= nil then
+        assert(
+          type(profile.model) == "string" and profile.model:match("^[^/%s]+/%S+$") ~= nil,
+          label .. '.model must be "provider/model" for an OpenCode profile'
+        )
+      end
+      if profile.agent ~= nil then
+        assert(type(profile.agent) == "string" and profile.agent ~= "", label .. ".agent must be a non-empty string")
+      end
+    else
+      assert(profile.auth == "subscription" or profile.auth == "api", label .. '.auth must be "subscription" or "api"')
+      assert(profile.agent == nil, label .. '.agent is for OpenCode profiles (backend = "opencode")')
+    end
     if profile.key ~= nil then
       assert(type(profile.key) == "string" and profile.key ~= "", label .. ".key must be a non-empty string")
       assert(
@@ -421,6 +467,29 @@ function M.validate(config)
   )
 
   assert(type(config.auto_start) == "boolean", "auto_start must be a boolean")
+
+  if config.backend ~= nil then
+    assert(config.backend == "claude" or config.backend == "opencode", 'backend must be "claude" or "opencode"')
+  end
+  if config.opencode ~= nil then
+    local oc = config.opencode
+    assert(type(oc) == "table", "opencode must be a table")
+    if oc.cmd ~= nil then
+      assert(type(oc.cmd) == "string" and oc.cmd ~= "", "opencode.cmd must be a non-empty string")
+    end
+    if oc.review_edits ~= nil then
+      assert(type(oc.review_edits) == "boolean", "opencode.review_edits must be a boolean")
+    end
+    if oc.service_timeout_ms ~= nil then
+      assert(
+        type(oc.service_timeout_ms) == "number" and oc.service_timeout_ms > 0,
+        "opencode.service_timeout_ms must be a positive number"
+      )
+    end
+  end
+  if config.command_aliases ~= nil then
+    assert(type(config.command_aliases) == "boolean", "command_aliases must be a boolean")
+  end
 
   assert(config.terminal_cmd == nil or type(config.terminal_cmd) == "string", "terminal_cmd must be nil or a string")
 
@@ -890,29 +959,25 @@ function M.validate(config)
     if st.spinner_ms ~= nil then
       assert(type(st.spinner_ms) == "number" and st.spinner_ms >= 0, "status.spinner_ms must be a non-negative number")
     end
-    for _, field in ipairs({ "icons", "highlights" }) do
+    for _, field in ipairs({ "icons", "opencode_icons", "highlights" }) do
       if st[field] ~= nil then
         assert(type(st[field]) == "table", "status." .. field .. " must be a table")
+        local is_icons = field == "icons" or field == "opencode_icons"
         for key, value in pairs(st[field]) do
           assert(
             key == "busy" or key == "waiting" or key == "done" or key == "idle" or key == "none",
             "status." .. field .. " keys must be 'busy', 'waiting', 'done', 'idle' or 'none'"
           )
           -- Icons may also be a list of frames to animate; highlights may not.
-          if field == "icons" and type(value) == "table" then
+          if is_icons and type(value) == "table" then
             for _, frame in ipairs(value) do
-              assert(type(frame) == "string", "status.icons." .. key .. " frames must be strings")
+              assert(type(frame) == "string", "status." .. field .. "." .. key .. " frames must be strings")
             end
-            assert(#value > 0, "status.icons." .. key .. " must not be an empty frame list")
+            assert(#value > 0, "status." .. field .. "." .. key .. " must not be an empty frame list")
           else
             assert(
               type(value) == "string",
-              "status."
-                .. field
-                .. "."
-                .. key
-                .. " must be a string"
-                .. (field == "icons" and " or a list of frames" or "")
+              "status." .. field .. "." .. key .. " must be a string" .. (is_icons and " or a list of frames" or "")
             )
           end
         end

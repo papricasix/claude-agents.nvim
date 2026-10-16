@@ -60,10 +60,23 @@ local function create_instance(tab_id, opts)
       end,
 
       ["tools/list"] = function(client, params)
+        -- A client let in without the token (OpenCode's editor context) is
+        -- sent selections and @ mentions, and is offered nothing to call.
+        if client and client.tokenless then
+          return { tools = {} }
+        end
         return { tools = tools.get_tool_list() }
       end,
 
       ["tools/call"] = function(client, params)
+        if client and client.tokenless then
+          return nil,
+            {
+              code = -32601,
+              message = "Method not found",
+              data = "Tools are not available to a client that connected without the token",
+            }
+        end
         logger.debug(
           "server",
           "Received tools/call. Tool: ",
@@ -179,8 +192,36 @@ local function create_instance(tab_id, opts)
     state.server = server_obj
     state.port = server_obj.port
     state.ping_timer = tcp_server.start_ping_timer(server_obj, 30000)
+    server_obj.allow_tokenless = function()
+      return inst.tokenless_allowed(server_obj.clients)
+    end
 
     return true, server_obj.port
+  end
+
+  ---Whether a client may come in without the token now: one at a time, and
+  ---only while armed for the OpenCode launch that is told this port (see
+  ---`inst.arm_tokenless`).
+  ---@param clients table<string, table>|nil The server's connected clients.
+  ---@return boolean
+  function inst.tokenless_allowed(clients)
+    if not state.tokenless_armed then
+      return false
+    end
+    for _, other in pairs(clients or {}) do
+      if other.tokenless and other.state ~= "closed" and other.state ~= "closing" then
+        return false
+      end
+    end
+    return true
+  end
+
+  ---Let (or stop letting) one client in without the token: the OpenCode TUI a
+  ---launch told this port, which connects without one. Disarming does not drop
+  ---a client already in; its process ending does.
+  ---@param on boolean
+  function inst.arm_tokenless(on)
+    state.tokenless_armed = on == true
   end
 
   function inst.stop()

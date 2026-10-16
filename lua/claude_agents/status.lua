@@ -174,6 +174,13 @@ end
 
 M.SPINNER = spinner_frames()
 
+--- OpenCode's own "working" spinner: the braille snake its TUI draws while a
+--- session runs (the ten-frame `dots` set, 80ms a frame in OpenCode). What a
+--- busy OpenCode tab or agent shows unless `status.opencode_icons` says
+--- otherwise, so the two CLIs can be told apart at a glance. Single-width, like
+--- `SPINNER`.
+M.OPENCODE_SPINNER = { "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" }
+
 --- Current animation frame, and the timer advancing it. The timer only runs
 --- while some tab actually shows an animated icon, so an all-idle Neovim ticks
 --- nothing: a repeating redraw of every tabline and statusline is not something
@@ -399,10 +406,34 @@ local function redraw()
   end)
 end
 
+---Which CLI a conversation id belongs to, for the icon it is drawn with.
+---@param session_id string|nil
+---@return "opencode"|nil
+local function backend_of(session_id)
+  if type(session_id) == "string" and session_id:match("^ses_") then
+    return "opencode"
+  end
+  return nil
+end
+
 ---The configured icon for a state: either a glyph or a list of frames.
+---
+---An OpenCode conversation reads `opencode_icons` first, whose `busy` defaults
+---to OpenCode's own spinner; any state it leaves out is drawn like Claude's.
 ---@param state ClaudeCodeStatusState
+---@param session_id string|nil The conversation drawn, when one is known.
 ---@return string|string[]
-local function icon_spec(state)
+local function icon_spec(state, session_id)
+  if backend_of(session_id) == "opencode" then
+    local own = (config and config.opencode_icons) or {}
+    local spec = own[state]
+    if spec == nil and state == "busy" then
+      spec = M.OPENCODE_SPINNER
+    end
+    if spec ~= nil then
+      return spec
+    end
+  end
   local icons = (config and config.icons) or {}
   local spec = icons[state]
   if spec == nil then
@@ -428,7 +459,7 @@ local function sync_spinner()
   local want, interval = false, nil
   if not (config and (config.auto_redraw == false or config.spinner_ms == 0)) then
     for _, entry in pairs(entries) do
-      local spec = icon_spec(entry.state)
+      local spec = icon_spec(entry.state, entry.session_id)
       if type(spec) == "table" and #spec > 1 then
         want = true
         break
@@ -1190,7 +1221,9 @@ end
 ---@param tab integer|nil
 ---@return string
 function M.icon(tab)
-  local spec = icon_spec(M.get_state(tab))
+  local resolved = normalize_tab(tab)
+  local entry = resolved and entries[resolved]
+  local spec = icon_spec(M.get_state(tab), entry and entry.session_id)
   if type(spec) == "table" then
     if #spec == 0 then
       return ""
@@ -1272,10 +1305,11 @@ end
 ---view keys by conversation, since several share one tab — so a running agent
 ---animates with the same spinner, on the same frame, as a working tab.
 ---@param state ClaudeCodeStatusState|nil
+---@param session_id string|nil The conversation drawn: an OpenCode one has icons of its own.
 ---@return string icon
 ---@return string|nil hl_group
-function M.icon_for_state(state)
-  local spec = icon_spec(state or "none")
+function M.icon_for_state(state, session_id)
+  local spec = icon_spec(state or "none", session_id)
   local glyph
   if type(spec) == "table" then
     glyph = #spec > 0 and (spec[((frame - 1) % #spec) + 1] or "") or ""
@@ -1293,9 +1327,10 @@ end
 ---rows it just drew, or it would hold the clock open for a pane where nothing
 ---moves.
 ---@param state ClaudeCodeStatusState|nil
+---@param session_id string|nil The conversation drawn (see `icon_for_state`).
 ---@return boolean
-function M.is_animated(state)
-  local spec = icon_spec(state or "none")
+function M.is_animated(state, session_id)
+  local spec = icon_spec(state or "none", session_id)
   return type(spec) == "table" and #spec > 1
 end
 

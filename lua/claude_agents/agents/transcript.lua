@@ -259,6 +259,23 @@ local config = nil
 -- I/O seam
 --------------------------------------------------------------------------------
 
+--- OpenCode conversations are transcripts too, written out in memory at
+--- `opencode://<session id>` (see `agents/opencode_store.lua`); every read of
+--- such a path is answered from there, which is what lets everything below —
+--- the fold, the search, a file's history, one tool call — read them unchanged.
+local OPENCODE_PREFIX = "opencode://"
+
+---@param path any
+---@return boolean
+local function is_opencode(path)
+  return type(path) == "string" and path:sub(1, #OPENCODE_PREFIX) == OPENCODE_PREFIX
+end
+M._is_opencode = is_opencode
+
+local function opencode_store()
+  return require("claude_agents.agents.opencode_store")
+end
+
 --- Injectable I/O so specs can drive the parser without a real event loop or
 --- filesystem. Production implementations use libuv directly.
 M._io = {
@@ -266,6 +283,9 @@ M._io = {
   ---@return { size: integer, mtime: integer, ino: integer|nil, birth: number|nil }|nil
   ---        `birth`: creation time with its fraction, where the filesystem records one.
   stat = function(path)
+    if is_opencode(path) then
+      return opencode_store().stat(path)
+    end
     local st = uv and uv.fs_stat(path)
     if not st then
       return nil
@@ -282,6 +302,9 @@ M._io = {
   ---@param dir string
   ---@return string[]|nil names Entry names, or nil when the directory is unreadable.
   scandir = function(dir)
+    if is_opencode(dir) then
+      return opencode_store().scandir(dir)
+    end
     local handle = uv and uv.fs_scandir(dir)
     if not handle then
       return nil
@@ -312,6 +335,10 @@ M._io = {
   ---@param len integer
   ---@param cb fun(data: string|nil, err: string|nil)
   read = function(path, offset, len, cb)
+    if is_opencode(path) then
+      opencode_store().read(path, offset, len, cb)
+      return
+    end
     if not uv then
       cb(nil, "no libuv")
       return
@@ -338,6 +365,9 @@ M._io = {
   ---@param len integer
   ---@return string|nil
   read_tail_sync = function(path, len)
+    if is_opencode(path) then
+      return opencode_store().read_tail_sync(path, len)
+    end
     if not uv then
       return nil
     end
@@ -363,6 +393,9 @@ M._io = {
   ---@param len integer
   ---@return string|nil
   read_sync = function(path, len)
+    if is_opencode(path) then
+      return opencode_store().read_sync(path, len)
+    end
     if not uv then
       return nil
     end
@@ -596,6 +629,9 @@ end
 ---@param session_id string
 ---@return string path
 function M.session_path(cwd, session_id)
+  if type(session_id) == "string" and session_id:match("^ses_") then
+    return opencode_store().path(session_id)
+  end
   local dir = M.project_dir(cwd)
   if not dir then
     local target = M._trim_separator(vim.fn.fnamemodify(cwd, ":p"))
@@ -718,6 +754,9 @@ end
 function M.locate(session_id, hint)
   if type(session_id) ~= "string" or session_id == "" then
     return nil
+  end
+  if session_id:match("^ses_") then
+    return opencode_store().path(session_id)
   end
   if type(hint) == "string" and M._io.stat(hint) then
     return hint
@@ -2370,7 +2409,7 @@ end
 ---so a burst of tool events cannot pile up reads.
 ---@param path string
 ---@param cb fun(summary: ClaudeCodeAgentsSummary|nil)
-function M.summary(path, cb)
+local function fold_summary(path, cb)
   local st = M._io.stat(path)
   if not st then
     cache[path] = nil
@@ -2424,6 +2463,38 @@ function M.summary(path, cb)
   fold_chunks(sum, st, job, finish)
 end
 
+---Fold a transcript up to date, calling back with its summary.
+---
+---An OpenCode conversation's transcript is first brought up to date with the
+---service (`opencode_store.refresh`), then folded like any other.
+---@param path string
+---@param cb fun(summary: ClaudeCodeAgentsSummary|nil)
+function M.summary(path, cb)
+  if is_opencode(path) then
+    local store = opencode_store()
+    store.refresh(store.id_of(path), function()
+      fold_summary(path, cb)
+    end)
+    return
+  end
+  fold_summary(path, cb)
+end
+
+---Run `fn` once an OpenCode transcript is up to date with the service; at once
+---for any other.
+---@param path string
+---@param fn fun()
+local function when_current(path, fn)
+  if is_opencode(path) then
+    local store = opencode_store()
+    store.refresh(store.id_of(path), function()
+      fn()
+    end)
+    return
+  end
+  fn()
+end
+
 ---Whether a transcript has moved on since it was last folded: one stat, no read.
 ---
 ---What the hooks-mode poll asks about the selected session. A hook says a tool
@@ -2433,6 +2504,11 @@ end
 ---@param path string
 ---@return boolean
 function M.stale(path)
+  -- The service has moved on (its events said so), or the written transcript
+  -- has grown past the fold.
+  if is_opencode(path) and opencode_store().outdated(path) then
+    return true
+  end
   local st = M._io.stat(path)
   if not st then
     return false
@@ -2479,6 +2555,21 @@ function M.list(cwd)
           }
         end
       end
+    end
+  end
+  -- The project's OpenCode conversations, listed beside Claude's.
+  local ok_oc, oc_rows = pcall(function()
+    return opencode_store().list(cwd)
+  end)
+  if ok_oc and type(oc_rows) == "table" then
+    for _, row in ipairs(oc_rows) do
+      found[#found + 1] = {
+        id = row.id,
+        path = row.path,
+        size = row.size,
+        mtime = row.mtime,
+        summary = cache[row.path],
+      }
     end
   end
   table.sort(found, function(a, b)
@@ -2539,6 +2630,15 @@ function M.list_all()
       end
     end
   end
+  local ok_oc, oc_rows = pcall(function()
+    return opencode_store().list_all()
+  end)
+  if ok_oc and type(oc_rows) == "table" then
+    for _, row in ipairs(oc_rows) do
+      row.summary = cache[row.path]
+      rows[#rows + 1] = row
+    end
+  end
   table.sort(rows, function(a, b)
     return a.mtime > b.mtime
   end)
@@ -2560,6 +2660,9 @@ local cwd_cache = {}
 ---@param path string
 ---@return string|nil cwd
 function M.cwd_of(path)
+  if is_opencode(path) then
+    return opencode_store().cwd_of(path)
+  end
   local hit = cwd_cache[path]
   if hit ~= nil then
     return hit or nil
@@ -2948,7 +3051,7 @@ end
 ---@param opts { limit: integer|nil }|nil
 ---@param cb fun(matches: table[])
 ---@return { cancel: fun() } job
-function M.search(path, matcher, opts, cb)
+local function search_impl(path, matcher, opts, cb)
   opts = opts or {}
   local limit = opts.limit or 3
   local job = { cancelled = false }
@@ -3039,6 +3142,32 @@ function M.search(path, matcher, opts, cb)
   step()
 
   return job
+end
+
+---Search one transcript, calling back with up to `limit` matches (see
+---`search_impl`). An OpenCode conversation is brought up to date first.
+---@param path string Transcript path.
+---@param matcher table From `compile_query`.
+---@param opts { limit: integer|nil }|nil
+---@param cb fun(matches: table[])
+---@return { cancel: fun() } job
+function M.search(path, matcher, opts, cb)
+  if not is_opencode(path) then
+    return search_impl(path, matcher, opts, cb)
+  end
+  local outer = { cancelled = false }
+  outer.cancel = function()
+    outer.cancelled = true
+    if outer.inner then
+      outer.inner.cancel()
+    end
+  end
+  when_current(path, function()
+    if not outer.cancelled then
+      outer.inner = search_impl(path, matcher, opts, cb)
+    end
+  end)
+  return outer
 end
 
 --------------------------------------------------------------------------------
@@ -3161,7 +3290,7 @@ end
 ---@param transcript_path string
 ---@param file_path string
 ---@param cb fun(history: ClaudeCodeAgentsFileHistory|nil)
-function M.file_history(transcript_path, file_path, cb)
+local function file_history_impl(transcript_path, file_path, cb)
   local function answer(history)
     vim.schedule(function()
       cb(history)
@@ -3271,6 +3400,16 @@ function M.file_history(transcript_path, file_path, cb)
   end)
 end
 
+---Everything one session did to one file, read on demand (see `file_history_impl`).
+---@param transcript_path string
+---@param file_path string
+---@param cb fun(history: ClaudeCodeAgentsFileHistory|nil)
+function M.file_history(transcript_path, file_path, cb)
+  when_current(transcript_path, function()
+    file_history_impl(transcript_path, file_path, cb)
+  end)
+end
+
 --------------------------------------------------------------------------------
 -- One tool call within one session
 --------------------------------------------------------------------------------
@@ -3300,7 +3439,7 @@ end
 ---@param transcript_path string
 ---@param tool_id string The `toolu_…` id joining the call to its result.
 ---@param cb fun(call: ClaudeCodeAgentsToolCall|nil)
-function M.tool_call(transcript_path, tool_id, cb)
+local function tool_call_impl(transcript_path, tool_id, cb)
   local function answer(call)
     vim.schedule(function()
       cb(call)
@@ -3403,6 +3542,16 @@ function M.tool_call(transcript_path, tool_id, cb)
   step()
 end
 
+---Everything the transcript holds about one tool call (see `tool_call_impl`).
+---@param transcript_path string
+---@param tool_id string
+---@param cb fun(call: ClaudeCodeAgentsToolCall|nil)
+function M.tool_call(transcript_path, tool_id, cb)
+  when_current(transcript_path, function()
+    tool_call_impl(transcript_path, tool_id, cb)
+  end)
+end
+
 ---Drop a path's cached fold, cancelling any scan in flight.
 ---@param path string
 function M.invalidate(path)
@@ -3470,6 +3619,9 @@ end
 ---@return string|nil err
 function M.delete(path)
   M.invalidate(path)
+  if is_opencode(path) then
+    return opencode_store().delete(path)
+  end
   if not M._io.remove(path) then
     return false, "could not delete " .. path
   end

@@ -210,38 +210,60 @@ function M.launch(session_id, opts)
   end
 
   local terminal = require("claude_agents.terminal")
-  -- The CLI decides which conversation to open from these flags; passing them
-  -- explicitly is also what makes session_state stand down for this launch.
-  -- `--fork-session` resumes the conversation into a *new* one, leaving the
-  -- original transcript untouched — which is what a user who set
-  -- `resume_mode = "fork"` asked for. It is a switch on `--resume`, not a
-  -- flag with a value of its own (`claude --help`, 2.1.301: "use with
-  -- --resume or --continue"): given the id alone, the CLI started a brand new
-  -- conversation with the id as its first prompt. Keeping `--resume <id>` also
-  -- lets the profile lookup find the conversation's profile.
-  local flag
-  if opts.resume then
-    flag = "--resume " .. session_id
-    if agents_opts().resume_mode == "fork" then
-      flag = flag .. " --fork-session"
-    end
-  else
-    flag = "--session-id " .. session_id
-  end
-  -- What the conversation is called from its first line on: the CLI writes the
-  -- same `agent-name` entry `/rename` does (measured against 2.1.295), so the
-  -- name needs no second way of reaching the list. As `--name=<value>`, one
-  -- word, because a name may begin with a dash and would otherwise be read as an
-  -- option. Only for a conversation being started: a resumed one is called what
-  -- its transcript says.
   local name = (not opts.resume and type(opts.name) == "string" and opts.name ~= "") and opts.name or nil
-  if name then
-    flag = flag .. " --name=" .. utils.shell_quote(name)
+  local is_opencode = require("claude_agents.opencode").is_session_id(session_id)
+  -- The conversation the process opens: this one, or for an OpenCode fork the
+  -- copy the service makes of it (the agent is then rekeyed onto the copy when
+  -- the launch reports it, as a Claude fork's SessionStart does).
+  local target_id = session_id
+  local flag
+  if is_opencode then
+    if opts.resume and agents_opts().resume_mode == "fork" then
+      local api = require("claude_agents.opencode.api")
+      local fork_err, forked = api.call_sync("POST", "/api/session/" .. session_id .. "/fork", { body = {} }, 10000)
+      if fork_err or type(forked) ~= "table" or type(forked.id) ~= "string" then
+        claudecode.stop_agent_instance(session_id)
+        return nil, "could not fork the OpenCode session: " .. tostring(fork_err)
+      end
+      target_id = forked.id
+    end
+    -- OpenCode names its conversation the same way whether it exists or not; a
+    -- new one's name becomes its title (see `opencode.launch`).
+    flag = "--session " .. target_id
+  else
+    -- The CLI decides which conversation to open from these flags; passing them
+    -- explicitly is also what makes session_state stand down for this launch.
+    -- `--fork-session` resumes the conversation into a *new* one, leaving the
+    -- original transcript untouched — which is what a user who set
+    -- `resume_mode = "fork"` asked for. It is a switch on `--resume`, not a
+    -- flag with a value of its own (`claude --help`, 2.1.301: "use with
+    -- --resume or --continue"): given the id alone, the CLI started a brand new
+    -- conversation with the id as its first prompt. Keeping `--resume <id>` also
+    -- lets the profile lookup find the conversation's profile.
+    if opts.resume then
+      flag = "--resume " .. session_id
+      if agents_opts().resume_mode == "fork" then
+        flag = flag .. " --fork-session"
+      end
+    else
+      flag = "--session-id " .. session_id
+    end
+    -- What the conversation is called from its first line on: the CLI writes the
+    -- same `agent-name` entry `/rename` does (measured against 2.1.295), so the
+    -- name needs no second way of reaching the list. As `--name=<value>`, one
+    -- word, because a name may begin with a dash and would otherwise be read as an
+    -- option. Only for a conversation being started: a resumed one is called what
+    -- its transcript says.
+    if name then
+      flag = flag .. " --name=" .. utils.shell_quote(name)
+    end
   end
   local ok_cmd, cmd_string, env_table, effective, profile = pcall(terminal.build_launch, flag, {
     cwd = cwd,
     instance = instance,
     profile = opts.profile,
+    session_id = target_id,
+    name = is_opencode and name or nil,
   })
   if not ok_cmd then
     claudecode.stop_agent_instance(session_id)
@@ -306,6 +328,9 @@ function M.launch(session_id, opts)
   pcall(function()
     vim.b[buf].claudecode_tab = tab
     vim.b[buf].claudecode_agent_session = session_id
+    if is_opencode then
+      vim.b[buf].claudecode_backend = "opencode"
+    end
   end)
 
   -- Shift+Enter inserts a newline rather than submitting, matching the snacks
@@ -333,6 +358,14 @@ function M.launch(session_id, opts)
   if profile then
     pcall(function()
       require("claude_agents.profiles").remember(session_id, profile)
+    end)
+  end
+  -- The OpenCode process is running: its session is followed from here on, and
+  -- reports carry this launch's key like a Claude hook's CLAUDECODE_AGENT_ID.
+  if is_opencode then
+    term.backend = "opencode"
+    pcall(function()
+      require("claude_agents.opencode.launch").started(target_id, { agent_key = agent_key, bufnr = buf })
     end)
   end
 
@@ -452,6 +485,14 @@ function M._on_exit(session_id, job_id, code)
   pcall(function()
     require("claude_agents.agents.float").close_all(session_id)
   end)
+  if term.backend == "opencode" then
+    pcall(function()
+      require("claude_agents.opencode.launch").ended(session_id, {
+        instance = term.instance,
+        keep = term.relaunching == true,
+      })
+    end)
+  end
   -- The server outlives nothing: an agent that ended has no client, and leaving
   -- its port and lock file behind would advertise an editor that cannot answer.
   pcall(function()
@@ -470,6 +511,14 @@ function M.stop(session_id)
   end
   if term.jobid and not term.exited then
     pcall(vim.fn.jobstop, term.jobid)
+  end
+  if term.backend == "opencode" and not term.exited then
+    pcall(function()
+      require("claude_agents.opencode.launch").ended(session_id, {
+        instance = term.instance,
+        keep = term.relaunching == true,
+      })
+    end)
   end
   pcall(function()
     require("claude_agents").stop_agent_instance(session_id)

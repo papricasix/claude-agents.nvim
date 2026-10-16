@@ -120,6 +120,11 @@ function M.arm(session_id)
   if type(session_id) ~= "string" or session_id == "" then
     return
   end
+  -- OpenCode reports an interrupt as an event of its own (`opencode.bridge`),
+  -- and has no transcript here to read one from.
+  if session_id:match("^ses_") then
+    return
+  end
   local path = M._resolve(session_id)
   local size = 0
   if path then

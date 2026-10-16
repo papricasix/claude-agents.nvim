@@ -219,6 +219,17 @@ end
 ---@param session_id string
 ---@return boolean|nil exists nil when it cannot be determined (assume yes).
 local function transcript_exists(session_id)
+  -- An OpenCode conversation lives in OpenCode's service, not in a transcript
+  -- file: resumable once it holds a prompt.
+  if type(session_id) == "string" and session_id:match("^ses_") then
+    local ok_oc, resumable = pcall(function()
+      return require("claude_agents.opencode.sessions").resumable(session_id)
+    end)
+    if ok_oc then
+      return resumable
+    end
+    return nil
+  end
   local ok, result = pcall(function()
     local projects = require("claude_agents.utils").claude_config_dir() .. "/projects"
     if vim.fn.isdirectory(projects) ~= 1 then
@@ -258,6 +269,12 @@ local function persistable_id(record)
     return record.fallback
   end
   return nil
+end
+
+---@param id any
+---@return boolean
+local function is_opencode_id(id)
+  return type(id) == "string" and id:match("^ses_") ~= nil
 end
 
 ---Whether a command line already picks a conversation itself.
@@ -306,6 +323,12 @@ function M.launch_args(cmd_string, resolved_cwd)
   if not record then
     record = M._claim_pending(tab_id, cwd)
   end
+  -- The tab's conversation is OpenCode's, but this launch runs Claude (a
+  -- profile asked for it): a new Claude conversation, the other kept to fall back to.
+  if record and is_opencode_id(record.session_id) then
+    previous = record
+    record = nil
+  end
   if not record then
     local ok_uuid, id = pcall(uuid4)
     if not ok_uuid then
@@ -324,6 +347,43 @@ function M.launch_args(cmd_string, resolved_cwd)
     return "--resume " .. record.session_id
   end
   return "--session-id " .. record.session_id
+end
+
+---The OpenCode conversation this tab's launch should open: its record's, a
+---restored one, or a new id (`opencode --session` both resumes and starts).
+---The counterpart of `launch_args` for a launch that runs OpenCode, which names
+---its conversation itself.
+---@param tab_id integer
+---@param resolved_cwd string|nil
+---@return string|nil id nil when the tab is not tracked here.
+function M.opencode_session(tab_id, resolved_cwd)
+  if not M.is_enabled() or disowned[tab_id] then
+    return nil
+  end
+  local cwd = resolved_cwd
+  if not cwd or cwd == "" then
+    local ok_cwd, current = pcall(vim.fn.getcwd)
+    cwd = ok_cwd and current or nil
+  end
+  local previous = records[tab_id]
+  local record = previous or M._claim_pending(tab_id, cwd)
+  if record and not is_opencode_id(record.session_id) then
+    previous = record
+    record = nil
+  end
+  if not record then
+    local ok_id, id = pcall(function()
+      return require("claude_agents.opencode.ids").new_session_id()
+    end)
+    if not ok_id then
+      logger.error("session", "could not generate an OpenCode session id: " .. tostring(id))
+      return nil
+    end
+    record = { session_id = id, cwd = cwd, fallback = persistable_id(previous) }
+  end
+  records[tab_id] = record
+  M.sync_global()
+  return record.session_id
 end
 
 ---Turn a restored id for this tab into a live record, if it still applies.

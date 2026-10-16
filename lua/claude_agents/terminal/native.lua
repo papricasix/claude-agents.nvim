@@ -256,7 +256,9 @@ local function find_existing_claude_terminal()
     local buf = vim.api.nvim_win_get_buf(win)
     if vim.api.nvim_buf_is_valid(buf) and vim.api.nvim_buf_get_option(buf, "buftype") == "terminal" then
       local buf_name = vim.api.nvim_buf_get_name(buf)
-      if buf_name:match("claude") then
+      -- The agent's own command names it: `claude …`, or `opencode …` when the
+      -- launch ran OpenCode.
+      if buf_name:match("claude") or buf_name:match("opencode") then
         logger.debug("terminal", "Found existing Claude terminal in buffer", buf, "window", win)
         return buf, win
       end

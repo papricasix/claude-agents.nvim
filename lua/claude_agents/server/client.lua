@@ -40,7 +40,8 @@ end
 ---@param on_close function Callback for client close: function(client, code, reason)
 ---@param on_error function Callback for errors: function(client, error_msg)
 ---@param auth_token string|nil Expected authentication token for validation
-function M.process_data(client, data, on_message, on_close, on_error, auth_token)
+---@param allow_tokenless (fun(headers: table): boolean)|nil Lets an armed OpenCode client in without the token (see `handshake.validate_upgrade_request`).
+function M.process_data(client, data, on_message, on_close, on_error, auth_token, allow_tokenless)
   client.buffer = client.buffer .. data
 
   if not client.handshake_complete then
@@ -55,7 +56,8 @@ function M.process_data(client, data, on_message, on_close, on_error, auth_token
         logger.debug("client", "No authentication required for client:", client.id)
       end
 
-      local success, response_from_handshake, _ = handshake.process_handshake(request, auth_token)
+      local success, response_from_handshake, _, tokenless =
+        handshake.process_handshake(request, auth_token, allow_tokenless)
 
       -- Log authentication results
       if success then
@@ -96,10 +98,12 @@ function M.process_data(client, data, on_message, on_close, on_error, auth_token
           client.handshake_complete = true
           client.state = "connected"
           client.buffer = remaining
+          -- Let in without the token: served notifications, never tools.
+          client.tokenless = tokenless == true or nil
           logger.debug("client", "WebSocket connection established for client:", client.id)
 
           if #client.buffer > 0 then
-            M.process_data(client, "", on_message, on_close, on_error, auth_token)
+            M.process_data(client, "", on_message, on_close, on_error, auth_token, allow_tokenless)
           end
         else
           client.state = "closing"

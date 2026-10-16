@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Added
+
+- OpenCode as the agent instead of Claude Code, or next to it. `backend = "opencode"` makes plain launches run [OpenCode](https://opencode.ai) (2.0 or newer); a launch profile with `backend = "opencode"` (with an optional `provider/model` and agent) runs it for the launches you pick it for, and a built-in `OpenCode` profile is offered when it is installed. The terminal, your selection and `:ClaudeCodeSend`/`Add`/`TreeAdd`, per-tab status, the live cursor, session persistence and the agents view work with it; its edits open as diffs you accept with `:w` and reject with `:q` (`opencode.review_edits`, on by default, never lets an agent edit where its own rules refuse), and the plan view shows the plans its plan agent writes. The agents view lists Claude's and OpenCode's conversations together, OpenCode's marked `◇`, and resumes each in the CLI that holds it. A busy OpenCode tab or agent shows OpenCode's own spinner (`status.opencode_icons` to change it). `:ClaudeCodeSelectModel` picks from OpenCode's models for an OpenCode tab. `:checkhealth` reports OpenCode and its background service. See the [guide](docs/guide.md#opencode) for what differs.
+- `command_aliases = true` also names every command without `ClaudeCode`: `:Agent`, `:AgentSend`, `:Agents`, `:AgentNew`, and so on.
+
 ### Fixed
 
 - `agents.resume_mode = "fork"` started a brand new conversation, with the session id typed in as its first message, instead of a copy of the session: `--fork-session` was passed without the `--resume` it belongs to.

@@ -199,8 +199,14 @@ function M.update_selection()
   local current_buf = vim.api.nvim_get_current_buf()
   local buf_name = vim.api.nvim_buf_get_name(current_buf)
 
-  -- If the buffer name starts with "term://" and contains "claude", do not update selection
-  if buf_name and buf_name:match("^term://") and buf_name:lower():find("claude", 1, true) then
+  -- If the buffer name starts with "term://" and names an agent CLI (claude, or
+  -- opencode), do not update selection
+  local lower_name = buf_name and buf_name:lower() or ""
+  if
+    buf_name
+    and buf_name:match("^term://")
+    and (lower_name:find("claude", 1, true) or lower_name:find("opencode", 1, true))
+  then
     -- Optionally, cancel demotion timer like for the terminal
     M._cancel_demotion_timer()
     return

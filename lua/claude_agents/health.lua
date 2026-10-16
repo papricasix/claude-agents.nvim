@@ -57,6 +57,11 @@ local function check_cli(config)
   local exe = executable_of(cmd)
 
   if vim.fn.executable(exe) ~= 1 then
+    if config.backend == "opencode" then
+      -- Only a launch under a Claude profile would need it.
+      info(("Claude CLI not found ('%s'); only launches under a Claude profile need it"):format(exe))
+      return
+    end
     error_(("Claude CLI not found: '%s' is not executable"):format(exe), {
       "Install Claude Code: https://docs.anthropic.com/en/docs/claude-code",
       "Or set `terminal_cmd` in setup() to the full path of the CLI",
@@ -135,15 +140,29 @@ local function check_profiles()
   local profiles = require("claude_agents.profiles")
   local api_key = require("claude_agents.api_key")
   local default = profiles.default_name()
+  local backend = require("claude_agents.opencode").default_backend() == "opencode" and "OpenCode" or "the Claude CLI"
   info(
     "Plain launches ("
-      .. (default and ("profile " .. default) or "as configured: the CLI decides")
+      .. (default and ("profile " .. default) or ("as configured: " .. backend .. " decides"))
       .. "). :ClaudeCodeProfile, and ga/gi in the agents view, pick one"
   )
 
   for _, profile in ipairs(profiles.list()) do
     local label = ("profile %q"):format(profile.name)
-    if profile.auth == "subscription" then
+    if profile.backend == "opencode" then
+      local detail = {}
+      if profile.model then
+        detail[#detail + 1] = "model " .. profile.model
+      end
+      if profile.agent then
+        detail[#detail + 1] = "agent " .. profile.agent
+      end
+      ok(
+        label
+          .. ": runs OpenCode"
+          .. (#detail > 0 and (" (" .. table.concat(detail, ", ") .. ")") or ", on OpenCode's own model and agent")
+      )
+    elseif profile.auth == "subscription" then
       ok(label .. ": your subscription (the claude.ai login)")
     else
       local source = profile.api_key_cmd and ("api_key_cmd: " .. profile.api_key_cmd)
@@ -246,6 +265,76 @@ local function check_instances(claudecode)
   end
 end
 
+---OpenCode, when it is the backend or a profile runs it: the binary, its
+---background service (asked, never started), and what the integration does.
+---@param config table The merged plugin config
+local function check_opencode(config)
+  local opencode = require("claude_agents.opencode")
+  local profiles = require("claude_agents.profiles")
+  local wanted = config.backend == "opencode"
+  for _, profile in ipairs(profiles.list()) do
+    if profile.backend == "opencode" then
+      wanted = true
+    end
+  end
+  local exe = opencode.cmd_argv()[1]
+  if vim.fn.executable(exe) ~= 1 then
+    if wanted then
+      error_(("OpenCode not found: '%s' is not executable"):format(exe), {
+        "Install OpenCode: https://opencode.ai",
+        "Or set `opencode.cmd` in setup() to the full path of the executable",
+      })
+    else
+      info('OpenCode is not installed (optional: `backend = "opencode"` or an OpenCode profile runs it)')
+    end
+    return
+  end
+  ok(("OpenCode found: %s (%s)"):format(exe, vim.fn.exepath(exe)))
+  local version_ok, output = pcall(vim.fn.system, { exe, "--version" })
+  if version_ok and vim.v.shell_error == 0 then
+    info("OpenCode version: " .. vim.trim(output))
+  end
+  info(
+    wanted
+        and ("Plain launches run " .. (config.backend == "opencode" and "OpenCode" or "Claude") .. "; profiles may pick the other")
+      or "Plain launches run Claude; the built-in OpenCode profile runs OpenCode"
+  )
+
+  local service = require("claude_agents.opencode.service")
+  local conn, reg_err = service.read_registration()
+  if not conn then
+    info(
+      "OpenCode's background service is not running; the first OpenCode launch starts it (" .. tostring(reg_err) .. ")"
+    )
+  else
+    local err, data = require("claude_agents.opencode.api").call_sync("GET", "/api/info", { no_start = true }, 3000)
+    if err then
+      warn("OpenCode's service is registered at " .. conn.url .. " but does not answer: " .. tostring(err), {
+        "Restart it with `opencode service restart`",
+      })
+    else
+      ok(("OpenCode service at %s (%s)"):format(conn.url, type(data) == "table" and tostring(data.version) or "?"))
+    end
+  end
+  local status_ok, status_out = pcall(vim.fn.system, { exe, "service", "status" })
+  if status_ok and type(status_out) == "string" and status_out:lower():find("disabled", 1, true) then
+    warn("OpenCode's background service is disabled: its TUIs run private servers Neovim cannot reach", {
+      "Status, diff review and the agents view need the shared service: `opencode service unset disabled`",
+    })
+  end
+
+  local oc = config.opencode or {}
+  if oc.review_edits == false then
+    info("Edit review is off (`opencode.review_edits = false`): OpenCode edits as its own rules say")
+  else
+    ok("OpenCode's edits are reviewed as diffs in Neovim (`opencode.review_edits`)")
+  end
+  info(
+    "OpenCode's TUI connects to Neovim without the lock file's token; each OpenCode launch lets exactly "
+      .. "one such client in, on loopback, never from a browser (Origin header), and offers it no tools"
+  )
+end
+
 function M.check()
   start("claude-agents.nvim")
 
@@ -268,6 +357,9 @@ function M.check()
 
   start("Launch profiles")
   check_profiles()
+
+  start("OpenCode")
+  check_opencode(claudecode.state.config)
 end
 
 return M
