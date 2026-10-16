@@ -31,6 +31,8 @@ local LABELS = {
   ["m"] = { pane = "flag this session" },
   ["M"] = { pane = "flag with a note" },
   ["a"] = { pane = "start a new agent" },
+  ["ga"] = { pane = "start an agent under a profile" },
+  ["o"] = { menu = "run it in OpenCode" },
   ["A"] = { pane = "new agent named after this one" },
   ["i"] = { pane = "into the agent's terminal" },
   ["x"] = { pane = "stop this agent" },
@@ -71,12 +73,16 @@ local function pretty(keys)
   )
 end
 
----Where a key lands: a pane's name, "float", "terminal", or nil for anywhere else.
+---Where a key lands: a pane's name, "float", "menu" (the profile menu),
+---"terminal", or nil for anywhere else.
 ---@return string|nil
 local function context()
   local win = vim.api.nvim_get_current_win()
   if vim.w[win].claudecode_float then
     return "float"
+  end
+  if vim.bo.filetype == "claudecode-profiles" then
+    return "menu"
   end
   local pane = vim.w[win].claudecode_agents
   if pane and pane ~= "center" then
@@ -102,7 +108,7 @@ local function label_for(keys, where)
   if where and entry[where] then
     return entry[where]
   end
-  if where and where ~= "terminal" and where ~= "float" and entry.pane then
+  if where and where ~= "terminal" and where ~= "float" and where ~= "menu" and entry.pane then
     return entry.pane
   end
   return nil

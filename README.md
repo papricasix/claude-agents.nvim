@@ -30,6 +30,10 @@ A tab of its own, for several Claudes at once. Diffs and files an agent opens ap
 
 ![The agents view: opening an Activity edit, a Changes file and a subagent, then flagging a session](https://raw.githubusercontent.com/papricasix/claude-agents.nvim/assets/agents-switch.gif)
 
+**Run Claude Code and OpenCode side by side**: `ga` starts an agent under any profile, OpenCode included. Both work at once in the same list, OpenCode's marked `◇`.
+
+![The agents view: a Claude agent and an OpenCode agent at work at once, the OpenCode one marked ◇; then the Claude agent's finished edit](https://raw.githubusercontent.com/papricasix/claude-agents.nvim/assets/mixed.gif)
+
 ## In your editor
 
 With one Claude beside your code, as `:ClaudeCode` opens it. **The live cursor** follows Claude through the files it reads, and **its edit** opens as an inline diff in your editor that you accept with `:w`.

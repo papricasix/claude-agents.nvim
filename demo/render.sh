@@ -14,8 +14,10 @@
 #
 # Each shot gets a fresh project; a tape with a `# seed` line also gets a seeded
 # history (demo/seed.sh). The project's transcripts are removed from the
-# Claude Code store before every shot, so nothing from an earlier run shows.
-# Recording costs real (haiku) usage on the account `claude` is logged in to.
+# Claude Code store before every shot, and its sessions from OpenCode's service,
+# so nothing from an earlier run shows. Recording costs real (haiku) usage on the
+# account `claude` is logged in to, and on OpenCode's `anthropic` provider for a
+# shot that runs OpenCode (`opencode` must then be on PATH).
 
 set -euo pipefail
 
@@ -74,6 +76,10 @@ mkdir -p "$DEMO_ROOT/bin"
 for tool in claude nvim git cargo; do
   ln -sf "$(command -v "$tool")" "$DEMO_ROOT/bin/$tool"
 done
+# Only the shot with OpenCode beside Claude needs it.
+if command -v opencode >/dev/null; then
+  ln -sf "$(command -v opencode)" "$DEMO_ROOT/bin/opencode"
+fi
 export DEMO_PATH="$DEMO_ROOT/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 # Neovim keeps its state (agents flags and checkpoints, caches) under its own
 # name, away from the user's. NVIM_APPNAME moves only Neovim's directories.
@@ -94,6 +100,8 @@ forget_transcripts() {
     return 1
   fi
   rm -rf "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects/$slug"
+  # And the project's sessions in OpenCode's service, if it runs.
+  nvim --headless -u NONE -l "$demo/forget_opencode.lua" "$project"
 }
 
 shots=("$@")

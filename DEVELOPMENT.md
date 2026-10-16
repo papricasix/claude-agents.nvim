@@ -103,7 +103,7 @@ mise run format
 
 ## README media
 
-The README's GIFs are recorded with [vhs](https://github.com/charmbracelet/vhs) from `demo/`: a made-up project, a Neovim config of its own, and one tape per shot. Each recording runs a real `claude` (haiku) on the account you are logged in to, with your own Claude settings, hooks and MCP servers left out.
+The README's GIFs are recorded with [vhs](https://github.com/charmbracelet/vhs) from `demo/`: a made-up project, a Neovim config of its own, and one tape per shot. Each recording runs a real `claude` (haiku) on the account you are logged in to, with your own Claude settings, hooks and MCP servers left out. The `mixed` shot also runs OpenCode, on haiku through its `anthropic` provider.
 
 ```bash
 DEMO_UNIFIED=/path/to/papricasix/unified.nvim demo/render.sh   # every shot, into /tmp/demo/out

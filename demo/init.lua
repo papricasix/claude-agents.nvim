@@ -6,6 +6,7 @@
 --   DEMO_COLORSCHEME                                 colorscheme name
 --   DEMO_PERMISSION                                  claude --permission-mode for this shot
 --   DEMO_TOOLS, DEMO_ALLOWED                         claude --tools / --allowedTools for this shot
+--   DEMO_OPENCODE                                    "1": `ga` offers OpenCode (haiku) beside Claude
 
 local repo = vim.fn.fnamemodify(debug.getinfo(1, "S").source:sub(2), ":p:h:h")
 vim.opt.rtp:prepend(repo)
@@ -42,7 +43,7 @@ end, { ["repeat"] = -1 })
 -- claude>`), a path from the recording machine. The status line never shows it.
 function _G.DemoStatusline()
   if vim.bo.buftype == "terminal" then
-    return " Claude Code"
+    return vim.b.claudecode_backend == "opencode" and " OpenCode" or " Claude Code"
   end
   -- The agents view's panes and floats are named `claudecode://…` after what
   -- they show, the project's absolute path included.
@@ -84,7 +85,7 @@ if vim.env.DEMO_PERMISSION and vim.env.DEMO_PERMISSION ~= "" then
   claude = claude .. " --permission-mode " .. vim.env.DEMO_PERMISSION
 end
 
-require("claude_agents").setup({
+local opts = {
   log_level = "warn",
   terminal_cmd = claude,
   -- snacks titles the terminal window with the buffer name until Claude sets a
@@ -101,7 +102,37 @@ require("claude_agents").setup({
   },
   -- Wide enough sidebars at 1400px that the seeded session titles fit whole.
   agents = { enabled = true, layout = { left_width = 0.255, right_width = 0.315 } },
-})
+}
+
+-- A shot with OpenCode beside Claude: `ga` offers it, on haiku as well, and its
+-- edits go through as Claude's do under acceptEdits. Its TUI draws in the
+-- colorscheme's palette rather than its own near-black, and without its
+-- animated progress bar, which changes every frame of the GIF (OpenCode 2's
+-- inline cli.json). Named, the agent is not switched to on the first prompt,
+-- which the TUI otherwise says in the transcript.
+if vim.env.DEMO_OPENCODE == "1" then
+  opts.opencode = { review_edits = false }
+  opts.profiles = {
+    list = {
+      { name = "subscription", key = "s", auth = "subscription" },
+      {
+        name = "OpenCode",
+        key = "o",
+        backend = "opencode",
+        model = "anthropic/claude-haiku-4-5",
+        agent = "build",
+        env = {
+          OPENCODE_CLI_CONFIG_CONTENT = vim.json.encode({
+            theme = { name = "tokyonight", mode = "dark" },
+            animations = false,
+          }),
+        },
+      },
+    },
+  }
+end
+
+require("claude_agents").setup(opts)
 
 vim.keymap.set("n", "<leader>ac", "<cmd>ClaudeCode<cr>")
 
