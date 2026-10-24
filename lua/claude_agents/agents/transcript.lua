@@ -18,6 +18,7 @@
 ---   toolUseResult {content,filePath,structuredPatch,type}        -- Write
 ---   toolUseResult {file={content,filePath,...},type="text"}      -- Read
 ---   toolUseResult {stdout,stderr,interrupted,...}                -- Bash (skipped)
+---   toolUseResult {stdout,...,bashEditDiff={files,changedFiles}} -- Bash that changed files
 ---
 --- Two things make this cheap enough to run on every tool call:
 ---
@@ -132,7 +133,7 @@ local config = nil
 
 ---@class ClaudeCodeAgentsEvent
 ---@field ts number Epoch seconds (0 when the entry carried no timestamp).
----@field kind "read"|"add"|"edit"|"tool"|"rewind" What the agent did. `tool` is a call that touched no file; `rewind` is the user taking the conversation back (see `ClaudeCodeAgentsRewind`).
+---@field kind "read"|"add"|"edit"|"delete"|"tool"|"rewind" What the agent did. `tool` is a call that touched no file; `rewind` is the user taking the conversation back (see `ClaudeCodeAgentsRewind`); `delete` only comes from a shell command.
 ---@field path string|nil Absolute path as the CLI recorded it; nil on a `tool` event.
 ---@field added integer
 ---@field removed integer
@@ -143,6 +144,11 @@ local config = nil
 ---@field tool_id string|nil The `toolu_…` id of the call: what a `tool` event's result is joined by, and what names a file event's row (see `event_key`).
 ---@field status "running"|"done"|"error"|"interrupted"|"rejected"|nil `tool` events; see `resolve_tool`.
 ---@field dropped integer|nil `rewind` events: how many tool calls the rewind took back.
+---@field via "bash"|nil A file a shell command changed (`bashEditDiff`) rather than a file tool.
+---@field from number|nil `via = "bash"`: when the call was made, epoch seconds with the fraction — with `to`, the window anything else writing the file would have been counted in.
+---@field to number|nil `via = "bash"`: when its result was written.
+---@field shared boolean|nil `via = "bash"`: the CLI ran another command in the same repository at the same time, and their changes cannot be told apart.
+---@field unknown boolean|nil `via = "bash"`: the CLI kept no diff of this file (binary, too large, past its per-call cap), so the counts are not known.
 
 ---@class ClaudeCodeAgentsRewind A stretch of the transcript the user rewound away (`/rewind`, Esc Esc).
 ---@field from integer First line of it (1-based): the prompt the conversation was taken back to before.
@@ -164,18 +170,30 @@ local config = nil
 
 ---@class ClaudeCodeAgentsFileStep One call that changed the file.
 ---@field tool_id string|nil The `toolu_…` id of the call (nil when the result names none).
----@field kind "edit"|"write" A `Write` carries the whole file; an `Edit` only its patch.
+---@field kind "edit"|"write"|"bash" A `Write` carries the whole file; an `Edit` only its patch; `bash` is a shell command's change, as the CLI diffed it.
 ---@field hunks table[] This call's own hunks — the same tables `hunks` above holds.
 ---@field before string|nil The file as the call found it: `originalFile`, a whole read just before, or `""` for a creation.
----@field content string|nil The file as the `Write` left it.
+---@field content string|nil The file as the `Write` left it (`""` for a shell command that deleted it).
 ---@field created boolean The call created the file.
+---@field unknown boolean|nil A shell command changed the file and the CLI kept no diff of it: nothing can be rebuilt across this step.
 ---@field ts number
+
+---@class ClaudeCodeAgentsEdit One change to a file, dated, as `touch_file` records it.
+---@field ts number
+---@field added integer
+---@field removed integer
+---@field kind "add"|"edit"|"delete"
+---@field via "bash"|nil
+---@field from number|nil
+---@field to number|nil
+---@field shared boolean|nil
+---@field unknown boolean|nil
 
 ---@class ClaudeCodeAgentsFile
 ---@field added integer
 ---@field removed integer
----@field kind "read"|"add"|"edit" Last thing that happened to it.
----@field edits { ts: number, added: integer, removed: integer, kind: "add"|"edit" }[] Each edit on its own, oldest first (reads left out).
+---@field kind "read"|"add"|"edit"|"delete" Last thing that happened to it.
+---@field edits ClaudeCodeAgentsEdit[] Each edit on its own, oldest first (reads left out).
 ---@field last_ts number
 
 ---@class ClaudeCodeAgentsSummary
@@ -931,10 +949,11 @@ end
 
 ---@param sum ClaudeCodeAgentsSummary
 ---@param path string
----@param kind "read"|"add"|"edit"
+---@param kind "read"|"add"|"edit"|"delete"
 ---@param added integer
 ---@param removed integer
 ---@param ts number
+---@return ClaudeCodeAgentsEdit|nil edit The record of this edit; nil for a read.
 local function touch_file(sum, path, kind, added, removed, ts)
   local entry = sum.files[path]
   if not entry then
@@ -955,8 +974,11 @@ local function touch_file(sum, path, kind, added, removed, ts)
   -- out: they count for nothing and are most of a session's touches.
   if kind ~= "read" then
     entry.edits = entry.edits or {}
-    entry.edits[#entry.edits + 1] = { ts = ts, added = added, removed = removed, kind = kind }
+    local edit = { ts = ts, added = added, removed = removed, kind = kind }
+    entry.edits[#entry.edits + 1] = edit
+    return edit
   end
+  return nil
 end
 
 ---The rewind a line falls inside, if any.
@@ -1411,6 +1433,96 @@ local function fold_result(sum, entry)
   sum.removed = sum.removed + removed
   push_event(sum, { ts = ts, kind = kind, path = result.filePath, added = added, removed = removed, tool_id = tool_id })
   return true, tool_id
+end
+
+--- How a Bash result names the files its command changed. Inside a string a quote
+--- is escaped, so an unescaped match is the result's own field.
+local BASH_DIFF_FIELD = '"bashEditDiff":{'
+
+---Fold the files a shell command changed, as the CLI recorded them.
+---
+---The CLI's `bashEditDiff` (measured against 2.1.302, which switches it on for a
+---launch whose `--settings` carry `bashEditDiffEnabled`): the repository the
+---shell is in is snapshotted before and after the command, and the difference is
+---written beside the output —
+---
+---   { files = { { filePath, hunks, created?, deleted? } }, moreFiles,
+---     changedFiles = { <absolute path>… }, shared?, skipped?, unavailable? }
+---
+---`hunks` have `structuredPatch`'s shape, but their text is the file's own (tabs
+---kept). Only the first few files get hunks, each capped; the rest, and binary
+---files, are in `changedFiles` alone, and their counts are unknown.
+---
+---**What changed while the command ran is not what the command changed**: the
+---snapshot sees every writer, and the CLI says as much. So each change carries the
+---window it was made in (`from`, the call; `to`, the result), which is what the
+---view holds against everything else it knows wrote the file (`model`), and the
+---CLI's own `shared` for two of its commands running in one repository at once.
+---@param sum ClaudeCodeAgentsSummary
+---@param entry table Decoded transcript line.
+---@param from number|nil When the call was made, with its fraction; the result's own time when unknown.
+---@return boolean folded
+---@return string|nil tool_id
+local function fold_bash_changes(sum, entry, from)
+  local result = entry.toolUseResult
+  local diff = type(result) == "table" and result.bashEditDiff or nil
+  if type(diff) ~= "table" or diff.skipped == true then
+    return false
+  end
+  local tool_id = result_tool_id(entry)
+  local ts = M._iso_to_epoch(entry.timestamp)
+  if ts > sum.last_ts then
+    sum.last_ts = ts
+  end
+  local to = M._iso_to_epoch_precise(entry.timestamp)
+  from = (type(from) == "number" and from > 0 and from <= to) and from or to
+  local shared = diff.shared == true or nil
+
+  local seen, folded = {}, false
+  ---@param path string
+  ---@param kind "add"|"edit"|"delete"
+  ---@param added integer
+  ---@param removed integer
+  ---@param unknown true|nil
+  local function record(path, kind, added, removed, unknown)
+    seen[path] = true
+    folded = true
+    local edit = touch_file(sum, path, kind, added, removed, ts)
+    if edit then
+      edit.via, edit.from, edit.to, edit.shared, edit.unknown = "bash", from, to, shared, unknown
+    end
+    sum.added = sum.added + added
+    sum.removed = sum.removed + removed
+    push_event(sum, {
+      ts = ts,
+      kind = kind,
+      path = path,
+      added = added,
+      removed = removed,
+      tool_id = tool_id,
+      via = "bash",
+      from = from,
+      to = to,
+      shared = shared,
+      unknown = unknown,
+    })
+  end
+
+  for _, file in ipairs(type(diff.files) == "table" and diff.files or {}) do
+    if type(file) == "table" and type(file.filePath) == "string" and not seen[file.filePath] then
+      local added, removed = M._count_patch(file.hunks)
+      local kind = file.created == true and "add" or (file.deleted == true and "delete" or "edit")
+      record(file.filePath, kind, added, removed, nil)
+    end
+  end
+  -- Every changed path, the ones with hunks included: those without are a binary
+  -- file, one past a cap, or one past the few the CLI diffs per call.
+  for _, path in ipairs(type(diff.changedFiles) == "table" and diff.changedFiles or {}) do
+    if type(path) == "string" and not seen[path] then
+      record(path, "edit", 0, 0, true)
+    end
+  end
+  return folded, tool_id
 end
 
 --- A real marker entry is tiny (647 bytes, measured on the one real interrupt in
@@ -2001,7 +2113,8 @@ function M._fold_line(sum, line)
   end
 
   -- Bash results carry neither a patch nor a `file` object, which is what keeps
-  -- their (often huge) stdout out of the decoder.
+  -- their (often huge) stdout out of the decoder — all but the ones that say what
+  -- their command changed.
   if is_result then
     -- Which call this answers, and how it went: three substring tests on a line
     -- that is never decoded (see `resolve_tool`).
@@ -2012,6 +2125,21 @@ function M._fold_line(sum, line)
     -- the user replying through a prompt rather than by typing one.
     if ts > 0 and result_at and is_reply_result(line, result_at) then
       note_reply(sum, ts)
+    end
+    -- A shell command that changed files (`fold_bash_changes`). The one Bash result
+    -- that is decoded, output and all: it is a fraction of them — most commands
+    -- change nothing and carry no such field — and the call's own time is read
+    -- before `settle_shell` below forgets the call.
+    if result_at and line:find(BASH_DIFF_FIELD, result_at, true) then
+      local ok, entry = pcall(vim.json.decode, line)
+      if ok and type(entry) == "table" then
+        local id = result_tool_id(entry)
+        local call = id and sum.task_calls[id]
+        local folded, tool_id = fold_bash_changes(sum, entry, call and call.at)
+        if folded and tool_id then
+          release_provisional(sum.path, tool_id)
+        end
+      end
     end
     if next(sum.task_calls) ~= nil then
       settle_shell(sum, line, not result_at)
@@ -2128,6 +2256,21 @@ end
 --- edit is taken for.
 local EDIT_TOOLS = { Edit = true, MultiEdit = true, Write = true }
 
+---Now, as the CLI writes a transcript timestamp: UTC, milliseconds kept.
+---
+---A hook-reported edit is dated by it, and a shell command's window ends there,
+---so the fraction matters. Injectable so a spec can stand still in time.
+---@return string
+M._now_iso = function()
+  local ok, sec, usec = pcall(function()
+    return uv.gettimeofday()
+  end)
+  if not ok or type(sec) ~= "number" then
+    sec, usec = os.time(), 0
+  end
+  return os.date("!%Y-%m-%dT%H:%M:%S", sec) .. string.format(".%03dZ", math.floor((tonumber(usec) or 0) / 1000))
+end
+
 ---Record an edit from its `PostToolUse` hook payload until the transcript has it.
 ---
 ---Everything the panes show comes from the transcript, and the CLI sometimes holds
@@ -2137,21 +2280,29 @@ local EDIT_TOOLS = { Edit = true, MultiEdit = true, Write = true }
 ---which the panes add in (`provisional_view`) until the transcript's fold reaches
 ---the same call and lets it go. One the fold already has is not taken: the hook
 ---is a separate process and often arrives after the line was read.
+---
+---A shell command's changes are taken the same way: its `tool_response` carries
+---the very `bashEditDiff` the transcript will (measured, 2.1.302). When the call
+---was made is not in the payload; `opts.from` is the caller's note of its
+---`PreToolUse`.
 ---@param path string The conversation's transcript.
 ---@param event table The decoded hook payload.
+---@param opts { from: number? }|nil
 ---@return boolean recorded
-function M.provisional(path, event)
+function M.provisional(path, event, opts)
   local id = event.tool_use_id
   local result = event.tool_response
   if type(path) ~= "string" or type(id) ~= "string" or type(result) ~= "table" then
     return false
   end
-  if not EDIT_TOOLS[event.tool_name] then
+  local bash = SHELL_TOOLS[event.tool_name] and type(result.bashEditDiff) == "table"
+  if not EDIT_TOOLS[event.tool_name] and not bash then
     return false
   end
   local sum = cache[path]
   for _, folded in ipairs(sum and sum.events or {}) do
-    if folded.tool_id == id then
+    -- A shell command's own row is folded from its call, long before its result.
+    if folded.tool_id == id and folded.kind ~= "tool" then
       return false
     end
   end
@@ -2160,11 +2311,17 @@ function M.provisional(path, event)
     return false
   end
   local one = new_summary(path)
-  local folded = fold_result(one, {
-    timestamp = os.date("!%Y-%m-%dT%H:%M:%S.000Z"),
+  local entry = {
+    timestamp = M._now_iso(),
     toolUseResult = result,
     message = { content = { { type = "tool_result", tool_use_id = id } } },
-  })
+  }
+  local folded
+  if bash then
+    folded = fold_bash_changes(one, entry, opts and opts.from)
+  else
+    folded = fold_result(one, entry)
+  end
   if not folded or #one.events == 0 then
     return false
   end
@@ -2240,7 +2397,24 @@ function M.provisional_hunks(path, file_path, tool_id)
   local hunks, found = {}, false
   for _, id in ipairs(held.order) do
     local result = held.by_id[id].result
-    if (not tool_id or id == tool_id) and result.filePath == file_path then
+    local diff = result.bashEditDiff
+    if (not tool_id or id == tool_id) and type(diff) == "table" then
+      -- A shell command's: the hunks of the one file asked about, or none at all
+      -- for a file the CLI kept no diff of — found, with nothing to show.
+      for _, file in ipairs(type(diff.files) == "table" and diff.files or {}) do
+        if type(file) == "table" and file.filePath == file_path then
+          found = true
+          for _, hunk in ipairs(type(file.hunks) == "table" and file.hunks or {}) do
+            hunks[#hunks + 1] = hunk
+          end
+        end
+      end
+      for _, changed in ipairs(type(diff.changedFiles) == "table" and diff.changedFiles or {}) do
+        if changed == file_path then
+          found = true
+        end
+      end
+    elseif (not tool_id or id == tool_id) and result.filePath == file_path then
       found = true
       local patch_hunks = type(result.structuredPatch) == "table" and result.structuredPatch or {}
       if #patch_hunks == 0 and type(result.content) == "string" then
@@ -2697,13 +2871,18 @@ end
 ---
 ---The view holds its cursor on a row by this rather than by its line: the pane is
 ---newest first, so every event that lands pushes the rest down one. The call's
----`toolu_…` id is unique for both kinds of row. An event folded from a line that
+---`toolu_…` id is unique for both kinds of row, with the path added for the files
+---a shell command changed (one call, several rows). An event folded from a line that
 ---carries none falls back to what it did, where and when, which can repeat — the
 ---view settles a tie by taking the row nearest to where the cursor was.
 ---@param event ClaudeCodeAgentsEvent
 ---@return string
 function M.event_key(event)
   if type(event.tool_id) == "string" then
+    -- One shell command is a row of its own and one more per file it changed.
+    if event.via == "bash" and type(event.path) == "string" then
+      return event.tool_id .. "\0" .. event.path
+    end
     return event.tool_id
   end
   return table.concat({ event.kind or "", event.path or "", tostring(event.ts or 0) }, "\0")
@@ -3179,6 +3358,70 @@ local function history_key(transcript_path, file_path)
   return transcript_path .. "\0" .. file_path
 end
 
+---Fold what one shell command did to the file, as a step of its history.
+---
+---The CLI's hunks keep the file's own text, where a file tool's write a tab as
+---two spaces; `patch.from_exact` puts them in the file tools' form, so every step
+---is located and rebuilt by the same code. A file the CLI kept no diff of is a
+---step with no hunks that says so (`unknown`): nothing can be rebuilt across it.
+---@param hist ClaudeCodeAgentsFileHistory
+---@param entry table Decoded transcript line.
+---@param diff table Its `bashEditDiff`.
+---@param ts number
+local function fold_bash_history(hist, entry, diff, ts)
+  if diff.skipped == true then
+    return
+  end
+  local found, unknown = nil, false
+  for _, file in ipairs(type(diff.files) == "table" and diff.files or {}) do
+    if type(file) == "table" and file.filePath == hist.path then
+      found = file
+      break
+    end
+  end
+  if not found then
+    for _, changed in ipairs(type(diff.changedFiles) == "table" and diff.changedFiles or {}) do
+      if changed == hist.path then
+        unknown = true
+        break
+      end
+    end
+    if not unknown then
+      return
+    end
+  end
+
+  local hunks = found and patch.from_exact(type(found.hunks) == "table" and found.hunks or {}) or {}
+  local created = found ~= nil and found.created == true
+  if created and #hist.steps == 0 then
+    hist.created = true
+  end
+  ---@type ClaudeCodeAgentsFileStep
+  local step = {
+    tool_id = result_tool_id(entry),
+    kind = "bash",
+    hunks = hunks,
+    -- Removed whole: nothing is left, which is a state to rebuild from.
+    content = (found and found.deleted == true) and "" or nil,
+    created = created,
+    unknown = unknown or nil,
+    ts = ts,
+  }
+  for _, hunk in ipairs(hunks) do
+    hist.hunks[#hist.hunks + 1] = hunk
+  end
+  if created then
+    step.before = ""
+  elseif hist.read_anchor and hist.read_anchor.step == #hist.steps then
+    step.before = hist.read_anchor.content
+  end
+  hist.read_anchor = nil
+  hist.steps[#hist.steps + 1] = step
+  if ts > hist.last_ts then
+    hist.last_ts = ts
+  end
+end
+
 ---Fold one decoded entry into a file history, if it is about that file.
 ---@param hist ClaudeCodeAgentsFileHistory
 ---@param entry table
@@ -3188,6 +3431,11 @@ local function fold_history(hist, entry)
     return
   end
   local ts = M._iso_to_epoch(entry.timestamp)
+
+  if type(result.bashEditDiff) == "table" then
+    fold_bash_history(hist, entry, result.bashEditDiff, ts)
+    return
+  end
 
   local file = result.file
   if type(file) == "table" and file.filePath == hist.path then

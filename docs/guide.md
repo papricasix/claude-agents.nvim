@@ -128,6 +128,8 @@ condition = function(buf)
 end
 ```
 
+Edits Claude makes with shell commands (`sed -i`, a script) never pass through a diff. With `bash_changes` (on by default) every launch asks Claude Code (2.1.300 or newer) to record what each Bash command changed: it shows that diff under the command, and the agents view counts those files in [Changes](agents.md#changes-and-activity). A `bashEditDiffEnabled` of your own in Claude Code's settings is left as it is.
+
 ## Terminal
 
 `terminal.provider` decides where Claude runs:

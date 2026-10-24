@@ -797,6 +797,21 @@ describe("agents.render", function()
       expect(payload.status).to_be("error")
       expect(payload.path).to_be_nil() -- it is not a file, and `.`/`gf` rely on that
     end)
+
+    it("marks a shell command's change that may not be its own at the right edge", function()
+      local feed = render.create_buf("feed")
+      render.feed(feed, {
+        { ts = 1, kind = "edit", path = "/proj/a.lua", via = "bash", tool_id = "toolu_b" },
+        { ts = 1, kind = "edit", path = "/proj/b.lua", via = "bash", tool_id = "toolu_b" },
+      }, { width = 40, cwd = "/proj", uncertain = { [2] = true } })
+      local lines = lines_of(feed)
+      expect(lines[1]:find(render.UNCERTAIN_MARK, 1, true)).to_be_nil()
+      expect(lines[2]:sub(-#render.UNCERTAIN_MARK)).to_be(render.UNCERTAIN_MARK)
+      expect(vim.fn.strdisplaywidth(lines[2]) <= 40).to_be_true()
+      -- The float it opens says so too.
+      expect(render.payload_at(feed, 2).uncertain).to_be_true()
+      expect(render.payload_at(feed, 1).uncertain).to_be_nil()
+    end)
   end)
 
   describe("row keys", function()
@@ -999,6 +1014,39 @@ describe("agents.render", function()
       -- Gone is gone, scratchpad or not: grey wins.
       expect(#by_row[3]).to_be(1)
       expect(by_row[3][1].hl).to_be("ClaudeCodeAgentsDeleted")
+    end)
+
+    it("marks a shell command's change that may not be its own, without moving a column", function()
+      local changes = render.create_buf("changes")
+      render.changes(changes, {
+        { path = "/proj/a.lua", status = "M", added = 2, removed = 1 },
+        { path = "/proj/b.lua", status = "M", added = 2, removed = 1, uncertain = true },
+      }, { width = 40, cwd = "/proj" })
+      local lines = lines_of(changes)
+      expect(lines[1]:sub(1, 4)).to_be(" M a")
+      expect(lines[2]:sub(1, 2 + #render.UNCERTAIN_MARK + 1)).to_be(" M" .. render.UNCERTAIN_MARK .. "b")
+      -- Same width, same counts column.
+      expect(vim.fn.strdisplaywidth(lines[1])).to_be(vim.fn.strdisplaywidth(lines[2]))
+      local marked = false
+      for _, mark in ipairs(vim._extmarks or {}) do
+        if mark.bufnr == changes and mark.row == 1 and mark.opts.hl_group == "ClaudeCodeAgentsUncertain" then
+          marked = lines[2]:sub(mark.col + 1, mark.opts.end_col) == render.UNCERTAIN_MARK
+        end
+      end
+      expect(marked).to_be_true()
+    end)
+
+    it("draws counts nobody knows as at least what is known", function()
+      local changes = render.create_buf("changes")
+      render.changes(changes, {
+        { path = "/proj/b.png", status = "M", added = 0, removed = 0, unknown = true },
+        { path = "/proj/c.lua", status = "M", added = 3, removed = 0, unknown = true },
+      }, { width = 40, cwd = "/proj" })
+      local lines = lines_of(changes)
+      expect(lines[1]:find("+? ", 1, true) ~= nil).to_be_true()
+      expect(lines[1]:find("-?", 1, true) ~= nil).to_be_true()
+      expect(lines[1]:find("+0", 1, true)).to_be_nil()
+      expect(lines[2]:find("+3?", 1, true) ~= nil).to_be_true()
     end)
 
     it("says so when the session changed nothing", function()

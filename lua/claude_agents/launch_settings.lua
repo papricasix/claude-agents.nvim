@@ -6,8 +6,9 @@
 --- against CLI 2.1.300 with two files each registering a `SessionStart` hook and
 --- an env var — only the last file's hook ran and only its variable was set).
 ---
---- Three parties want settings on a launch: the plugin's hooks (status, live
---- cursor, plan view, agents mode), a launch profile (`apiKeyHelper` and the env
+--- Four parties want settings on a launch: the plugin's hooks (status, live
+--- cursor, plan view, agents mode), the plugin's own CLI settings (`bash_changes`
+--- asks for `bashEditDiffEnabled`), a launch profile (`apiKeyHelper` and the env
 --- that decides which account pays), and the user, through a `--settings` of
 --- their own in `terminal_cmd` or `:ClaudeCode` arguments. Appending one flag per
 --- party let the last one silently win: the user's own settings were dropped on
@@ -84,18 +85,28 @@ function M.load(source, cwd)
   return decoded, nil
 end
 
----Merge the plugin's hooks and a profile's settings into the user's.
+---Merge the plugin's hooks, its own settings and a profile's into the user's.
 ---
 ---The user's settings are the base: whatever they set stays set. Hooks are
----**added** per event (theirs run, ours run too). A profile's `apiKeyHelper` and
----`env` entries win, because choosing a profile is choosing which account pays,
----and a user-level helper or key left in force would quietly bill another one.
+---**added** per event (theirs run, ours run too). The plugin's own settings fill
+---in only what the user left unset — a `bashEditDiffEnabled = false` of theirs
+---stands. A profile's `apiKeyHelper` and `env` entries win, because choosing a
+---profile is choosing which account pays, and a user-level helper or key left in
+---force would quietly bill another one.
 ---@param user table|nil
 ---@param hooks table|nil `{ hooks = { [event] = { entry, ... } } }`
 ---@param profile table|nil `{ apiKeyHelper = string|nil, env = table|nil }`
+---@param defaults table|nil Top-level settings the plugin wants, e.g. `{ bashEditDiffEnabled = true }`.
 ---@return table
-function M.merge(user, hooks, profile)
+function M.merge(user, hooks, profile, defaults)
   local out = vim.deepcopy(type(user) == "table" and user or {})
+  if type(defaults) == "table" then
+    for key, value in pairs(defaults) do
+      if out[key] == nil then
+        out[key] = value
+      end
+    end
+  end
   if type(hooks) == "table" and type(hooks.hooks) == "table" then
     if type(out.hooks) ~= "table" then
       out.hooks = {}
@@ -126,20 +137,22 @@ end
 
 ---Give a launch command exactly one `--settings`.
 ---
----Untouched when neither the hooks nor the profile has anything to add: a user's
----own flag then stays exactly as they wrote it. Otherwise the user's flags are
----read and removed, and one flag naming the merged file is appended. A flag of
----theirs that cannot be read is reported and left out — it would have been
----replaced by ours anyway, which is what every launch did before this existed.
+---Untouched when neither the hooks, the plugin's settings nor the profile has
+---anything to add: a user's own flag then stays exactly as they wrote it.
+---Otherwise the user's flags are read and removed, and one flag naming the merged
+---file is appended. A flag of theirs that cannot be read is reported and left out
+---— it would have been replaced by ours anyway, which is what every launch did
+---before this existed.
 ---@param cmd_string string
----@param parts { hooks: table|nil, profile: table|nil, cwd: string|nil, write: fun(settings: table): string|nil }
+---@param parts { hooks: table|nil, defaults: table|nil, profile: table|nil, cwd: string|nil, write: fun(settings: table): string|nil }
 ---@return string cmd_string
 function M.apply(cmd_string, parts)
   local has_hooks = type(parts.hooks) == "table"
+  local defaults = type(parts.defaults) == "table" and next(parts.defaults) ~= nil and parts.defaults or nil
   local profile = parts.profile
   local has_profile = type(profile) == "table"
     and (profile.apiKeyHelper ~= nil or (type(profile.env) == "table" and next(profile.env) ~= nil))
-  if not has_hooks and not has_profile then
+  if not has_hooks and not defaults and not has_profile then
     return cmd_string
   end
 
@@ -160,7 +173,7 @@ function M.apply(cmd_string, parts)
     end
   end
 
-  local path = parts.write(M.merge(user, parts.hooks, has_profile and profile or nil))
+  local path = parts.write(M.merge(user, parts.hooks, has_profile and profile or nil, defaults))
   if not path then
     -- Nothing to point at: hand back what the user asked for rather than a launch
     -- missing their settings too.

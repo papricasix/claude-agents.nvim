@@ -114,6 +114,7 @@ local DEFAULT_HIGHLIGHTS = {
   flagged = "ClaudeCodeAgentsFlagged",
   flag_note = "ClaudeCodeAgentsFlagNote",
   worktree = "ClaudeCodeAgentsWorktree",
+  uncertain = "ClaudeCodeAgentsUncertain",
 }
 
 local HIGHLIGHT_LINKS = {
@@ -172,6 +173,9 @@ local HIGHLIGHT_LINKS = {
   -- where the work is and asks for nothing, so it takes the colour paths are
   -- drawn in rather than the flag's warning.
   ClaudeCodeAgentsWorktree = "Directory",
+  -- The mark on a shell command's change that may include someone else's writes
+  -- (`model`'s `uncertainty_judge`). A caution about the record, not an error.
+  ClaudeCodeAgentsUncertain = "DiagnosticWarn",
 }
 
 ---Where the panes take their background from.
@@ -199,6 +203,14 @@ end
 --- Markers for what an agent did to a file. Kept narrow enough not to shift the
 --- columns after them.
 local KIND_LABEL = { read = "read", add = "added", edit = "edit", delete = "del" }
+
+--- What a shell command's change wears when it may not be the command's alone:
+--- the CLI records whatever changed while the command ran, and something else the
+--- view knows of wrote the file in that time. U+2248, "approximately": one cell,
+--- not emoji-capable. In Changes it takes the blank after the status letter, so
+--- no column moves; in Activity it stands at the right edge like a call's status.
+local UNCERTAIN_MARK = "≈"
+M.UNCERTAIN_MARK = UNCERTAIN_MARK
 
 --- What a tool call's row says about how it went, drawn at the right edge. A call
 --- that simply worked says nothing: most of them do, and a pane of ticks is a pane
@@ -547,12 +559,17 @@ end
 ---announces itself. `ages.*` is nil for a count that has never changed under our
 ---eyes, which is every count on the first draw — and that is the resting look,
 ---not the absence of one.
+---
+---`partial`: some of the changes counted have no known size (a shell command's
+---change the CLI kept no diff of). Each number then reads as at least that much,
+---`+3?`, or `+?` with nothing known — never `+0`, which would claim nothing changed.
 ---@param added integer|nil
 ---@param removed integer|nil
 ---@param ages { added: number?, removed: number? }|nil
+---@param partial boolean|nil
 ---@return string text
 ---@return { offset: integer, len: integer, hl: string }[] spans Offsets within `text`.
-local function counts_text(added, removed, ages)
+local function counts_text(added, removed, ages, partial)
   local spans = {}
   ages = ages or {}
   -- The placeholder occupies the same field as a real pair, so a list that is
@@ -560,6 +577,10 @@ local function counts_text(added, removed, ages)
   local unknown = added == nil and removed == nil
   local plus = unknown and "+·" or ("+" .. tostring(added or 0))
   local minus = unknown and "-·" or ("-" .. tostring(removed or 0))
+  if partial and not unknown then
+    plus = (added or 0) > 0 and (plus .. "?") or "+?"
+    minus = (removed or 0) > 0 and (minus .. "?") or "-?"
+  end
   -- Padded by display width rather than string.format's %Ns, which counts bytes:
   -- the placeholder's `·` is multibyte, and byte padding would leave it short by
   -- a cell and knock the column out of line.
@@ -859,14 +880,16 @@ end
 ---Draw the activity feed, oldest first.
 ---@param buf integer
 ---@param events table[] `{ ts, kind, path, added, removed }`
----@param opts { cwd: string?, width: integer?, now: number? }|nil
+---@param opts { cwd: string?, width: integer?, now: number?, ages: number[]?, uncertain: table<integer, true>? }|nil
 function M.feed(buf, events, opts)
   opts = opts or {}
   local width = opts.width or 32
   -- Positional rather than a field on each event: the events are the transcript's
   -- own stored tables, cached to disk, so the view's idea of "how long has this
-  -- been on screen" does not belong on one.
+  -- been on screen" does not belong on one. Nor does whether a shell command's
+  -- change may be someone else's, which other transcripts decide (`model.feed`).
   local ages = opts.ages or {}
+  local uncertain = opts.uncertain or {}
   local lines, marks, payload_map = {}, {}, {}
 
   if #events == 0 then
@@ -891,6 +914,9 @@ function M.feed(buf, events, opts)
     -- The marker takes its cells out of the text, not out of the pane: a row that
     -- reads to the edge and then grows a `…` would reflow the whole column.
     local mark = is_tool and STATUS_MARK[event.status] or nil
+    if not is_tool and uncertain[index] then
+      mark = { text = UNCERTAIN_MARK, hl = "uncertain" }
+    end
     -- Floors at 1 cell, so the marker is cut into rather than pushed off the edge.
     local room = math.max(1, width - #head - 1 - (mark and (vim.fn.strdisplaywidth(mark.text) + 1) or 0))
     local name
@@ -931,6 +957,8 @@ function M.feed(buf, events, opts)
         start_line = event.start_line,
         num_lines = event.num_lines,
         tool_id = event.tool_id,
+        via = event.via,
+        uncertain = uncertain[index],
         key = transcript.event_key(event),
       }
     end
@@ -1009,11 +1037,12 @@ function M.changes(buf, entries, opts)
     local counts, spans = counts_text(entry.added, entry.removed, {
       added = entry.added_age_ms,
       removed = entry.removed_age_ms,
-    })
+    }, entry.unknown)
     local path = M.relative_path(entry.path, opts.cwd)
-    local head = string.format(" %s ", status)
+    local head = string.format(" %s%s", status, entry.uncertain and UNCERTAIN_MARK or " ")
     -- Floors at 1 cell, so the counts stay inside the pane.
-    local name = M.shorten_path(path, math.max(1, width - #head - vim.fn.strdisplaywidth(counts) - 1))
+    local name =
+      M.shorten_path(path, math.max(1, width - vim.fn.strdisplaywidth(head) - vim.fn.strdisplaywidth(counts) - 1))
     local line, counts_at = right_align(head .. name, width, counts)
 
     local lnum = index - 1
@@ -1026,9 +1055,14 @@ function M.changes(buf, entries, opts)
       path = entry.path,
       event_kind = entry.kind,
       era = era,
+      uncertain = entry.uncertain,
       key = era and (entry.path .. "\0" .. tostring(era.index)) or entry.path,
     }
 
+    if entry.uncertain then
+      local mark_at = #head - #UNCERTAIN_MARK
+      marks[#marks + 1] = { row = lnum, col = mark_at, end_col = #head, hl = hl("uncertain") }
+    end
     if entry.deleted then
       -- Dimmed whole, counts included: their coloured blocks and flashes are for
       -- work that is still in the tree. The letter keeps the pane's own colour,

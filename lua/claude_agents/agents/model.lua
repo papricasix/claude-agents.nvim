@@ -112,6 +112,10 @@ local function new_state()
     -- table identity, so a fresh table every frame would light the rule up on
     -- every redraw, while a kept one arrives lit once and settles like any row.
     dividers = {}, ---@type table<string, table>
+    -- When each shell command a hook reported was started, `[tool_use_id] = epoch
+    -- seconds`, until its result: the window its changes were made in, for a
+    -- result the transcript does not hold yet (`transcript.provisional`).
+    bash_started = {}, ---@type table<string, number>
   }
 end
 
@@ -1605,6 +1609,122 @@ local function divider_for(session_id, marks, index)
   return row
 end
 
+--- How far either side of a shell command's window a write by someone else still
+--- counts as inside it. The CLI dates the call when the message making it is
+--- written and the result after its second snapshot, a file tool's edit is dated
+--- to the whole second, and two processes' clocks are being compared.
+local OVERLAP_SLACK_S = 1
+
+--- A summary's files keyed by `utils.path_key`, rebuilt when it gains a file or
+--- is folded over again. Weak, so a summary the transcript drops takes it along.
+local files_by_key_cache = setmetatable({}, { __mode = "k" })
+
+---@param sum ClaudeCodeAgentsSummary
+---@return table<string, ClaudeCodeAgentsFile>
+local function files_by_key(sum)
+  local cached = files_by_key_cache[sum]
+  if cached and cached.files == sum.files and cached.count == #(sum.order or {}) then
+    return cached.map
+  end
+  local utils = require("claude_agents.utils")
+  local map = {}
+  for path, file in pairs(sum.files or {}) do
+    map[utils.path_key(path)] = file
+  end
+  files_by_key_cache[sum] = { files = sum.files, count = #(sum.order or {}), map = map }
+  return map
+end
+
+---Every other transcript the view knows that could have written the selected
+---session's files: the other conversations it lists, and the selected one's own
+---subagents, which run beside it in the same process.
+---@param row table The selected session's row.
+---@return ClaudeCodeAgentsSummary[]
+local function other_writers(row)
+  local out = {}
+  for _, other in ipairs(state.rows) do
+    if other.session_id ~= row.session_id and type(other.path) == "string" then
+      local sum = transcript.get(other.path)
+      if sum then
+        out[#out + 1] = sum
+      end
+    end
+  end
+  local ok, subagents = pcall(require, "claude_agents.agents.subagents")
+  if ok and type(row.path) == "string" then
+    for _, agent in ipairs(subagents.scan(row.path)) do
+      local sum = transcript.get(agent.path)
+      if sum then
+        out[#out + 1] = sum
+      end
+    end
+  end
+  return out
+end
+
+---Whether a shell command's change to a file may not be the command's alone.
+---
+---The CLI records what changed in the repository while the command ran, whoever
+---changed it (measured: a file written by another process mid-command is listed
+---as the command's). So a change is uncertain when the CLI says two of its own
+---commands overlapped (`shared`), or when anything else the view knows of wrote
+---the same file inside the command's window: another conversation (an edit, or a
+---command of its own overlapping this one), one of the session's subagents, or
+---this Neovim (`agents/writes.lua`). A writer the view does not know — another
+---editor, a build running in the background — cannot be ruled out, so the mark
+---means "may", and its absence only "nothing known says otherwise".
+---
+---Answers lazily: the other transcripts are only gathered once a change of the
+---selected session asks.
+---@param row table The selected session's row.
+---@return fun(path: string, edit: table): boolean
+local function uncertainty_judge(row)
+  local others = nil
+  local utils = require("claude_agents.utils")
+  local writes = require("claude_agents.agents.writes")
+  return function(path, edit)
+    if type(edit) ~= "table" or edit.via ~= "bash" or type(path) ~= "string" then
+      return false
+    end
+    if edit.shared then
+      return true
+    end
+    local ts = tonumber(edit.ts) or 0
+    local from = (tonumber(edit.from) or ts) - OVERLAP_SLACK_S
+    local to = (tonumber(edit.to) or ts) + OVERLAP_SLACK_S
+    if writes.during(path, from, to) then
+      return true
+    end
+    others = others or other_writers(row)
+    local key = utils.path_key(path)
+    for _, sum in ipairs(others) do
+      local file = files_by_key(sum)[key]
+      for _, other in ipairs(file and file.edits or {}) do
+        local other_ts = tonumber(other.ts) or 0
+        if other.via == "bash" then
+          if (tonumber(other.from) or other_ts) <= to and (tonumber(other.to) or other_ts) >= from then
+            return true
+          end
+        elseif other_ts + 1 >= from and other_ts <= to then
+          -- Dated to the whole second: it happened somewhere inside [ts, ts + 1).
+          return true
+        end
+      end
+    end
+    return false
+  end
+end
+
+---Whether a shell command's change may include someone else's (see
+---`uncertainty_judge`). For specs and for callers holding one edit.
+---@param row table
+---@param path string
+---@param edit table
+---@return boolean
+function M._is_uncertain(row, path, edit)
+  return uncertainty_judge(row)(path, edit)
+end
+
 ---How many of a session's events the filter lets through — what `feed` would
 ---list with no limit, so it can tell "the walk showed everything" from "it
 ---stopped at the pane's height".
@@ -1680,10 +1800,11 @@ end
 ---@param keep table<string, true>|nil `transcript.event_key`s to draw however far down they are.
 ---@return table[] events The transcript's own tables, newest first.
 ---@return number[] ages Milliseconds each has been on screen, by position.
+---@return table<integer, true> uncertain The positions of shell commands' changes that may not be theirs alone (`uncertainty_judge`).
 function M.feed(visible, keep)
   local row = state.selected and state.by_id[state.selected]
   if not row then
-    return {}, {}
+    return {}, {}, {}
   end
   local events = transcript.events(row.path)
   -- Edits the transcript does not hold yet, newest of all (`transcript.provisional`).
@@ -1740,7 +1861,17 @@ function M.feed(visible, keep)
   if #marks > 0 then
     out = with_dividers(out, marks, row.session_id, #out == count_shown(events, filter))
   end
-  return out, stamp_feed(out)
+  -- Asked of what is drawn alone, and only of shell commands' changes.
+  local uncertain, judge = {}, nil
+  for index, event in ipairs(out) do
+    if event.via == "bash" and event.path then
+      judge = judge or uncertainty_judge(row)
+      if judge(event.path, event) then
+        uncertain[index] = true
+      end
+    end
+  end
+  return out, stamp_feed(out), uncertain
 end
 
 --- The filters, in the order `M.cycle_feed_filter` walks them.
@@ -1831,11 +1962,26 @@ function M.changes()
 
   local utils = require("claude_agents.utils")
   local entries = {}
+  local uncertain = uncertainty_judge(row)
+
+  ---What a span of a file's edits leaves unsure: whether a shell command's change
+  ---was all its own (`uncertain`), and whether every change's counts are known.
+  ---@param path string
+  ---@param edit table
+  ---@param into { uncertain: boolean?, unknown: boolean? }
+  local function weigh(path, edit, into)
+    if edit.unknown then
+      into.unknown = true
+    end
+    if not into.uncertain and edit.via == "bash" and uncertain(path, edit) then
+      into.uncertain = true
+    end
+  end
 
   ---One row: a file, with the counts of whichever span of the session is asked
   ---about — the whole of it, or one era between checkpoints.
   ---@param path string
-  ---@param counts { added: integer, removed: integer, kind: string }
+  ---@param counts { added: integer, removed: integer, kind: string, uncertain: boolean?, unknown: boolean? }
   ---@param era { index: integer, count: integer, from: number?, to: number?, note: string }|nil
   local function push(path, counts, era)
     -- Keyed the way `git.parse_status` keys it: git answers with `/`
@@ -1863,6 +2009,8 @@ function M.changes()
       scratchpad = transcript.is_scratchpad(path),
       status = deleted and "D" or letter or (counts.kind == "add" and "A" or "M"),
       era = era,
+      uncertain = counts.uncertain or nil,
+      unknown = counts.unknown or nil,
     }
   end
 
@@ -1871,7 +2019,11 @@ function M.changes()
     for _, path in ipairs(order) do
       local file = files[path]
       if file and file.kind ~= "read" then
-        push(path, file, nil)
+        local counts = { added = file.added, removed = file.removed, kind = file.kind }
+        for _, edit in ipairs(file.edits or {}) do
+          weigh(path, edit, counts)
+        end
+        push(path, counts, nil)
       end
     end
     return entries
@@ -1907,6 +2059,7 @@ function M.changes()
       counts.added = counts.added + (tonumber(edit.added) or 0)
       counts.removed = counts.removed + (tonumber(edit.removed) or 0)
       counts.kind = edit.kind or counts.kind
+      weigh(path, edit, counts)
     end
   end
 
@@ -2025,6 +2178,13 @@ end
 --- Tools whose completion can change what is on disk.
 local WRITING_TOOLS = { Edit = true, Write = true, MultiEdit = true, NotebookEdit = true }
 
+--- The tools that run a shell command (`PowerShell` is the Windows one).
+local SHELL_TOOLS = { Bash = true, PowerShell = true }
+
+--- Shell commands whose start is remembered at once (`state.bash_started`). Far
+--- more than run at the same time; past it they are results that never came.
+local BASH_STARTED_MAX = 256
+
 ---Where a finished turn lands: `idle` when the user was looking at that
 ---conversation as the answer arrived, `done` — finished but unread — when it
 ---landed somewhere they were not.
@@ -2104,11 +2264,40 @@ function M.note(event, _source_tab, note_opts)
 
   local ehn = event.hook_event_name
   local tool = event.tool_name
+  local tool_id = type(event.tool_use_id) == "string" and event.tool_use_id or nil
+  if ehn == "PreToolUse" and SHELL_TOOLS[tool] and tool_id then
+    -- When the command started: the window its changes were made in, should its
+    -- result reach us before the transcript has the call. A burst the results
+    -- never came for (an interrupt fires no hook) is let go of wholesale.
+    local held = 0
+    for _ in pairs(state.bash_started) do
+      held = held + 1
+    end
+    if held >= BASH_STARTED_MAX then
+      state.bash_started = {}
+    end
+    state.bash_started[tool_id] = require("claude_agents.agents.writes")._now()
+  end
+  local response = type(event.tool_response) == "table" and event.tool_response or nil
+  local bash_changed = SHELL_TOOLS[tool] and response ~= nil and type(response.bashEditDiff) == "table"
   if ehn == "PostToolUse" then
     -- PostToolUse, not Pre: the transcript's record of a tool is written when the
     -- tool returns.
     state.dirty.transcript = true
-    if WRITING_TOOLS[tool] then
+    local started = tool_id and state.bash_started[tool_id] or nil
+    if tool_id then
+      state.bash_started[tool_id] = nil
+    end
+    if bash_changed then
+      -- A shell command that changed files says which (`bashEditDiff`), and is
+      -- counted from the hook like a file tool's edit, below.
+      state.dirty.git = true
+      local row = state.by_id[session_id]
+      local path = (row and row.path) or event.transcript_path
+      if event.agent_id == nil and type(path) == "string" then
+        transcript.provisional(path, event, { from = started })
+      end
+    elseif WRITING_TOOLS[tool] then
       state.dirty.git = true
       -- Counted from the hook until the transcript has it: the CLI sometimes holds
       -- its writes (`transcript.provisional`). Not a subagent's — its edits are in

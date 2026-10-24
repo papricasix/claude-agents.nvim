@@ -86,8 +86,8 @@ describe("agents.model", function()
       end,
       -- What the stubbed store holds from hooks, by path, in `provisional_view`'s
       -- shape; folding a payload into it is the transcript spec's to pin down.
-      provisional = function(path, event)
-        provisional_calls[#provisional_calls + 1] = { path = path, event = event }
+      provisional = function(path, event, opts)
+        provisional_calls[#provisional_calls + 1] = { path = path, event = event, opts = opts }
         return true
       end,
       provisional_view = function(path)
@@ -1328,6 +1328,160 @@ describe("agents.model", function()
       expect(failed[1].session_id).to_be("bbb")
       expect(model.row("aaa")).to_be(nil)
       expect(model.row("bbb")).to_be_table()
+    end)
+  end)
+
+  describe("shell commands' changes", function()
+    local writes
+
+    ---A change a shell command made, as `transcript`'s fold records it.
+    local function bash_edit(fields)
+      return vim.tbl_extend("force", {
+        ts = 1004,
+        added = 1,
+        removed = 1,
+        kind = "edit",
+        via = "bash",
+        from = 1000.2,
+        to = 1004.8,
+      }, fields or {})
+    end
+
+    ---Session `aaa` with one shell command's change to `/proj/a.lua`.
+    local function with_bash_change(fields)
+      local edit = bash_edit(fields)
+      summaries.aaa = summary_for("aaa", {
+        files = {
+          ["/proj/a.lua"] = { added = 1, removed = 1, kind = "edit", last_ts = 1004, edits = { edit } },
+        },
+        order = { "/proj/a.lua" },
+        events = {
+          { ts = 1000, kind = "tool", tool = "Bash", tool_id = "toolu_b" },
+          vim.tbl_extend("force", { path = "/proj/a.lua", tool_id = "toolu_b" }, edit),
+        },
+      })
+    end
+
+    ---Session `bbb`, which edited `/proj/a.lua` itself at `ts`.
+    local function other_edit_at(ts, path)
+      path = path or "/proj/a.lua"
+      summaries.bbb = summary_for("bbb", {
+        files = {
+          [path] = {
+            added = 1,
+            removed = 0,
+            kind = "edit",
+            last_ts = ts,
+            edits = { { ts = ts, added = 1, removed = 0, kind = "edit" } },
+          },
+        },
+        order = { path },
+      })
+    end
+
+    local function open_on_aaa()
+      model.attach(1, "/proj")
+      model.refresh_list()
+      model.select("aaa")
+    end
+
+    local real_now
+
+    before_each(function()
+      writes = require("claude_agents.agents.writes")
+      writes.reset()
+      real_now = writes._now
+    end)
+
+    after_each(function()
+      writes._now = real_now
+    end)
+
+    it("counts a change nothing else touched as the command's", function()
+      with_bash_change()
+      other_edit_at(1002, "/proj/elsewhere.lua")
+      open_on_aaa()
+      local entry = model.changes()[1]
+      expect(entry.path).to_be("/proj/a.lua")
+      expect(entry.uncertain).to_be_nil()
+      local _, _, uncertain = model.feed()
+      expect(next(uncertain)).to_be_nil()
+    end)
+
+    it("marks a change another conversation also made while the command ran", function()
+      with_bash_change()
+      other_edit_at(1002)
+      open_on_aaa()
+      expect(model.changes()[1].uncertain).to_be_true()
+      local feed, _, uncertain = model.feed()
+      -- Newest first: the file row above the command's own.
+      expect(feed[1].path).to_be("/proj/a.lua")
+      expect(uncertain[1]).to_be_true()
+      expect(uncertain[2]).to_be_nil()
+    end)
+
+    it("leaves a change alone when the other edit was outside the window", function()
+      with_bash_change()
+      other_edit_at(990)
+      open_on_aaa()
+      expect(model.changes()[1].uncertain).to_be_nil()
+    end)
+
+    it("marks two conversations' commands that overlapped on one file", function()
+      with_bash_change()
+      summaries.bbb = summary_for("bbb", {
+        files = {
+          ["/proj/a.lua"] = {
+            added = 1,
+            removed = 0,
+            kind = "edit",
+            last_ts = 1010,
+            edits = { bash_edit({ ts = 1010, from = 1003.9, to = 1010.1 }) },
+          },
+        },
+        order = { "/proj/a.lua" },
+      })
+      open_on_aaa()
+      expect(model.changes()[1].uncertain).to_be_true()
+    end)
+
+    it("takes the CLI's word that two of its commands overlapped", function()
+      with_bash_change({ shared = true })
+      open_on_aaa()
+      expect(model.changes()[1].uncertain).to_be_true()
+    end)
+
+    it("marks a change this Neovim saved the same file during", function()
+      with_bash_change()
+      writes.note("/proj/a.lua", 1003.5)
+      open_on_aaa()
+      expect(model.changes()[1].uncertain).to_be_true()
+    end)
+
+    it("says when a change's counts are not known", function()
+      with_bash_change({ unknown = true, added = 0, removed = 0 })
+      open_on_aaa()
+      expect(model.changes()[1].unknown).to_be_true()
+    end)
+
+    it("holds a command's changes from its hook, dated from its start", function()
+      with_bash_change()
+      open_on_aaa()
+      writes._now = function()
+        return 2000.5
+      end
+      model.note({ session_id = "aaa", hook_event_name = "PreToolUse", tool_name = "Bash", tool_use_id = "toolu_n" })
+      model.note({
+        session_id = "aaa",
+        hook_event_name = "PostToolUse",
+        tool_name = "Bash",
+        tool_use_id = "toolu_n",
+        tool_response = { stdout = "", bashEditDiff = { files = {}, changedFiles = { "/proj/a.lua" } } },
+      })
+      expect(#provisional_calls).to_be(1)
+      expect(provisional_calls[1].event.tool_use_id).to_be("toolu_n")
+      -- Nothing in the payload says when the command started; its PreToolUse did.
+      expect(provisional_calls[1].opts.from).to_be(2000.5)
     end)
   end)
 

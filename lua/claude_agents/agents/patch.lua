@@ -157,6 +157,60 @@ function M.annotate(hunks, result)
   end
 end
 
+---Hunks whose text is the file's own, put in the form the file tools write.
+---
+---A shell command's changes are diffed by the CLI with git (`bashEditDiff`), and
+---those hunks keep every tab. Everything here locates a hunk against the file *as
+---the CLI writes it* (`M.shown`), so they are rewritten that way and the exact
+---text kept beside them — `exact_old` and `exact_new`, which is what `annotate`
+---recovers for a file tool's hunk. Copies: the caller's tables are left alone.
+---@param hunks table[]
+---@return table[]
+function M.from_exact(hunks)
+  local out = {}
+  for _, hunk in ipairs(type(hunks) == "table" and hunks or {}) do
+    if type(hunk) == "table" and type(hunk.lines) == "table" then
+      local copy = {
+        oldStart = hunk.oldStart,
+        oldLines = hunk.oldLines,
+        newStart = hunk.newStart,
+        newLines = hunk.newLines,
+        lines = {},
+      }
+      local position, new_position = 0, 0
+      for _, line in ipairs(hunk.lines) do
+        if type(line) == "string" then
+          local mark, text = line:sub(1, 1), line:sub(2)
+          if mark == "\\" then
+            copy.lines[#copy.lines + 1] = line
+          else
+            local shown = M.shown(text)
+            copy.lines[#copy.lines + 1] = mark .. shown
+            if mark ~= "+" then
+              position = position + 1
+            end
+            if mark ~= "-" then
+              new_position = new_position + 1
+            end
+            if ambiguous(shown) then
+              local exact = (text:gsub("\r$", ""))
+              if mark == "-" then
+                copy.exact_old = copy.exact_old or {}
+                copy.exact_old[position] = exact
+              elseif mark == "+" then
+                copy.exact_new = copy.exact_new or {}
+                copy.exact_new[new_position] = exact
+              end
+            end
+          end
+        end
+      end
+      out[#out + 1] = copy
+    end
+  end
+  return out
+end
+
 ---Split a hunk's unified-diff body into its two sides.
 ---
 ---Both are the text as the CLI wrote it (see `M.shown`), not the file's.
@@ -417,8 +471,10 @@ end
 ---between the two, which a later anchor corrects).
 ---
 ---A step that cannot be applied whole leaves the states past it unknown until the
----next anchor. Nothing here reads the file on disk, so the answer does not decay
----as the file moves on afterwards.
+---next anchor, and so does a step whose change was never recorded (`unknown`: a
+---shell command's change to a binary or oversized file) — applying its no hunks
+---would claim it changed nothing. Nothing here reads the file on disk, so the
+---answer does not decay as the file moves on afterwards.
 ---@param steps ClaudeCodeAgentsFileStep[] Oldest first; `before` and `content` are the anchors.
 ---@param read_after { step: integer, content: string }|nil A whole read landing after step `step`.
 ---@return table<integer, string[]> states `states[0]` before the first step, `states[i]` after step `i`; missing where unknown.
@@ -439,7 +495,7 @@ function M.reconstruct(steps, read_after)
   end
 
   for i = 1, #steps do
-    if states[i - 1] and not states[i] then
+    if states[i - 1] and not states[i] and not steps[i].unknown then
       local out, _, skipped = M.forward_apply(states[i - 1], steps[i].hunks or {})
       if skipped == 0 then
         states[i] = out
@@ -447,7 +503,7 @@ function M.reconstruct(steps, read_after)
     end
   end
   for i = #steps, 1, -1 do
-    if states[i] and not states[i - 1] then
+    if states[i] and not states[i - 1] and not steps[i].unknown then
       local out, _, skipped = M.reverse_apply(states[i], steps[i].hunks or {})
       if skipped == 0 then
         states[i - 1] = out

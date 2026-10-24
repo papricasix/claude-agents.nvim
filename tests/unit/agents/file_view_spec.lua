@@ -161,6 +161,88 @@ describe("agents.file_view", function()
     expect(title:find("not in the transcript yet", 1, true) ~= nil).to_be_true()
   end)
 
+  describe("a shell command's change", function()
+    local notified, notify
+
+    before_each(function()
+      notified, notify = {}, vim.notify
+      vim.notify = function(msg)
+        notified[#notified + 1] = msg
+      end
+    end)
+
+    after_each(function()
+      vim.notify = notify
+    end)
+
+    it("says the CLI kept no diff of it rather than opening an empty float", function()
+      install_unified()
+      disk["/proj/b.png"] = { "binary" }
+      histories["/proj/b.png"] = {
+        hunks = {},
+        created = false,
+        reads = {},
+        steps = { { tool_id = "toolu_b", kind = "bash", hunks = {}, unknown = true, ts = 1 } },
+      }
+
+      local win = open({
+        session_id = "s",
+        transcript = "/p/a.jsonl",
+        path = "/proj/b.png",
+        prefer = "step",
+        tool_id = "toolu_b",
+      })
+      expect(win).to_be_nil()
+      expect(#float.list()).to_be(0)
+      expect(notified[1]:find("kept no diff", 1, true) ~= nil).to_be_true()
+    end)
+
+    it("shows the session's recorded patches when a change in it has no diff", function()
+      install_unified()
+      disk["/proj/a.lua"] = { "ONE", "two" }
+      local edit = hunk(1, { "-one", "+ONE" })
+      histories["/proj/a.lua"] = {
+        hunks = { edit },
+        created = false,
+        reads = {},
+        steps = {
+          { tool_id = "toolu_e", kind = "edit", hunks = { edit }, ts = 1 },
+          { tool_id = "toolu_b", kind = "bash", hunks = {}, unknown = true, ts = 2 },
+        },
+      }
+
+      open({ session_id = "s", transcript = "/p/a.jsonl", path = "/proj/a.lua" })
+      -- Walking today's file back across the gap would be a guess.
+      expect(#shown).to_be(0)
+      local _, title = float_buf()
+      expect(title:find("some shell changes have no diff", 1, true) ~= nil).to_be_true()
+    end)
+
+    it("says on the float that it may include other writes", function()
+      install_unified()
+      disk["/proj/a.lua"] = { "ONE" }
+      local edit = hunk(1, { "-one", "+ONE" })
+      histories["/proj/a.lua"] = {
+        hunks = { edit },
+        created = false,
+        reads = {},
+        steps = { { tool_id = "toolu_b", kind = "bash", hunks = { edit }, ts = 1 } },
+      }
+
+      open({
+        session_id = "s",
+        transcript = "/p/a.jsonl",
+        path = "/proj/a.lua",
+        prefer = "step",
+        tool_id = "toolu_b",
+        uncertain = true,
+      })
+      local _, title = float_buf()
+      expect(title:find("bash 1 of 1", 1, true) ~= nil).to_be_true()
+      expect(title:find("may include other writes", 1, true) ~= nil).to_be_true()
+    end)
+  end)
+
   it("shows the patches when the file is gone from disk", function()
     install_unified()
     histories["/proj/deleted.lua"] = { hunks = { hunk(1, { "-one" }) }, created = false, reads = {} }

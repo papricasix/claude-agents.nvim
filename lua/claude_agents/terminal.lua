@@ -476,8 +476,14 @@ local function get_claude_command_and_env(cmd_args, effective_config, instance, 
     end
   end
   if lc_ok then
+    -- What each Bash command changed, recorded by the CLI itself (2.1.300+): it
+    -- draws the diff under the command, and the agents view counts those files.
+    -- Off by default in the CLI; only user, flag or policy settings switch it on.
+    local main_config = claudecode_main.state and claudecode_main.state.config
+    local bash_changes = not (main_config and main_config.bash_changes == false)
     cmd_string = require("claude_agents.launch_settings").apply(cmd_string, {
       hooks = hooks and hooks.settings or nil,
+      defaults = bash_changes and { bashEditDiffEnabled = true } or nil,
       profile = parts and parts.settings or nil,
       cwd = (effective_config and effective_config.cwd) or vim.fn.getcwd(),
       write = live_cursor.write_settings_file,

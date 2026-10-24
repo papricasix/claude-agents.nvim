@@ -8,6 +8,7 @@ describe("claude_agents.terminal (wrapper for Snacks.nvim)", function()
   local mock_native_provider
   local last_created_mock_term_instance
   local create_mock_terminal_instance
+  local saved_main_config
 
   create_mock_terminal_instance = function(cmd, opts)
     --- Internal deepcopy for the mock's own use.
@@ -363,9 +364,16 @@ describe("claude_agents.terminal (wrapper for Snacks.nvim)", function()
 
     terminal_wrapper = require("claude_agents.terminal")
     -- Don't call setup({}) here to allow custom provider tests to work
+
+    -- These specs are about how a command is composed. `bash_changes` adds a
+    -- `--settings` of its own to every launch; it has specs of its own below.
+    local main = require("claude_agents")
+    saved_main_config = main.state.config
+    main.state.config = { bash_changes = false }
   end)
 
   after_each(function()
+    require("claude_agents").state.config = saved_main_config
     package.loaded["claude_agents.terminal"] = nil
     package.loaded["claude_agents.terminal.snacks"] = nil
     package.loaded["claude_agents.terminal.native"] = nil
@@ -630,6 +638,35 @@ describe("claude_agents.terminal (wrapper for Snacks.nvim)", function()
       mock_snacks_provider.open:reset()
       terminal_wrapper.open()
       mock_snacks_provider.open:was_called(1)
+    end)
+  end)
+
+  describe("bash_changes", function()
+    ---The text of the settings file a launch command points the CLI at.
+    local function settings_text(cmd)
+      local path = cmd:match("%-%-settings '([^']+)'")
+      assert.is_string(path, "no --settings in " .. cmd)
+      local f = assert(io.open(path, "r"))
+      local text = f:read("*a")
+      f:close()
+      return text
+    end
+
+    it("asks the CLI to record what Bash commands change, by default", function()
+      require("claude_agents").state.config = {}
+      terminal_wrapper.open({}, "--resume")
+
+      local cmd_arg = mock_snacks_provider.open:get_call(1).refs[1]
+      assert.is_truthy(cmd_arg:find("^claude %-%-resume %-%-settings "))
+      assert.is_truthy(settings_text(cmd_arg):find('"bashEditDiffEnabled":true', 1, true))
+    end)
+
+    it("adds nothing with bash_changes = false", function()
+      require("claude_agents").state.config = { bash_changes = false }
+      terminal_wrapper.open({}, "--resume")
+
+      local cmd_arg = mock_snacks_provider.open:get_call(1).refs[1]
+      assert.are.equal("claude --resume", cmd_arg)
     end)
   end)
 

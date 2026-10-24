@@ -56,6 +56,32 @@ local function unified_available()
   return (pcall(require, "unified.diff"))
 end
 
+---Say that a shell command changed a file the CLI kept no diff of — a binary
+---file, one past its size cap, or one past the few files it diffs per call — in
+---place of a float that would show nothing, or nothing true.
+---@param path string
+local function say_no_diff(path)
+  local name = vim.fn.fnamemodify(path, ":t")
+  vim.notify(
+    "ClaudeCode: a shell command changed " .. name .. ", and Claude Code kept no diff of it (binary, or too large)",
+    vim.log.levels.INFO
+  )
+end
+
+---Whether any step in a run is a shell command's change with no diff kept.
+---@param steps ClaudeCodeAgentsFileStep[]
+---@param first integer
+---@param last integer
+---@return boolean
+local function has_unknown(steps, first, last)
+  for i = first, last do
+    if steps[i] and steps[i].unknown then
+      return true
+    end
+  end
+  return false
+end
+
 --- Reading the file on disk, as a seam: a spec can hand this module a filesystem
 --- without one, the way `transcript._io` does for the transcript store.
 M._io = {
@@ -800,6 +826,18 @@ local function open_range(opts, history, first, last, what, title_for, whole)
     return false
   end
 
+  -- A shell command's change with no diff kept is a gap in the record: nothing
+  -- inside the span can be rebuilt across it, and today's file cannot be walked
+  -- back past it either. What is recorded is shown as it is, and the title says
+  -- what is missing.
+  if has_unknown(steps, first, last) then
+    if #own == 0 then
+      say_no_diff(path)
+      return nil
+    end
+    return patches("some shell changes have no diff")
+  end
+
   if not unified_available() then
     return patches(nil)
   end
@@ -820,6 +858,9 @@ local function open_range(opts, history, first, last, what, title_for, whole)
   local lines = read_lines(path)
   if not lines then
     return patches("deleted")
+  end
+  if has_unknown(steps, last + 1, #steps) then
+    return patches("changed since by a shell command with no diff")
   end
   local later = {}
   for i = last + 1, #steps do
@@ -998,7 +1039,7 @@ end
 ---@param opts { session_id: string?, transcript: string?, path: string, line: integer?,
 ---             read: { start_line: integer, num_lines: integer }?, prefer: "diff"|"read"|"step"?,
 ---             tool_id: string?, era: { from: number?, to: number?, note: string }?,
----             cwd: string?, reuse: integer? }
+---             cwd: string?, reuse: integer?, uncertain: boolean? }
 ---@param done fun(win: integer|nil)|nil Called once the float is up (the history read is async).
 function M.open(opts, done)
   local path = opts and opts.path
@@ -1008,9 +1049,17 @@ function M.open(opts, done)
     end
     return
   end
+  -- A shell command's change that may include someone else's writes says so on
+  -- the float as well as on the row it was opened from.
+  local caution = opts.uncertain
+      and (require("claude_agents.agents.render").UNCERTAIN_MARK .. " may include other writes")
+    or nil
   ---@param note string|nil
   ---@return string
   local function title_for(note)
+    if caution then
+      note = note and (note .. " " .. caution) or caution
+    end
     return M.title(path, opts.cwd, note)
   end
 
@@ -1044,6 +1093,11 @@ function M.open(opts, done)
     local known = summary and summary.files[path]
     if opts.tool_id or not known or known.kind == "read" then
       local held = transcript.provisional_hunks(opts.transcript, path, opts.tool_id)
+      if held and #held == 0 then
+        -- Reported by a shell command whose diff of this file was not kept.
+        say_no_diff(path)
+        return finish(nil)
+      end
       if held then
         return finish(
           open_patch_text(opts.session_id, path, held, title_for("(not in the transcript yet)"), opts.reuse)
@@ -1058,6 +1112,26 @@ function M.open(opts, done)
   local function show_history(history)
     local hunks = (history and history.hunks) or {}
     local created = history and history.created
+    local steps_all = (history and history.steps) or {}
+    local gap = has_unknown(steps_all, 1, #steps_all)
+
+    if #hunks == 0 and gap then
+      say_no_diff(path)
+      return finish(nil)
+    end
+    if gap then
+      -- What was recorded, as it was recorded: neither today's file nor any anchor
+      -- can be walked across a change nobody kept.
+      return finish(
+        open_patch_text(
+          opts.session_id,
+          path,
+          hunks,
+          title_for("(session changes, some shell changes have no diff)"),
+          opts.reuse
+        )
+      )
+    end
 
     if #hunks == 0 and not created then
       -- The session only read this file: show it with every window it read marked.

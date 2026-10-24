@@ -335,6 +335,46 @@ describe("agents.patch", function()
     end)
   end)
 
+  describe("from_exact", function()
+    it("writes a shell command's hunks the way a file tool's are, keeping the tabs aside", function()
+      local exact = { hunk(1, { "-\tx  =  1", "+\tX = 1", " \tctx", "\\ No newline at end of file" }) }
+      local out = patch.from_exact(exact)
+      assert.same({ "-  x  =  1", "+  X = 1", "   ctx", "\\ No newline at end of file" }, out[1].lines)
+      expect(out[1].exact_old[1]).to_be("\tx  =  1")
+      expect(out[1].exact_new[1]).to_be("\tX = 1")
+      -- The caller's tables are left as they were.
+      expect(exact[1].lines[1]).to_be("-\tx  =  1")
+    end)
+
+    it("round-trips through forward and reverse application", function()
+      local hunks = patch.from_exact({ hunk(1, { "-\ta", "+\tb", " \tc" }) })
+      local after = patch.forward_apply({ "\ta", "\tc" }, hunks)
+      assert.same({ "\tb", "\tc" }, after)
+      assert.same({ "\ta", "\tc" }, (patch.reverse_apply(after, hunks)))
+    end)
+  end)
+
+  describe("reconstruct across a change nobody kept a diff of", function()
+    it("does not carry a state forward over it", function()
+      local states = patch.reconstruct({
+        { kind = "edit", before = "a\n", hunks = { hunk(1, { "-a", "+b" }) } },
+        { kind = "bash", unknown = true, hunks = {} },
+      })
+      assert.same({ "b" }, states[1])
+      -- Applying the gap's no hunks would claim it changed nothing.
+      expect(states[2]).to_be_nil()
+    end)
+
+    it("does not carry a state back over it", function()
+      local states = patch.reconstruct({
+        { kind = "bash", unknown = true, hunks = {} },
+        { kind = "write", content = "z\n", hunks = { hunk(1, { "-q", "+z" }) } },
+      })
+      assert.same({ "q" }, states[1])
+      expect(states[0]).to_be_nil()
+    end)
+  end)
+
   describe("to_diff_lines", function()
     it("renders the hunks as unified-diff text", function()
       local out = patch.to_diff_lines("/proj/a.lua", {

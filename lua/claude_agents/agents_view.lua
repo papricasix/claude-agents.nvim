@@ -229,6 +229,8 @@ function M.setup(full_config)
   render.setup(full_config)
   model.setup(full_config)
   require("claude_agents.agents.float").setup(full_config)
+  -- The one writer besides the agents the view can name (see `agents/writes.lua`).
+  require("claude_agents.agents.writes").setup(M.is_enabled())
   model.on_change("agents_view", function()
     M.redraw()
     -- After the paint, so the sessions pane exists for the cursor to be put on
@@ -2544,8 +2546,8 @@ function M.redraw()
     -- down to the store's own cap instead of ending after one screen. Plus
     -- whatever is held, however far down new events have pushed it.
     local visible = feed_visible(feed_win)
-    local events
-    events, ages = model.feed(visible, next(keep) ~= nil and keep or nil)
+    local events, uncertain
+    events, ages, uncertain = model.feed(visible, next(keep) ~= nil and keep or nil)
     state.feed_drawn = #events
     -- Fewer rows than asked for means the store had no more: scrolling further
     -- has nothing to reveal, and the scroll autocmd need not repaint for it.
@@ -2557,6 +2559,7 @@ function M.redraw()
       width = vim.api.nvim_win_get_width(feed_win),
       cwd = model.selected_cwd(),
       ages = ages,
+      uncertain = uncertain,
       now = os.time(),
     })
     if same_session then
@@ -3867,7 +3870,10 @@ function open_row(payload, pane, lnum, action, nav_opts)
   local prefer = "diff"
   if read then
     prefer = "read"
-  elseif payload.tool_id and (payload.event_kind == "edit" or payload.event_kind == "add") then
+  elseif
+    payload.tool_id
+    and (payload.event_kind == "edit" or payload.event_kind == "add" or payload.event_kind == "delete")
+  then
     prefer = "step"
   end
 
@@ -3881,6 +3887,8 @@ function open_row(payload, pane, lnum, action, nav_opts)
     tool_id = prefer == "step" and payload.tool_id or nil,
     -- A Changes row between checkpoints opens as that era's diff.
     era = payload.era,
+    -- A shell command's change that may include someone else's says so on top.
+    uncertain = payload.uncertain,
     cwd = model.selected_cwd(),
     reuse = nav_opts.reuse,
   }, opened)

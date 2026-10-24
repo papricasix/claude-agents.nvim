@@ -64,6 +64,8 @@ A file view shows the file **as it stood then**, rebuilt from the transcript, an
 
 A rewind (`/rewind`, or `Esc Esc`) is drawn as a rule in Activity, and the calls it took back drop out of every count.
 
+**Files a shell command changed** (`sed -i`, a script, `rm`) are listed too, from what Claude Code (2.1.300 or newer) records about each Bash command: Activity lists each such file under the command, and `<CR>` shows that command's change. Claude Code records whatever changed in the repository while the command ran, so a file something else wrote in that time is marked `≈` — another agent, one of the session's subagents, or you saving it in this Neovim. A writer the view does not know of (another editor, a build) cannot be told apart, so no `≈` means only that nothing known says otherwise. A change Claude Code kept no diff of (a binary file, a very large one) counts as `+? -?`. Only the repository the shell is in is recorded, ignored files are not, and the PowerShell tool on Windows records nothing. `bash_changes = false` turns this off.
+
 ## Checkpoints
 
 `gc` draws a line through the selected session's history: from then on, what it does is listed apart from what it did before, in all three panes. Take one after you have reviewed an agent's work, and only the new work is above the line. A file edited on both sides gets a row on each, and `<CR>` on either shows just that part. `a` on the rule names it, and `gC` drops the newest. Checkpoints survive restarts.

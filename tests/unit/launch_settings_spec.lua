@@ -128,6 +128,15 @@ describe("launch_settings", function()
       expect(merged.env.ANTHROPIC_API_KEY).to_be("")
       expect(merged.env.KEEP).to_be("1")
     end)
+
+    it("fills in the plugin's own settings only where the user set nothing", function()
+      local merged = launch_settings.merge({ model = "opus" }, nil, nil, { bashEditDiffEnabled = true })
+      expect(merged.bashEditDiffEnabled).to_be_true()
+      expect(merged.model).to_be("opus")
+      -- Turned off by the user in their own --settings: theirs stands.
+      local theirs = launch_settings.merge({ bashEditDiffEnabled = false }, nil, nil, { bashEditDiffEnabled = true })
+      expect(theirs.bashEditDiffEnabled).to_be_false()
+    end)
   end)
 
   describe("apply", function()
@@ -171,6 +180,20 @@ describe("launch_settings", function()
       expect(#errors).to_be(1)
       expect(errors[1]:find("could not be read", 1, true) ~= nil).to_be_true()
       assert.same({ "/tmp/merged-1.json" }, settings_flags(cmd))
+    end)
+
+    it("adds the plugin's own settings even when nothing else is wanted", function()
+      local cmd = launch_settings.apply("claude", { defaults = { bashEditDiffEnabled = true }, write = writer })
+      assert.same({ "/tmp/merged-1.json" }, settings_flags(cmd))
+      expect(written[1].bashEditDiffEnabled).to_be_true()
+    end)
+
+    it("keeps a user's bashEditDiffEnabled = false from their own --settings", function()
+      launch_settings.apply([[claude --settings '{"bashEditDiffEnabled":false}']], {
+        defaults = { bashEditDiffEnabled = true },
+        write = writer,
+      })
+      expect(written[1].bashEditDiffEnabled).to_be_false()
     end)
 
     it("adds a profile's settings even when no hooks are wanted", function()

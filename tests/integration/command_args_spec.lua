@@ -277,6 +277,8 @@ describe("ClaudeCode command arguments integration", function()
         auto_start = false,
         terminal_cmd = "claude",
         terminal = { provider = "native" },
+        -- Its `--settings` is a flag of the plugin's, not an argument of the user's.
+        bash_changes = false,
       })
 
       local command_handler
@@ -371,6 +373,8 @@ describe("ClaudeCode command arguments integration", function()
         auto_start = false,
         terminal_cmd = "claude",
         terminal = { provider = "native" },
+        -- Its `--settings` is a flag of the plugin's, not an argument of the user's.
+        bash_changes = false,
       })
 
       local command_handler

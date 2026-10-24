@@ -40,6 +40,12 @@ M.defaults = {
   -- :Agents, :AgentNew, ... (ClaudeCode -> Agent). Off by default; a name some
   -- other plugin already uses is left alone.
   command_aliases = false,
+  -- Ask Claude Code (2.1.300+) to record the files each Bash command changed. The
+  -- CLI then shows that diff under the command, and the agents view counts those
+  -- files in Changes. It records whatever changed while the command ran, so a
+  -- change something else also made in that time is marked ≈. false: leave the
+  -- CLI's own setting alone.
+  bash_changes = true,
   terminal_cmd = nil,
   env = {}, -- Custom environment variables for Claude terminal
   log_level = "info",
@@ -529,6 +535,9 @@ function M.validate(config)
   end
   if config.command_aliases ~= nil then
     assert(type(config.command_aliases) == "boolean", "command_aliases must be a boolean")
+  end
+  if config.bash_changes ~= nil then
+    assert(type(config.bash_changes) == "boolean", "bash_changes must be a boolean")
   end
 
   assert(config.terminal_cmd == nil or type(config.terminal_cmd) == "string", "terminal_cmd must be nil or a string")

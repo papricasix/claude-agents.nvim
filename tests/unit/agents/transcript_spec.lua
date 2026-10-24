@@ -1797,6 +1797,195 @@ describe("agents.transcript", function()
     end)
   end)
 
+  describe("shell commands that changed files", function()
+    -- The shape CLI 2.1.302 writes with `bashEditDiffEnabled` on (measured in a
+    -- probe): absolute paths, `structuredPatch`-shaped hunks with the file's own
+    -- text, and every changed path in `changedFiles`.
+    local function bash_call(id, command, ts)
+      return vim.json.encode({
+        type = "assistant",
+        timestamp = ts or "2026-08-02T20:30:00.250Z",
+        message = {
+          role = "assistant",
+          content = { { type = "tool_use", id = id, name = "Bash", input = { command = command } } },
+        },
+      })
+    end
+
+    local function bash_result(id, diff, ts)
+      return vim.json.encode({
+        type = "user",
+        timestamp = ts or "2026-08-02T20:30:04.750Z",
+        message = {
+          role = "user",
+          content = { { type = "tool_result", tool_use_id = id, content = "(Bash completed with no output)" } },
+        },
+        toolUseResult = {
+          stdout = "",
+          stderr = "",
+          interrupted = false,
+          isImage = false,
+          noOutputExpected = false,
+          bashEditDiff = diff,
+        },
+      })
+    end
+
+    local function hunk(old_start, lines)
+      return { oldStart = old_start, oldLines = 1, newStart = old_start, newLines = 1, lines = lines }
+    end
+
+    local function history(path, file)
+      local result, called = nil, false
+      transcript.file_history(path, file, function(hist)
+        result, called = hist, true
+      end)
+      if vim._mock and vim._mock.flush then
+        vim._mock.flush()
+      end
+      assert.is_true(called, "file_history() did not answer")
+      return result
+    end
+
+    it("counts every file the command changed, in Changes and in the session's totals", function()
+      put("/p/a.jsonl", {
+        bash_call("toolu_b", "sed -i '' s/a/A/ x.lua; printf 'n\\n' > new.txt; rm old.txt; cp a.png b.png"),
+        bash_result("toolu_b", {
+          files = {
+            { filePath = "/proj/x.lua", hunks = { hunk(1, { "-a", "+A", " b" }) } },
+            { filePath = "/proj/new.txt", hunks = { hunk(0, { "+n" }) }, created = true },
+            { filePath = "/proj/old.txt", hunks = { hunk(1, { "-gone", "-too" }) }, deleted = true },
+          },
+          moreFiles = 1,
+          changedFiles = { "/proj/x.lua", "/proj/new.txt", "/proj/old.txt", "/proj/b.png" },
+        }),
+      })
+      local sum = fold("/p/a.jsonl")
+      expect(sum.added).to_be(2)
+      expect(sum.removed).to_be(3)
+      assert.same({ "/proj/x.lua", "/proj/new.txt", "/proj/old.txt", "/proj/b.png" }, sum.order)
+      expect(sum.files["/proj/x.lua"].kind).to_be("edit")
+      expect(sum.files["/proj/new.txt"].kind).to_be("add")
+      expect(sum.files["/proj/old.txt"].kind).to_be("delete")
+      -- A file with no hunks is listed with counts nobody knows.
+      local png = sum.files["/proj/b.png"].edits[1]
+      expect(png.unknown).to_be_true()
+      expect(png.added).to_be(0)
+    end)
+
+    it("dates each change with the window the command ran in", function()
+      put("/p/a.jsonl", {
+        bash_call("toolu_b", "sed -i '' s/a/A/ x.lua"),
+        bash_result("toolu_b", { files = { { filePath = "/proj/x.lua", hunks = { hunk(1, { "-a", "+A" }) } } } }),
+      })
+      local sum = fold("/p/a.jsonl")
+      local edit = sum.files["/proj/x.lua"].edits[1]
+      expect(edit.via).to_be("bash")
+      expect(math.abs(edit.from - (transcript._iso_to_epoch("2026-08-02T20:30:00Z") + 0.25)) < 0.001).to_be_true()
+      expect(math.abs(edit.to - (transcript._iso_to_epoch("2026-08-02T20:30:04Z") + 0.75)) < 0.001).to_be_true()
+      expect(edit.shared).to_be_nil()
+    end)
+
+    it("keeps the CLI's word that two of its commands overlapped", function()
+      put("/p/a.jsonl", {
+        bash_call("toolu_b", "touch x.lua"),
+        bash_result("toolu_b", { files = { { filePath = "/proj/x.lua", hunks = {} } }, shared = true }),
+      })
+      expect(fold("/p/a.jsonl").files["/proj/x.lua"].edits[1].shared).to_be_true()
+    end)
+
+    it("lists the command and, apart from it, each file it changed in Activity", function()
+      put("/p/a.jsonl", {
+        bash_call("toolu_b", "sed -i '' s/a/A/ x.lua y.lua"),
+        bash_result("toolu_b", {
+          files = {
+            { filePath = "/proj/x.lua", hunks = { hunk(1, { "-a", "+A" }) } },
+            { filePath = "/proj/y.lua", hunks = { hunk(1, { "-a", "+A" }) } },
+          },
+        }),
+      })
+      local events = fold("/p/a.jsonl").events
+      expect(#events).to_be(3)
+      expect(events[1].kind).to_be("tool")
+      expect(events[2].path).to_be("/proj/x.lua")
+      expect(events[2].via).to_be("bash")
+      expect(events[2].tool_id).to_be("toolu_b")
+      -- Three rows from one call, each held by a key of its own.
+      local keys, distinct = {}, 0
+      for _, event in ipairs(events) do
+        local key = transcript.event_key(event)
+        if not keys[key] then
+          keys[key], distinct = true, distinct + 1
+        end
+      end
+      expect(distinct).to_be(3)
+    end)
+
+    it("takes nothing from a command the CLI skipped, or a result without the field", function()
+      put("/p/a.jsonl", {
+        bash_call("toolu_b", "git checkout main"),
+        bash_result("toolu_b", { files = {}, moreFiles = 0, skipped = true }),
+        bash_line(),
+      })
+      local sum = fold("/p/a.jsonl")
+      expect(#sum.order).to_be(0)
+    end)
+
+    it("decodes a Bash result only when it says what its command changed", function()
+      put("/p/a.jsonl", { bash_line(), bash_line() })
+      fold("/p/a.jsonl")
+      expect(decodes).to_be(0)
+    end)
+
+    it("makes each change a step of the file's history, tabs and all", function()
+      -- The CLI's hunks keep the tab a file tool's patch writes as two spaces:
+      -- located against the file as patches show it, rebuilt with its own text.
+      put("/p/a.jsonl", {
+        bash_call("toolu_b", "perl -pi -e s/x/X/ t.lua"),
+        bash_result("toolu_b", {
+          files = { { filePath = "/proj/t.lua", hunks = { hunk(1, { "-\tx = 1", "+\tX = 1", " plain" }) } } },
+        }),
+      })
+      local hist = history("/p/a.jsonl", "/proj/t.lua")
+      expect(#hist.steps).to_be(1)
+      expect(hist.steps[1].kind).to_be("bash")
+      expect(hist.steps[1].tool_id).to_be("toolu_b")
+      local before = require("claude_agents.agents.patch").reverse_apply({ "\tX = 1", "plain" }, hist.hunks)
+      assert.same({ "\tx = 1", "plain" }, before)
+    end)
+
+    it("marks a change with no diff kept as a gap the history cannot be rebuilt across", function()
+      put("/p/a.jsonl", {
+        bash_call("toolu_b", "cp a.png b.png"),
+        bash_result("toolu_b", { files = {}, moreFiles = 1, changedFiles = { "/proj/b.png" } }),
+      })
+      local hist = history("/p/a.jsonl", "/proj/b.png")
+      expect(#hist.steps).to_be(1)
+      expect(hist.steps[1].unknown).to_be_true()
+      expect(#hist.steps[1].hunks).to_be(0)
+    end)
+
+    it("holds a command's changes from its hook until the transcript has them", function()
+      put("/p/h.jsonl", { bash_call("toolu_b", "sed -i '' s/a/A/ x.lua") })
+      fold("/p/h.jsonl")
+      local diff = { files = { { filePath = "/proj/x.lua", hunks = { hunk(1, { "-a", "+A" }) } } } }
+      -- The command's own row is already folded from its call; that is not its result.
+      expect(transcript.provisional("/p/h.jsonl", {
+        tool_name = "Bash",
+        tool_use_id = "toolu_b",
+        tool_response = { stdout = "", bashEditDiff = diff },
+      }, { from = 100 })).to_be_true()
+      local view = transcript.provisional_view("/p/h.jsonl")
+      expect(view.added).to_be(1)
+      expect(view.files["/proj/x.lua"].edits[1].from).to_be(100)
+      assert.same({ "-a", "+A" }, transcript.provisional_hunks("/p/h.jsonl", "/proj/x.lua", "toolu_b")[1].lines)
+
+      append("/p/h.jsonl", { bash_result("toolu_b", diff) })
+      fold("/p/h.jsonl")
+      expect(transcript.has_provisional("/p/h.jsonl")).to_be(false)
+    end)
+  end)
+
   describe("single flight", function()
     it("shares one scan between concurrent callers", function()
       -- Defer the reads so both calls are in flight at once.
