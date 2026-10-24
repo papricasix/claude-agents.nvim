@@ -335,6 +335,64 @@ describe("agents.render", function()
       expect(render.payload_at(buf, 3)).to_be(nil)
     end)
 
+    describe("with OpenCode's service not answering", function()
+      local stopped = { mark = "◇", text = "OpenCode stopped", key = "gO", action = "starts it" }
+
+      local function marks_on(row)
+        local found = {}
+        for _, mark in ipairs(vim._extmarks or {}) do
+          if mark.bufnr == buf and mark.row == row and mark.opts then
+            found[mark.opts.hl_group] = mark
+          end
+        end
+        return found
+      end
+
+      it("says so on a line above the sessions, which still know their rows", function()
+        render.sessions(buf, rows, { width = 60, service_hint = stopped })
+        local lines = lines_of(buf)
+        expect(#lines).to_be(3)
+        expect(lines[1]).to_be(" ◇ OpenCode stopped · gO starts it")
+        expect(render.payload_at(buf, 1).kind).to_be("opencode_service")
+        expect(render.payload_at(buf, 1).session_id).to_be_nil()
+        expect(render.payload_at(buf, 2).session_id).to_be("aaaa1111")
+        expect(render.payload_at(buf, 3).session_id).to_be("bbbb2222")
+        -- The selected row's band moved down with it.
+        expect(marks_on(1).ClaudeCodeAgentsSelected).not_to_be_nil()
+        expect(marks_on(0).ClaudeCodeAgentsService).not_to_be_nil()
+        local key = marks_on(0).ClaudeCodeAgentsKey
+        expect(key.col).to_be(#" ◇ OpenCode stopped · ")
+      end)
+
+      it("stands in for the empty message when there are no sessions", function()
+        render.sessions(buf, {}, { width = 60, service_hint = stopped })
+        local lines = lines_of(buf)
+        expect(#lines).to_be(1)
+        expect(lines[1]).to_be(" ◇ OpenCode stopped · gO starts it")
+      end)
+
+      it("keeps the key in sight in a narrow pane, giving up words first", function()
+        render.sessions(buf, {}, { width = 26, service_hint = stopped })
+        expect(lines_of(buf)[1]).to_be(" ◇ OpenCode stopped · gO")
+        expect(marks_on(0).ClaudeCodeAgentsKey.col).to_be(#" ◇ OpenCode stopped · ")
+
+        render.sessions(buf, {}, { width = 16, service_hint = stopped })
+        local line = lines_of(buf)[1]
+        expect(vim.fn.strdisplaywidth(line)).to_be(16)
+        expect(line:sub(1, #" ◇ gO · ")).to_be(" ◇ gO · ")
+        expect(line:sub(-#"…")).to_be("…")
+        expect(marks_on(0).ClaudeCodeAgentsKey.col).to_be(#" ◇ ")
+
+        render.sessions(buf, {}, { width = 4, service_hint = stopped })
+        expect(marks_on(0).ClaudeCodeAgentsKey).to_be_nil()
+      end)
+
+      it("names no key when none would help", function()
+        render.sessions(buf, {}, { width = 60, service_hint = { mark = "◇", text = "Starting OpenCode…" } })
+        expect(lines_of(buf)[1]).to_be(" ◇ Starting OpenCode…")
+      end)
+    end)
+
     it("marks the selected row so it stays visible from another pane", function()
       render.sessions(buf, rows, { width = 40 })
       local band = nil

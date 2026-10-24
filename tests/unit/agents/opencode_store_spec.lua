@@ -342,4 +342,194 @@ describe("agents.opencode_store", function()
     -- An empty transcript folds to nothing worth showing.
     expect(sum == nil or sum.added == 0).to_be_true()
   end)
+
+  describe("the service, while it is not answering", function()
+    local opencode, real_available
+    local up, listed, project
+    local clock
+    local ensured, ensure_answer, held
+    local switched_off, disabled_asked
+    local marked, forgotten
+
+    before_each(function()
+      opencode = require("claude_agents.opencode")
+      opencode.setup({})
+      real_available = opencode.available
+      opencode.available = function()
+        return true
+      end
+      up, listed, project = false, {}, "prj"
+      clock = 1000
+      store._now = function()
+        return clock
+      end
+      store._api = function()
+        return {
+          call = function(_, path, _, cb)
+            if not up then
+              cb("no OpenCode service is registered (/state/service.json)", nil, nil)
+            elseif path == "/api/location" then
+              cb(nil, { project = { id = project }, directory = "/proj" }, {})
+            elseif path == "/api/session" then
+              cb(nil, listed, {})
+            else
+              cb("unexpected " .. path, nil, nil)
+            end
+          end,
+        }
+      end
+      ensured, ensure_answer, held = 0, nil, nil
+      switched_off, disabled_asked = false, 0
+      store._service = function()
+        return {
+          DISABLED_ERR = "switched off",
+          ensure = function(cb)
+            ensured = ensured + 1
+            local function answer()
+              if not ensure_answer then
+                up = true
+              end
+              cb(ensure_answer)
+            end
+            if held ~= nil then
+              held = answer
+            else
+              answer()
+            end
+          end,
+          disabled = function(cb)
+            disabled_asked = disabled_asked + 1
+            cb(switched_off)
+          end,
+        }
+      end
+      marked, forgotten = { ["/proj"] = true }, {}
+      store._dirs = function()
+        return {
+          marked = function(dir)
+            return marked[dir] == true
+          end,
+          forget = function(dir, opts)
+            forgotten[#forgotten + 1] = { dir = dir, exact = opts and opts.exact or false }
+            marked[dir] = nil
+          end,
+          refresh = function() end,
+        }
+      end
+    end)
+
+    after_each(function()
+      opencode.available = real_available
+      opencode.setup({})
+    end)
+
+    it("is started once when the view opens where OpenCode ran, and its conversations follow", function()
+      listed = { info("ses_root", "Goodbye edit") }
+      expect(#store.list("/proj")).to_be(0)
+      expect(ensured).to_be(1)
+      expect(store.note("/proj")).to_be_nil()
+      local rows = store.list("/proj")
+      expect(#rows).to_be(1)
+      expect(rows[1].id).to_be("ses_root")
+      expect(ensured).to_be(1)
+    end)
+
+    it("is left alone, and not mentioned, where the plugin never launched OpenCode", function()
+      store.list("/elsewhere")
+      expect(ensured).to_be(0)
+      expect(store.note("/elsewhere")).to_be_nil()
+      expect(disabled_asked).to_be(0)
+    end)
+
+    it("is only reported with start_service = launch, until the user asks", function()
+      opencode.setup({ opencode = { start_service = "launch" } })
+      store.list("/proj")
+      store.list("/proj")
+      expect(ensured).to_be(0)
+      expect(store.note("/proj").kind).to_be("down")
+      expect(disabled_asked).to_be(1)
+      store.start_service()
+      expect(ensured).to_be(1)
+      expect(store.note("/proj")).to_be_nil()
+    end)
+
+    it("is reported as switched off rather than offered", function()
+      opencode.setup({ opencode = { start_service = "launch" } })
+      switched_off = true
+      store.list("/proj")
+      expect(store.note("/proj").kind).to_be("disabled")
+
+      store.stop()
+      opencode.setup({})
+      ensure_answer = "switched off"
+      store.list("/proj")
+      expect(ensured).to_be(1)
+      expect(store.note("/proj").kind).to_be("disabled")
+    end)
+
+    it("reports a start that failed, and tries again only when asked", function()
+      ensure_answer = "`opencode service start` failed: port in use"
+      store.list("/proj")
+      local note = store.note("/proj")
+      expect(note.kind).to_be("failed")
+      assert_contains(note.err, "port in use")
+      store.list("/proj")
+      expect(ensured).to_be(1)
+      expect(store.note("/proj").kind).to_be("failed")
+      ensure_answer = nil
+      store.start_service()
+      expect(ensured).to_be(2)
+      expect(store.note("/proj")).to_be_nil()
+    end)
+
+    it("shows a start the user asked for in any directory, while it runs", function()
+      held = false
+      store.start_service()
+      expect(store.note("/elsewhere").kind).to_be("starting")
+      store.start_service()
+      expect(ensured).to_be(1)
+      held()
+      expect(store.note("/elsewhere")).to_be_nil()
+    end)
+
+    it("is not started again when it stops while the view is open", function()
+      listed = { info("ses_root", "Goodbye edit") }
+      up = true
+      store.list("/proj")
+      up = false
+      clock = clock + 10
+      store.list("/proj")
+      expect(ensured).to_be(0)
+      expect(store.note("/proj").kind).to_be("down")
+      -- The next open of the view does start it.
+      store.stop()
+      store.list("/proj")
+      expect(ensured).to_be(1)
+    end)
+
+    it("forgets a directory whose running service lists nothing for it", function()
+      up = true
+      store.list("/proj")
+      expect(#forgotten).to_be(1)
+      expect(forgotten[1].dir).to_be("/proj")
+      -- A project listing covers its worktrees; a directory's listing only itself.
+      expect(forgotten[1].exact).to_be(false)
+
+      store._reset()
+      marked["/proj"] = true
+      project = "global"
+      store.list("/proj")
+      expect(forgotten[2].exact).to_be(true)
+    end)
+
+    it("keeps a directory that has conversations, and one whose listing failed", function()
+      listed = { info("ses_root", "Goodbye edit") }
+      up = true
+      store.list("/proj")
+      up = false
+      clock = clock + 10
+      store.list("/proj")
+      expect(#forgotten).to_be(0)
+    end)
+  end)
 end)

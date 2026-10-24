@@ -1115,6 +1115,12 @@ create_commands = function()
     desc = "Start a new Claude agent named after the selected agent session, numbered on (plan → plan-2 → plan-3)",
   })
 
+  vim.api.nvim_create_user_command("ClaudeCodeOpencodeStart", function()
+    require("claude_agents.agents_view").start_opencode_service()
+  end, {
+    desc = "Start OpenCode's background service, whose conversations the agents view lists only while it runs",
+  })
+
   vim.api.nvim_create_user_command("ClaudeCodeStatus", function()
     local inst = get_instance()
     if inst and inst.server and inst.port then

@@ -98,6 +98,7 @@ local DEFAULT_HIGHLIGHTS = {
   path = "ClaudeCodeAgentsPath",
   kind = "ClaudeCodeAgentsKind",
   stopped = "ClaudeCodeAgentsStopped",
+  service = "ClaudeCodeAgentsService",
   deleted = "ClaudeCodeAgentsDeleted",
   failed = "ClaudeCodeAgentsFailed",
   float = "ClaudeCodeAgentsFloat",
@@ -131,6 +132,9 @@ local HIGHLIGHT_LINKS = {
   -- a tabline draws nothing at all for a tab with no Claude — but here those
   -- sessions are rows on screen, and they are the ones that should read quietest.
   ClaudeCodeAgentsStopped = "Comment",
+  -- The line at the top of the session list saying OpenCode's service is not
+  -- answering, so its conversations are missing: something to act on, not an error.
+  ClaudeCodeAgentsService = "DiagnosticWarn",
   -- A changed file that is no longer on disk. Its row stays — the session did
   -- that work, and the counts still add up to the session's own — but it is
   -- the quietest thing in the pane, with the `D` beside it saying why.
@@ -610,19 +614,68 @@ function M.fit_title(title, note, room)
   return M.truncate(title, title_room), NOTE_SEPARATOR .. M.truncate(note, note_room)
 end
 
+---The session list's line about OpenCode's service, fitted to the pane.
+---
+---The key is what the line is for, and the pane is narrow (a quarter of the
+---screen), so the words give way first: the action is dropped, and when even
+---that does not fit the key moves in front of the text, which is cut instead.
+---@param hint { mark: string, text: string, key: string?, action: string? }
+---@param width integer
+---@return string line
+---@return integer|nil key_at Byte offset of the key, when it is on the line whole.
+local function service_line(hint, width)
+  local lead = GUTTER .. hint.mark .. " "
+  if not hint.key then
+    return M.truncate(lead .. hint.text, width), nil
+  end
+  local after_text = #lead + #hint.text + #" · "
+  for _, candidate in ipairs({
+    lead .. hint.text .. " · " .. hint.key .. " " .. (hint.action or ""),
+    lead .. hint.text .. " · " .. hint.key,
+  }) do
+    if vim.fn.strdisplaywidth(candidate) <= width then
+      return candidate, after_text
+    end
+  end
+  local line = M.truncate(lead .. hint.key .. " · " .. hint.text, width)
+  if line:sub(1, #lead + #hint.key) == lead .. hint.key then
+    return line, #lead
+  end
+  return line, nil
+end
+
 ---Draw the session list.
 ---@param buf integer
 ---@param rows table[] `{ session_id, title, last_ts, added, removed, state, icon, hl, selected, live, flag, worktree, mark }`
----@param opts { width: integer?, now: number? }|nil
+---@param opts { width: integer?, now: number?, service_hint: { mark: string, text: string, key: string?, action: string? }? }|nil
+---       `service_hint`: a first line about OpenCode's service (payload kind `opencode_service`).
 function M.sessions(buf, rows, opts)
   opts = opts or {}
   local width = opts.width or 32
   local lines, marks, payload_map = {}, {}, {}
 
+  -- The line saying OpenCode's conversations are missing, at the top, where the
+  -- eye starts when the view opens; it goes once they arrive.
+  local hint = opts.service_hint
+  if hint then
+    local line, key_at = service_line(hint, width)
+    lines[1] = line
+    payload_map[1] = { kind = "opencode_service", key = "opencode_service" }
+    marks[#marks + 1] = { row = 0, col = 0, end_col = #line, hl = hl("service") }
+    if key_at then
+      marks[#marks + 1] = { row = 0, col = key_at, end_col = key_at + #hint.key, hl = hl("key"), priority = 160 }
+    end
+  end
+
   if #rows == 0 then
-    paint_empty(buf, "no sessions for this project", width)
+    if hint then
+      paint(buf, lines, marks, payload_map)
+    else
+      paint_empty(buf, "no sessions for this project", width)
+    end
     return
   end
+  local offset = #lines
 
   for index, row in ipairs(rows) do
     local icon = row.icon or ""
@@ -659,9 +712,9 @@ function M.sessions(buf, rows, opts)
 
     local line, age_at = right_align(left_prefix .. title .. note, width, right)
 
-    local lnum = index - 1
+    local lnum = offset + index - 1
     lines[#lines + 1] = line
-    payload_map[index] = { session_id = row.session_id, kind = "session", key = row.session_id }
+    payload_map[lnum + 1] = { session_id = row.session_id, kind = "session", key = row.session_id }
 
     if row.selected then
       marks[#marks + 1] = { row = lnum, col = 0, end_col = #gutter, hl = hl("title") }

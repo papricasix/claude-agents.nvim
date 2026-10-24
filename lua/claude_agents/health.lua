@@ -301,11 +301,24 @@ local function check_opencode(config)
   )
 
   local service = require("claude_agents.opencode.service")
+  local switched_off = service.disabled_sync(3000) == true
+  if switched_off then
+    warn("OpenCode's background service is disabled: its TUIs run private servers Neovim cannot reach", {
+      "Status, diff review and the agents view need the shared service: `opencode service unset disabled`",
+    })
+  end
   local conn, reg_err = service.read_registration()
   if not conn then
-    info(
-      "OpenCode's background service is not running; the first OpenCode launch starts it (" .. tostring(reg_err) .. ")"
-    )
+    if not switched_off then
+      local by_view = (config.opencode or {}).start_service ~= "launch"
+      info(
+        "OpenCode's background service is not running; the first OpenCode launch starts it"
+          .. (by_view and ", and so does the agents view in a directory OpenCode ran in" or "")
+          .. " ("
+          .. tostring(reg_err)
+          .. ")"
+      )
+    end
   else
     local err, data = require("claude_agents.opencode.api").call_sync("GET", "/api/info", { no_start = true }, 3000)
     if err then
@@ -315,12 +328,6 @@ local function check_opencode(config)
     else
       ok(("OpenCode service at %s (%s)"):format(conn.url, type(data) == "table" and tostring(data.version) or "?"))
     end
-  end
-  local status_ok, status_out = pcall(vim.fn.system, { exe, "service", "status" })
-  if status_ok and type(status_out) == "string" and status_out:lower():find("disabled", 1, true) then
-    warn("OpenCode's background service is disabled: its TUIs run private servers Neovim cannot reach", {
-      "Status, diff review and the agents view need the shared service: `opencode service unset disabled`",
-    })
   end
 
   local oc = config.opencode or {}

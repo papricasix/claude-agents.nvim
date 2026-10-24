@@ -4,6 +4,8 @@ describe("opencode.service", function()
   local service
   local real_decode
   local files, alive, spawned, answer
+  -- What `opencode service get disabled` answers: its result table.
+  local disabled_res
   local STANDARD, ELSEWHERE
 
   local function register(dir, url)
@@ -44,6 +46,7 @@ describe("opencode.service", function()
     ELSEWHERE = "/srv/state/opencode"
     files, alive, spawned = {}, {}, {}
     answer = STANDARD
+    disabled_res = { code = 0, stdout = "false\n" }
 
     service._read_file = function(path)
       return files[path]
@@ -60,6 +63,9 @@ describe("opencode.service", function()
     service._system = function(argv, _, on_exit)
       spawned[#spawned + 1] = argv
       local res = { code = 0, stdout = argv[2] == "debug" and (answer .. "\n") or "" }
+      if argv[2] == "service" and argv[3] == "get" then
+        res = disabled_res
+      end
       if on_exit then
         on_exit(res)
         return {}
@@ -159,7 +165,56 @@ describe("opencode.service", function()
 
     expect(got.err).to_be_nil()
     expect(got.conn.url).to_be("http://127.0.0.1:5000")
-    assert.are.same({ "opencode debug paths state", "opencode service start" }, commands())
+    assert.are.same(
+      { "opencode debug paths state", "opencode service get disabled", "opencode service start" },
+      commands()
+    )
+  end)
+
+  describe("a service the user switched off", function()
+    local function ensure()
+      local got
+      service.ensure(function(err, conn)
+        got = { err = err, conn = conn }
+      end)
+      return got
+    end
+
+    it("is not started, and the answer says how to switch it back on", function()
+      disabled_res = { code = 0, stdout = "true\n" }
+
+      local got = ensure()
+
+      expect(got.err).to_be(service.DISABLED_ERR)
+      expect(got.conn).to_be_nil()
+      assert_contains(got.err, "opencode service unset disabled")
+      assert.are.same({ "opencode debug paths state", "opencode service get disabled" }, commands())
+    end)
+
+    it("is not asked about when the service already answers", function()
+      register(STANDARD, "http://127.0.0.1:4096")
+      alive["http://127.0.0.1:4096"] = true
+      disabled_res = { code = 0, stdout = "true\n" }
+
+      expect(ensure().err).to_be_nil()
+      expect(#spawned).to_be(0)
+    end)
+
+    it("is started anyway when OpenCode cannot say (an older one without `service get`)", function()
+      disabled_res = { code = 1, stdout = "", stderr = "unknown command" }
+
+      ensure()
+
+      expect(commands()[#commands()]).to_be("opencode service start")
+    end)
+
+    it("is read the same way when waited for", function()
+      expect(service.disabled_sync(1000)).to_be(false)
+      disabled_res = { code = 0, stdout = "true\n" }
+      expect(service.disabled_sync(1000)).to_be(true)
+      disabled_res = { code = 1, stdout = "" }
+      expect(service.disabled_sync(1000)).to_be_nil()
+    end)
   end)
 
   it("answers state_dir from OpenCode, then from memory", function()

@@ -293,4 +293,51 @@ describe("health", function()
 
     expect(has_report("warn", "unified.nvim is not installed")).to_be_true()
   end)
+
+  describe("OpenCode", function()
+    local switched_off
+    local ran
+
+    before_each(function()
+      executables.opencode = true
+      switched_off = false
+      ran = {}
+      vim.fn.system = function(argv)
+        ran[#ran + 1] = type(argv) == "table" and table.concat(argv, " ") or tostring(argv)
+        return "1.0.0\n"
+      end
+      package.loaded["claude_agents.opencode.service"] = {
+        disabled_sync = function()
+          return switched_off
+        end,
+        read_registration = function()
+          return nil, "no OpenCode service is registered (/state/service.json)"
+        end,
+      }
+    end)
+
+    after_each(function()
+      package.loaded["claude_agents.opencode.service"] = nil
+    end)
+
+    it("says how to switch a disabled service back on, and not that a launch starts it", function()
+      switched_off = true
+      health.check()
+      expect(has_report("warn", "service is disabled")).to_be_true()
+      expect(has_report("info", "first OpenCode launch starts it")).to_be_false()
+    end)
+
+    it("says nothing about disabling when the service is merely not running", function()
+      health.check()
+      expect(has_report("warn", "disabled")).to_be_false()
+      expect(has_report("info", "service is not running")).to_be_true()
+    end)
+
+    it("never asks `opencode service status`, which does not say whether it is disabled", function()
+      health.check()
+      for _, cmd in ipairs(ran) do
+        expect(cmd:find("service status", 1, true)).to_be_nil()
+      end
+    end)
+  end)
 end)

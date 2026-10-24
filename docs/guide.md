@@ -79,6 +79,7 @@ opts = {
   backend = "opencode",   -- plain launches run OpenCode; "claude" (the default) runs Claude Code
   opencode = {
     cmd = "opencode",     -- the executable, when it is not on your PATH
+    start_service = "view", -- "launch": the agents view never starts OpenCode's service
     review_edits = true,  -- review OpenCode's edits as diffs in Neovim
   },
   profiles = {
@@ -106,7 +107,7 @@ What is different:
 - **In the agents view, OpenCode's command palette is `ctrl+x p`**, not `ctrl+p`: there `<C-n>`/`<C-p>` switch sessions even inside an agent's terminal, so OpenCode would never see `ctrl+p`. Only the OpenCode agents the view launches are changed, and only while `<C-p>` is a session key; its lists keep the arrow keys. `opencode.agent_keybinds` sets other OpenCode keys for those agents (`{ ["command.palette.show"] = "ctrl+y" }`, any id from OpenCode's keybind list), or `false` leaves them all as they are.
 - **The plugin's own tools** (open a file, read diagnostics) are not offered to OpenCode, which has its own.
 
-OpenCode runs a background service that every OpenCode client shares; the plugin talks to it too, and starts it (`opencode service start`) at the first OpenCode launch if it is not running. Listing OpenCode's sessions in the agents view never starts it. A service you switched off (`opencode service set disabled true`) leaves OpenCode's terminals on private servers the plugin cannot reach, and `:checkhealth claude_agents` says so.
+OpenCode runs a background service that every OpenCode client shares; the plugin talks to it too, and the agents view lists OpenCode's conversations only while it runs. An OpenCode launch starts it (`opencode service start`), and so does the agents view when it opens in a directory the plugin has launched OpenCode in, so they are listed after a login too. With `opencode.start_service = "launch"` only a launch does, and the view says `◇ OpenCode stopped · gO starts it` instead; `gO`, or `:ClaudeCodeOpencodeStart`, starts it anywhere. A service you switched off (`opencode service set disabled true`) is never started: OpenCode's terminals then run on private servers the plugin cannot reach, and the view and `:checkhealth claude_agents` say how to switch it back on.
 
 OpenCode's terminal connects back to Neovim without the token Claude Code sends (it only sends one when it finds the editor by scanning lock files). The plugin lets exactly one such connection in for each OpenCode it launches, on the loopback interface, never from a web page (browsers announce themselves with an `Origin` header), and offers it nothing but your selection and @ mentions.
 
@@ -186,6 +187,7 @@ With the agents view, also call `require("claude_agents.session_state").prepare_
 - **Claude does not connect:** `:checkhealth claude_agents`, then `:ClaudeCodeStatus`. The lock file it connects through is in `~/.claude/ide/` (or `$CLAUDE_CONFIG_DIR/ide/`).
 - **`claude` not found:** set `terminal_cmd` to the path `which claude` prints.
 - **OpenCode shows no status or diffs:** `:checkhealth claude_agents` reports its service; `opencode service restart` restarts it. Only an OpenCode the plugin launched is followed.
+- **OpenCode's conversations are missing from the agents view:** its service is not running; `gO` in the Sessions pane (or `:ClaudeCodeOpencodeStart`) starts it. The view starts it by itself only in a directory the plugin has launched OpenCode in.
 - **Terminal misbehaves with snacks:** try `terminal.provider = "native"`.
 - **Anything else:** `log_level = "debug"` and read `:messages`.
 

@@ -225,6 +225,10 @@ function M.started(session_id, opts)
   end
   pending[session_id] = nil
   opts = opts or {}
+  -- Where OpenCode ran is what the agents view reads while the service is down.
+  pcall(function()
+    require("claude_agents.opencode.dirs").mark(launch.cwd)
+  end)
   local server = launch.instance and launch.instance.server
   if server and type(server.arm_tokenless) == "function" then
     server.arm_tokenless(true)

@@ -40,6 +40,12 @@ end
 M._events = function()
   return require("claude_agents.opencode.events")
 end
+M._service = function()
+  return require("claude_agents.opencode.service")
+end
+M._dirs = function()
+  return require("claude_agents.opencode.dirs")
+end
 M._now = function()
   return os.time()
 end
@@ -888,6 +894,128 @@ function M.delete(path)
 end
 
 --------------------------------------------------------------------------------
+-- The service, while it is not answering
+--------------------------------------------------------------------------------
+
+--- The view lists OpenCode's conversations only through the service, which runs
+--- once per user and does not come back by itself after a login. So the store
+--- keeps what it knows about it: `unknown` until a listing answers or fails,
+--- `up`, `down` (nothing answered), `starting`, `failed` (a start did not bring
+--- it up) or `disabled` (the user switched it off). One state for every
+--- directory, since there is one service; whether a directory hears about it is
+--- `note`'s business.
+---@type { kind: string, err: string|nil, explicit: boolean }
+local service_state = { kind = "unknown", err = nil, explicit = false }
+--- Whether this view open has already acted on a stopped service (started it,
+--- or asked whether it is switched off), or found it running. Reset when the
+--- view closes.
+local view_acted = false
+
+---Have the view list again (and repaint): the rows or the note changed.
+local function relist()
+  vim.schedule(function()
+    local ok, model = pcall(require, "claude_agents.agents.model")
+    if ok and type(model.refresh_list) == "function" then
+      pcall(model.refresh_list)
+    end
+  end)
+end
+
+---@param kind string
+---@param err string|nil
+local function set_service(kind, err)
+  if kind == "up" then
+    service_state.explicit = false
+  end
+  if service_state.kind == kind and service_state.err == err then
+    return
+  end
+  service_state.kind, service_state.err = kind, err
+  relist()
+end
+
+---Start the service, and say how it went.
+---@param explicit boolean A request (`gO`, the command) rather than the view's own start.
+local function start_service(explicit)
+  local was = service_state.kind
+  if was == "starting" then
+    return
+  end
+  service_state.explicit = service_state.explicit or explicit
+  set_service("starting", nil)
+  M._service().ensure(function(err)
+    if not err then
+      -- Asked for from the command too, with no view open to show the outcome.
+      if explicit then
+        logger.info(
+          "opencode",
+          was == "up" and "OpenCode's service is already running" or "OpenCode's service is running"
+        )
+      end
+      for _, list in pairs(lists) do
+        list.dirty = true
+      end
+      set_service("up", nil)
+      return
+    end
+    local off = err == M._service().DISABLED_ERR
+    set_service(off and "disabled" or "failed", err)
+    -- Switched off is the user's own setting: the view's start says so on the
+    -- hint alone; a request is answered either way.
+    if explicit or not off then
+      logger.warn("opencode", tostring(err))
+    end
+  end)
+end
+
+---A listing found nothing answering.
+---@param cwd string
+local function service_down(cwd)
+  local kind = service_state.kind
+  if kind ~= "starting" and kind ~= "failed" and kind ~= "disabled" then
+    set_service("down", nil)
+  end
+  if view_acted or service_state.kind ~= "down" or not M._dirs().marked(cwd) then
+    return
+  end
+  view_acted = true
+  if require("claude_agents.opencode").config().start_service == "view" then
+    start_service(false)
+  else
+    -- Left to the user: the hint should say so when no key would help.
+    M._service().disabled(function(off)
+      if off and service_state.kind == "down" then
+        set_service("disabled", M._service().DISABLED_ERR)
+      end
+    end)
+  end
+end
+
+---What the view should say about the service in a directory: nil while it
+---answers (or nothing is known), and for a directory the plugin never launched
+---OpenCode in — unless the user asked for a start, whose outcome is theirs to see
+---anywhere.
+---@param cwd string|nil
+---@return { kind: "down"|"starting"|"failed"|"disabled", err: string|nil }|nil
+function M.note(cwd)
+  local kind = service_state.kind
+  if kind == "unknown" or kind == "up" then
+    return nil
+  end
+  if not service_state.explicit and not M._dirs().marked(cwd) then
+    return nil
+  end
+  return { kind = kind, err = service_state.err }
+end
+
+---Start OpenCode's service because the user asked (`gO`, `<CR>` on the hint,
+---`:ClaudeCodeOpencodeStart`), in any directory. Its progress shows on the hint;
+---the conversations follow once it answers.
+function M.start_service()
+  start_service(true)
+end
+
+--------------------------------------------------------------------------------
 -- Listing a project's sessions
 --------------------------------------------------------------------------------
 
@@ -914,11 +1042,14 @@ end
 ---repository: the "global" project) — of a directory under both of its
 ---spellings: the one Neovim uses and the real path OpenCode's TUI moves the
 ---sessions it opens to.
+---@param cb fun(err: string|nil, data: table|nil, answered: boolean) `answered`: the service replied, if only with an error.
 local function query_sessions(cwd, list, project, cb)
   local base = { parentID = "null", limit = 100, order = "desc" }
   if project and project ~= "global" then
     base.project = project
-    M._api().call("GET", "/api/session", { query = base, no_start = true }, cb)
+    M._api().call("GET", "/api/session", { query = base, no_start = true }, function(err, data, res)
+      cb(err, data, err == nil or res ~= nil)
+    end)
     return
   end
   local dirs = { cwd }
@@ -929,11 +1060,12 @@ local function query_sessions(cwd, list, project, cb)
   if list.directory and list.directory ~= cwd and list.directory ~= real then
     dirs[#dirs + 1] = list.directory
   end
-  local merged, seen, pending, failed = {}, {}, #dirs, nil
+  local merged, seen, pending, failed, answered = {}, {}, #dirs, nil, false
   for _, dir in ipairs(dirs) do
     local query = vim.deepcopy(base)
     query.directory = dir
-    M._api().call("GET", "/api/session", { query = query, no_start = true }, function(err, data)
+    M._api().call("GET", "/api/session", { query = query, no_start = true }, function(err, data, res)
+      answered = answered or err == nil or res ~= nil
       if err then
         failed = err
       else
@@ -949,7 +1081,7 @@ local function query_sessions(cwd, list, project, cb)
         table.sort(merged, function(a, b)
           return ((a.time and a.time.updated) or 0) > ((b.time and b.time.updated) or 0)
         end)
-        cb(#merged == 0 and failed or nil, merged)
+        cb(#merged == 0 and failed or nil, merged, answered)
       end
     end)
   end
@@ -958,12 +1090,19 @@ end
 local function fetch_list(cwd, list)
   list.fetching = true
   local function query_with(project)
-    query_sessions(cwd, list, project, function(err, data)
+    query_sessions(cwd, list, project, function(err, data, answered)
       list.fetching = false
       list.at = M._now()
       if err then
+        if not answered then
+          service_down(cwd)
+        end
         return
       end
+      set_service("up", nil)
+      -- Found running: one that stops while the view is open (`opencode service
+      -- stop`, a setting changed) is the user's doing, and is not started again.
+      view_acted = true
       local rows = {}
       for _, info in ipairs(type(data) == "table" and data or {}) do
         if type(info) == "table" and type(info.id) == "string" and not (info.time and info.time.archived) then
@@ -982,13 +1121,14 @@ local function fetch_list(cwd, list)
       end
       list.rows = rows
       list.dirty = false
+      if #rows == 0 then
+        -- Nothing to list here: no reason left to start the service for this
+        -- directory. A project listing covers its worktrees too; a directory's
+        -- only itself.
+        M._dirs().forget(cwd, { exact = not (project and project ~= "global") })
+      end
       if changed then
-        vim.schedule(function()
-          local ok, model = pcall(require, "claude_agents.agents.model")
-          if ok and type(model.refresh_list) == "function" then
-            pcall(model.refresh_list)
-          end
-        end)
+        relist()
       end
     end)
   end
@@ -997,11 +1137,14 @@ local function fetch_list(cwd, list)
     return
   end
   M._api()
-    .call("GET", "/api/location", { query = { ["location[directory]"] = cwd }, no_start = true }, function(err, data)
+    .call("GET", "/api/location", { query = { ["location[directory]"] = cwd }, no_start = true }, function(err, data, res)
       if err then
-        -- No service: asked again on the next listing.
+        -- Asked again on the next listing.
         list.fetching = false
         list.at = M._now()
+        if res == nil then
+          service_down(cwd)
+        end
         return
       end
       local project = (type(data) == "table" and type(data.project) == "table") and data.project.id or false
@@ -1021,6 +1164,8 @@ function M.list(cwd)
     return {}
   end
   M.listen()
+  -- Another Neovim may have launched OpenCode here since (one stat).
+  M._dirs().refresh()
   local list = lists[cwd]
   if not list then
     list = { rows = {}, at = 0, fetching = false, dirty = true, project = nil }
@@ -1152,6 +1297,12 @@ function M.stop()
     unsubscribe()
     unsubscribe = nil
   end
+  -- The next open acts on a stopped service again, and learns its state afresh
+  -- (a start still under way reports itself when it lands).
+  view_acted = false
+  if service_state.kind ~= "starting" then
+    service_state = { kind = "unknown", err = nil, explicit = false }
+  end
 end
 
 ---Test/reload helper.
@@ -1159,6 +1310,7 @@ function M._reset()
   M.stop()
   stores, lists = {}, {}
   subagents_of, root_of, child_of_call = {}, {}, {}
+  service_state = { kind = "unknown", err = nil, explicit = false }
 end
 
 ---@param id string

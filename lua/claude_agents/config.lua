@@ -21,6 +21,11 @@ M.defaults = {
     -- plugin asks OpenCode to ask before editing, for the sessions it launches.
     review_edits = true,
     service_timeout_ms = 15000, -- how long to wait for OpenCode's background service to start
+    -- Who starts that service when it is not running. "view": the agents view
+    -- does, when it opens in a directory the plugin has launched OpenCode in (so
+    -- its conversations are listed after a login). "launch": only an OpenCode
+    -- launch, `gO` or :ClaudeCodeOpencodeStart; the view says it is stopped.
+    start_service = "view",
     -- OpenCode keybinds (cli.json ids and syntax) for the OpenCode agents the
     -- agents view launches. nil: OpenCode's command palette moves from ctrl+p to
     -- <leader>p (ctrl+x p) when ctrl+p switches sessions there
@@ -222,6 +227,10 @@ M.defaults = {
       -- The same with a note saying what for. A flag with a note stays until you
       -- take it off; a reply does not end it.
       flag_note = "M",
+      -- Sessions pane, with OpenCode installed: start OpenCode's background
+      -- service, whose conversations are listed only while it runs.
+      -- `:ClaudeCodeOpencodeStart` does the same.
+      opencode_start = "gO",
       close = "q",
       open = "<CR>", -- open the file under the cursor (Activity / Changes panes)
       git_diff = ".", -- diff that file against git HEAD (svn BASE) instead of against the session
@@ -282,6 +291,9 @@ M.defaults = {
       -- The mark on a session or subagent working in a git worktree; defaults to
       -- a link to Directory.
       worktree = "ClaudeCodeAgentsWorktree",
+      -- The line atop the session list saying OpenCode's service is not running;
+      -- defaults to a link to DiagnosticWarn.
+      service = "ClaudeCodeAgentsService",
       -- Terminal pane background: follows SnacksNormal when snacks is loaded,
       -- else NormalFloat. The sidebars keep the editor's own Normal.
       normal = "ClaudeCodeAgentsNormal",
@@ -490,6 +502,12 @@ function M.validate(config)
       assert(
         type(oc.service_timeout_ms) == "number" and oc.service_timeout_ms > 0,
         "opencode.service_timeout_ms must be a positive number"
+      )
+    end
+    if oc.start_service ~= nil then
+      assert(
+        oc.start_service == "view" or oc.start_service == "launch",
+        'opencode.start_service must be "view" or "launch"'
       )
     end
     if oc.agent_keybinds ~= nil and oc.agent_keybinds ~= false then
@@ -905,6 +923,7 @@ function M.validate(config)
         "sort",
         "flag",
         "flag_note",
+        "opencode_start",
         "close",
         "open",
         "git_diff",
@@ -953,6 +972,7 @@ function M.validate(config)
         "flagged",
         "flag_note",
         "worktree",
+        "service",
       }
       for _, field in ipairs(highlight_fields) do
         checker(ag.highlights, "agents.highlights")(field, function(v)

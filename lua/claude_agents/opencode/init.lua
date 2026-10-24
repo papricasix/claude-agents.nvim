@@ -21,6 +21,7 @@ local M = {}
 
 M.DEFAULTS = {
   cmd = "opencode",
+  start_service = "view",
   review_edits = true,
   service_timeout_ms = 15000,
 }

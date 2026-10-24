@@ -77,6 +77,9 @@ local state = {
   --- The buffer is reused, so the keys that belong to one screen have to be taken
   --- off again when it becomes another (see `apply_notice_keys`).
   notice_kind = nil, ---@type string|nil
+  --- What the "empty" screen said about OpenCode's service when it was painted
+  --- (`service_note_key`), so a change repaints it.
+  empty_note = nil, ---@type string|false|nil
   --- The conversation the centre is *offering* to start. Set by cycling onto a
   --- stopped session, cleared the moment a terminal takes the centre back.
   pending_start = nil, ---@type string|nil
@@ -680,6 +683,16 @@ end
 ---@field run fun(pane: string)
 ---@field bind boolean|nil `false` when something else binds it (see `map_cycle`).
 ---@field visual fun(pane: string)|nil Also bound in visual mode, under `visual_lhs`.
+---@field available? fun(): boolean Neither bound nor listed while this answers false.
+
+---Whether OpenCode is installed: what its keys need to do anything.
+---@return boolean
+local function opencode_installed()
+  local ok, installed = pcall(function()
+    return require("claude_agents.opencode").available()
+  end)
+  return ok and installed == true
+end
 
 ---@type ClaudeCodeAgentsKeySpec[]
 local KEY_SPECS = {
@@ -790,6 +803,19 @@ local KEY_SPECS = {
     desc = "Flag it with a note saying what for — that flag stays until you take it off",
     run = function()
       M.note_flag_under_cursor()
+    end,
+  },
+  {
+    field = "opencode_start",
+    -- The sessions pane, the list OpenCode's conversations are missing from while
+    -- its service is down. The empty-project screen binds it too
+    -- (`apply_notice_keys`), since that screen can say so as well.
+    panes = { "sessions" },
+    group = "Sessions",
+    desc = "Start OpenCode's background service, so its conversations are listed",
+    available = opencode_installed,
+    run = function()
+      M.start_opencode_service()
     end,
   },
   {
@@ -950,6 +976,9 @@ local KEY_SPECS = {
 ---@param pane string
 ---@return boolean
 local function spec_applies(spec, pane)
+  if spec.available and not spec.available() then
+    return false
+  end
   if not spec.panes then
     return true
   end
@@ -1107,6 +1136,82 @@ local function keymap_for(field, default)
   return lhs
 end
 
+--------------------------------------------------------------------------------
+-- OpenCode's service, while it is not answering
+--------------------------------------------------------------------------------
+
+---What the view should say about OpenCode's service here (`opencode_store.note`),
+---if anything. Asked of the store only once something loaded it.
+---@return { kind: string, err: string|nil }|nil
+local function service_note()
+  local store = package.loaded["claude_agents.agents.opencode_store"]
+  if type(store) ~= "table" or type(store.note) ~= "function" then
+    return nil
+  end
+  local ok, note = pcall(store.note, model.cwd())
+  return ok and note or nil
+end
+
+---A note as one comparable value, so a screen painted from it can tell when it
+---is out of date.
+---@param note { kind: string, err: string|nil }|nil
+---@return string|false
+local function service_note_key(note)
+  return note and (note.kind .. "\0" .. tostring(note.err)) or false
+end
+
+--- How the Sessions pane's line words each state, and what its key does then
+--- (a state with no second word offers no key). Short: the pane is a quarter of
+--- the screen, ~27 cells on a 120-column one, and the text with ` · gO` must fit
+--- there (`render.sessions` drops the action word first).
+local SERVICE_HINT = {
+  down = { "OpenCode stopped", "starts it" },
+  starting = { "Starting OpenCode…" },
+  failed = { "OpenCode failed", "retries" },
+  disabled = { "OpenCode switched off" },
+}
+
+--- The same for the centre's empty-project screen, which has the room to say
+--- why the list may be empty, and names the key as one of its hints.
+local EMPTY_SERVICE_TEXT = {
+  down = { "OpenCode's service is not running, so its conversations are not listed", "start OpenCode's service" },
+  starting = { "Starting OpenCode's service…" },
+  failed = { "OpenCode's service did not start", "try starting it again" },
+  disabled = { "OpenCode's service is switched off: `opencode service unset disabled` switches it back on" },
+}
+
+---The Sessions pane's first line while OpenCode's conversations are missing, in
+---`render.sessions`'s shape.
+---@return { mark: string, text: string, key: string|nil, action: string|nil }|nil
+local function service_hint()
+  local note = service_note()
+  local words = note and SERVICE_HINT[note.kind]
+  if not words then
+    return nil
+  end
+  local key = words[2] and keymap_for("opencode_start", "gO") or nil
+  return {
+    mark = require("claude_agents.opencode").MARK,
+    text = words[1],
+    key = key,
+    action = key and words[2] or nil,
+  }
+end
+
+---Start OpenCode's background service (`gO`, `<CR>` on the Sessions pane's line
+---about it, `:ClaudeCodeOpencodeStart`). The line says how it goes, and the
+---conversations are listed once it answers.
+function M.start_opencode_service()
+  if not opencode_installed() then
+    vim.notify(
+      "ClaudeCode: OpenCode is not installed ('" .. require("claude_agents.opencode").cmd_argv()[1] .. "' not found)",
+      vim.log.levels.WARN
+    )
+    return
+  end
+  require("claude_agents.agents.opencode_store").start_service()
+end
+
 ---Keys the notice screens carry beyond `bind_keys`.
 ---
 ---`new` is bound on every screen: whatever the centre is offering, no agent is
@@ -1119,6 +1224,19 @@ local function apply_notice_keys(buf, kind)
     map(buf, new_lhs, function()
       M.new_agent()
     end, "Claude agents: start a new agent")
+  end
+
+  -- The empty-project screen can say OpenCode's service is stopped, so it takes
+  -- the key that starts it, like `gs` below.
+  local start_lhs = keymap_for("opencode_start", "gO")
+  if start_lhs then
+    if kind == "empty" and opencode_installed() then
+      map(buf, start_lhs, function()
+        M.start_opencode_service()
+      end, "Claude agents: start OpenCode's background service")
+    else
+      pcall(vim.keymap.del, "n", start_lhs, { buffer = buf })
+    end
   end
 
   -- The window screen names `gs`, which is otherwise a sessions-pane key: a centre
@@ -1369,6 +1487,20 @@ local function show_empty_notice()
   if hidden > 0 and sort_key then
     hints[#hints + 1] = { sort_key, "show more of them" }
   end
+  -- OpenCode's conversations may be here and simply not listed: say so, with the
+  -- key that lists them.
+  local note = service_note()
+  state.empty_note = service_note_key(note)
+  local said = note and EMPTY_SERVICE_TEXT[note.kind]
+  if said then
+    local detail = note.kind == "failed" and note.err and (": " .. vim.split(note.err, "\n", { plain = true })[1]) or ""
+    lines[#lines + 1] = "  " .. require("claude_agents.opencode").MARK .. " " .. said[1] .. detail
+    marks[#marks + 1] = { row = #lines - 1, col = 0, end_col = -1, hl = render.highlight("service") }
+    local start_key = said[2] and keymap_for("opencode_start", "gO")
+    if start_key then
+      hints[#hints + 1] = { start_key, said[2] }
+    end
+  end
   if new_key then
     hints[#hints + 1] = { new_key, "start a new agent" }
   end
@@ -1398,7 +1530,9 @@ function sync_empty_notice()
   if center_has_terminal() then
     return false
   end
-  if state.notice_kind == "empty" and pane_win("center") then
+  -- Already showing, and still true: the same screen painted again would only
+  -- move the cursor. What it says about OpenCode's service can go out of date.
+  if state.notice_kind == "empty" and pane_win("center") and state.empty_note == service_note_key(service_note()) then
     local ok, buf = pcall(vim.api.nvim_win_get_buf, pane_win("center"))
     if ok and buf == state.notice_buf then
       return false
@@ -2345,6 +2479,7 @@ function M.redraw()
     render.sessions(state.bufs.sessions, rows, {
       width = vim.api.nvim_win_get_width(sessions_win),
       now = os.time(),
+      service_hint = service_hint(),
     })
     -- The title counts the flags among the rows just drawn. Set only when it
     -- changes: this is the frame tick, and a winbar write is a window redraw.
@@ -2507,7 +2642,11 @@ end
 
 function M.select_under_cursor()
   local payload = payload_under_cursor()
-  if payload and payload.session_id then
+  if payload and payload.kind == "opencode_service" then
+    -- The line saying OpenCode's conversations are missing: `<CR>` there is the
+    -- key it names.
+    M.start_opencode_service()
+  elseif payload and payload.session_id then
     M.select(payload.session_id)
   end
 end
@@ -4363,6 +4502,7 @@ function M.forget()
   -- fresh one, with its keys bound from whatever config is in force then.
   state.notice_buf = nil
   state.notice_kind = nil
+  state.empty_note = nil
   state.pending_start = nil
   state.float_nav = {}
   state.await_initial = false

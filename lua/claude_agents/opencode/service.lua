@@ -13,9 +13,9 @@
 ---
 --- A user can switch the service off (`opencode service set disabled true`).
 --- TUIs then run private servers nothing else can reach, and the plugin says so
---- rather than starting one behind their back: `ensure` only starts the shared
---- service when it is not disabled, which `opencode service start` itself
---- decides.
+--- rather than starting one behind their back: `ensure` asks `opencode service
+--- get disabled` before it starts anything, because `opencode service start`
+--- itself ignores the setting (2.0.30), and answers `DISABLED_ERR` instead.
 ---@brief ]]
 ---@module 'claude_agents.opencode.service'
 
@@ -25,6 +25,11 @@ local logger = require("claude_agents.logger")
 local M = {}
 
 M.USER = "opencode"
+
+--- What `ensure` answers for a service the user switched off; compared by
+--- callers that tell "switched off" from "failed to start".
+M.DISABLED_ERR =
+  "OpenCode's service is switched off (`opencode service set disabled true`); `opencode service unset disabled` switches it back on"
 
 ---@class ClaudeCodeOpencodeConnection
 ---@field url string
@@ -148,6 +153,48 @@ end
 ---@return string|nil error
 function M.read_registration()
   return registration_in(M.state_dir())
+end
+
+local function disabled_argv()
+  local argv = opencode().cmd_argv()
+  argv[#argv + 1] = "service"
+  argv[#argv + 1] = "get"
+  argv[#argv + 1] = "disabled"
+  return argv
+end
+
+---Read `opencode service get disabled`'s answer: it prints `true` or `false`.
+---@param res table|nil `vim.system`'s result.
+---@return boolean|nil off nil when OpenCode could not be asked (an older one without `service get`).
+local function disabled_answer(res)
+  if type(res) ~= "table" or res.code ~= 0 or type(res.stdout) ~= "string" then
+    return nil
+  end
+  return vim.trim(res.stdout) == "true"
+end
+
+---Whether the user switched the shared service off, without blocking. nil when
+---OpenCode could not be asked, which callers take as "not switched off".
+---@param cb fun(off: boolean|nil)
+function M.disabled(cb)
+  local ok = pcall(M._system, disabled_argv(), { text = true }, function(res)
+    vim.schedule(function()
+      cb(disabled_answer(res))
+    end)
+  end)
+  if not ok then
+    cb(nil)
+  end
+end
+
+---`disabled`, waiting for the answer (`:checkhealth`).
+---@param timeout_ms integer
+---@return boolean|nil off
+function M.disabled_sync(timeout_ms)
+  local ok, res = pcall(function()
+    return M._system(disabled_argv(), { text = true }):wait(timeout_ms)
+  end)
+  return disabled_answer(ok and res or nil)
 end
 
 ---Forget the cached connection (the service restarted, or refused us).
@@ -291,9 +338,15 @@ function M.ensure(cb)
   lookup(function(conn, _, alive)
     if alive then
       settle(nil, conn)
-    else
-      start()
+      return
     end
+    M.disabled(function(off)
+      if off then
+        settle(M.DISABLED_ERR, nil)
+      else
+        start()
+      end
+    end)
   end)
 end
 

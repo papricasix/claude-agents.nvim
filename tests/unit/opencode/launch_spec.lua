@@ -286,6 +286,24 @@ describe("opencode launch and sessions", function()
       expect(tracked[1].id).to_be(cmd:match("ses_[%w]+"))
       expect(tracked[1].opts.kind).to_be("tab")
     end)
+
+    it("records the directory OpenCode ran in once its process starts, not on every rebuild", function()
+      local marked = {}
+      package.loaded["claude_agents.opencode.bridge"] = { track = function() end }
+      package.loaded["claude_agents.opencode.dirs"] = {
+        mark = function(dir)
+          marked[#marked + 1] = dir
+        end,
+      }
+      launch.build(nil, ctx())
+      launch.build(nil, ctx())
+      expect(#marked).to_be(0)
+      launch.tab_started(vim.api.nvim_get_current_tabpage(), nil)
+      launch.tab_started(vim.api.nvim_get_current_tabpage(), nil)
+      expect(#marked).to_be(1)
+      expect(marked[1]).to_be("/proj")
+      package.loaded["claude_agents.opencode.dirs"] = nil
+    end)
   end)
 
   describe("status icons", function()

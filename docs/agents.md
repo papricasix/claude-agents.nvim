@@ -36,11 +36,14 @@ The top right lists this project's conversations from the last two weeks, each w
 | `dd`              | Delete the conversation for good, after asking (from OpenCode's service for an OpenCode one). Takes a count or a visual selection |
 | `m`, `M`          | Flag or unflag the session, or flag it with a note                                                                                |
 | `gf`              | Search the conversations                                                                                                          |
+| `gO`              | Start OpenCode's background service, so its conversations are listed (with OpenCode installed)                                    |
 | `q`               | Close the view, after asking. The agents keep running                                                                             |
 
 Switching to another agent leaves the one you were in running: start three, come back to whichever finishes first. A session working in a git worktree is marked `⎇`, and resuming it puts it back in that worktree. A session run on an API key is marked `$`, and resuming it with `i` goes back to the same key; the [guide](guide.md#subscription-or-api-key) explains the profiles behind `ga` and `gi`.
 
 **OpenCode** conversations are listed beside Claude's, marked `◇`: the ones the project had in OpenCode, wherever they ran. `ga` with the `OpenCode` profile starts an OpenCode agent (with `backend = "opencode"`, `a` does), and `<CR>` or `i` on an OpenCode session resumes it in OpenCode. Since `<C-p>` switches sessions inside its terminal, an OpenCode agent opens its command palette with `ctrl+x p` instead (`opencode.agent_keybinds`). Everything below works for them too, read from OpenCode's own history: Changes, Activity, file and tool views, search, checkpoints, flags, and the subagents in Tasks (OpenCode has no background shells, monitors or workflow runs to show). The [guide](guide.md#opencode) says what else differs.
+
+OpenCode's conversations are listed only while OpenCode's background service runs. The view starts it when it opens in a directory the plugin has launched OpenCode in, so after a login they are back by themselves. With `opencode.start_service = "launch"` it leaves the service stopped, and the list's top line says `◇ OpenCode stopped · gO starts it`; `gO`, or `<CR>` on that line, starts it.
 
 **Flags** are for sessions you have to come back to. A plain flag (`⚑`) comes off when you next answer that conversation, wherever you do it. A flag with a note (`⚑ Port upstream · check CI`) stays until you take it off. Flags survive restarts and are shared between Neovims.
 
@@ -92,7 +95,7 @@ agents = {
 
 The view follows the agents through the hooks [per-tab status](guide.md#per-tab-status) runs, which is on by default. An edit then shows as soon as the tool finishes, even while Claude Code has not yet written it to its transcript. With status off it watches their transcripts instead, up to half a second behind (`agents.source`). OpenCode agents report through OpenCode's own event stream either way, and a busy one spins OpenCode's braille snake rather than Claude's spinner.
 
-The commands, to map from inside an agent's terminal where the pane keys do not reach. All but the first act on the selected session:
+The commands, to map from inside an agent's terminal where the pane keys do not reach. All but the first and the last act on the selected session:
 
 ```vim
 :ClaudeCodeAgentNew [profile]         " start a new agent, on a launch profile if named
@@ -100,4 +103,5 @@ The commands, to map from inside an agent's terminal where the pane keys do not 
 :ClaudeCodeAgentFollowUp              " a new agent named after it, numbered on
 :ClaudeCodeAgentsCheckpoint[!]        " draw a checkpoint; with !, drop the newest
 :ClaudeCodeAgentsFlag[!] [note]       " toggle its flag, or flag it with a note; with !, unflag
+:ClaudeCodeOpencodeStart              " start OpenCode's background service (gO)
 ```

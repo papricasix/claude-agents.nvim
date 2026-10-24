@@ -1310,6 +1310,115 @@ describe("agents_view", function()
       expect(#launched).to_be(1)
     end)
 
+    describe("while OpenCode's service is not answering", function()
+      local note, starts, opencode, available
+
+      local function sessions_lines()
+        return vim.api.nvim_buf_get_lines(agents_view._state().bufs.sessions, 0, -1, false)
+      end
+
+      local function notice_key(lhs)
+        for _, keymap in ipairs(vim.api.nvim_buf_get_keymap(agents_view._state().notice_buf, "n")) do
+          if keymap.lhs == lhs then
+            return keymap
+          end
+        end
+      end
+
+      before_each(function()
+        note, starts = { kind = "down" }, 0
+        package.loaded["claude_agents.agents.opencode_store"] = {
+          note = function(cwd)
+            expect(cwd).to_be("/proj")
+            return note
+          end,
+          start_service = function()
+            starts = starts + 1
+          end,
+          stop = function() end,
+        }
+        opencode = require("claude_agents.opencode")
+        available = opencode.available
+        opencode.available = function()
+          return true
+        end
+      end)
+
+      after_each(function()
+        package.loaded["claude_agents.agents.opencode_store"] = nil
+        opencode.available = available
+      end)
+
+      it("says so atop the sessions, and <CR> on that line starts it", function()
+        open_view()
+        local lines = sessions_lines()
+        expect(lines[1]:find("OpenCode stopped", 1, true) ~= nil).to_be_true()
+        expect(lines[1]:find("gO", 1, true) ~= nil).to_be_true()
+        expect(lines[2]:find("First", 1, true) ~= nil).to_be_true()
+
+        vim.api.nvim_set_current_win(agents_view._state().wins.sessions)
+        vim.api.nvim_win_set_cursor(agents_view._state().wins.sessions, { 1, 0 })
+        agents_view.select_under_cursor()
+        expect(starts).to_be(1)
+        expect(selected).to_be("aaa") -- the offer made on open, untouched
+      end)
+
+      it("draws nothing for it once the service answers", function()
+        note = nil
+        open_view()
+        expect(sessions_lines()[1]:find("First", 1, true) ~= nil).to_be_true()
+      end)
+
+      it("words the line by what is going on, offering the key only where it helps", function()
+        note = { kind = "starting" }
+        open_view()
+        expect(sessions_lines()[1]:find("Starting OpenCode", 1, true) ~= nil).to_be_true()
+        expect(sessions_lines()[1]:find("gO", 1, true)).to_be(nil)
+        note = { kind = "failed", err = "port in use" }
+        agents_view.redraw()
+        expect(sessions_lines()[1]:find("gO", 1, true) ~= nil).to_be_true()
+        expect(sessions_lines()[1]:find("OpenCode failed", 1, true) ~= nil).to_be_true()
+        note = { kind = "disabled" }
+        agents_view.redraw()
+        expect(sessions_lines()[1]:find("switched off", 1, true) ~= nil).to_be_true()
+      end)
+
+      it("tells the empty project's screen too, which then takes the key", function()
+        rows = {}
+        open_view()
+        local text = center_lines()
+        expect(text:find("not running", 1, true) ~= nil).to_be_true()
+        expect(text:find("start OpenCode's service", 1, true) ~= nil).to_be_true()
+        local key = notice_key("gO")
+        expect(key).not_to_be_nil()
+        key.callback()
+        expect(starts).to_be(1)
+      end)
+
+      it("repaints the empty project's screen when the service's state moves", function()
+        rows = {}
+        open_view()
+        note = { kind = "starting" }
+        notify_change()
+        expect(center_lines():find("Starting OpenCode", 1, true) ~= nil).to_be_true()
+        note = nil
+        notify_change()
+        local text = center_lines()
+        expect(text:find("OpenCode", 1, true)).to_be(nil)
+        expect(text:find("No conversations", 1, true) ~= nil).to_be_true()
+      end)
+
+      it("takes the key off the screen once it offers a session instead", function()
+        rows = {}
+        open_view()
+        expect(notice_key("gO")).not_to_be_nil()
+        rows = { { session_id = "aaa", title = "First" } }
+        notify_change()
+        expect(agents_view._state().notice_kind).to_be("offer")
+        expect(notice_key("gO")).to_be_nil()
+      end)
+    end)
+
     describe("starting a new agent named after a session", function()
       local launches, next_names
 
@@ -2234,6 +2343,22 @@ describe("agents_view", function()
         expect(keys_for(pane)["m"]).to_be(nil)
         expect(keys_for(pane)["M"]).to_be(nil)
       end
+    end)
+
+    it("offers the key that starts OpenCode's service only with OpenCode installed", function()
+      local opencode = require("claude_agents.opencode")
+      local available = opencode.available
+      setup_with({ enabled = true })
+      opencode.available = function()
+        return false
+      end
+      expect(keys_for("sessions")["gO"]).to_be(nil)
+      opencode.available = function()
+        return true
+      end
+      expect(keys_for("sessions")["gO"]:find("OpenCode", 1, true) ~= nil).to_be_true()
+      expect(keys_for("feed")["gO"]).to_be(nil)
+      opencode.available = available
     end)
 
     it("groups them under headings, this pane's first", function()
