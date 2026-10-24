@@ -24,6 +24,7 @@ M.DEFAULTS = {
   start_service = "view",
   review_edits = true,
   service_timeout_ms = 15000,
+  agent_tabs = false,
 }
 
 ---@type table|nil The full plugin config, for the few answers that need more than the `opencode` block.
@@ -87,14 +88,35 @@ function M.agent_keybinds()
   return nil
 end
 
+---What an agent launch overrides in OpenCode's TUI config (cli.json sections);
+---nil for nothing.
+---
+---Besides the keybinds the view's own keys would shadow (`agent_keybinds`),
+---OpenCode's session tabs go (`tabs.mode = "off"`) unless `agent_tabs` keeps
+---them: the view's Sessions pane is the list of conversations, and OpenCode
+---keeps one set of tabs per directory, so every agent of a project would
+---otherwise show all the others' conversations as tabs of its own.
+---@return table<string, table>|nil
+function M.agent_cli_config()
+  local overrides = {}
+  local keybinds = M.agent_keybinds()
+  if keybinds then
+    overrides.keybinds = keybinds
+  end
+  if config.agent_tabs ~= true then
+    overrides.tabs = { mode = "off" }
+  end
+  return next(overrides) ~= nil and overrides or nil
+end
+
 ---`OPENCODE_CLI_CONFIG_CONTENT` (OpenCode's inline `cli.json`, which the TUI
----merges over the user's file) with keybinds merged in: whatever the variable
+---merges over the user's file) with overrides merged in: whatever the variable
 ---held already — the user's own, from the environment or the config's `env` —
----with these keybinds over its own.
+---with each section's fields set over its own.
 ---@param existing string|nil
----@param keybinds table<string, any>
+---@param overrides table<string, table> cli.json sections, e.g. `{ keybinds = {...}, tabs = {...} }`.
 ---@return string
-function M.cli_config_content(existing, keybinds)
+function M.cli_config_content(existing, overrides)
   local base = nil
   if type(existing) == "string" and existing ~= "" then
     local ok, decoded = pcall(vim.json.decode, existing)
@@ -103,9 +125,11 @@ function M.cli_config_content(existing, keybinds)
     end
   end
   base = base or {}
-  base.keybinds = type(base.keybinds) == "table" and base.keybinds or {}
-  for id, value in pairs(keybinds) do
-    base.keybinds[id] = value
+  for section, fields in pairs(overrides) do
+    base[section] = type(base[section]) == "table" and base[section] or {}
+    for key, value in pairs(fields) do
+      base[section][key] = value
+    end
   end
   return vim.json.encode(base)
 end

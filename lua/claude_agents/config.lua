@@ -32,6 +32,9 @@ M.defaults = {
     -- (`agents.keymaps.prev_session`). false: none. A table: exactly these, e.g.
     -- { ["command.palette.show"] = "ctrl+y" }.
     agent_keybinds = nil,
+    -- Whether those agents show OpenCode's own session tabs. Off: the agents
+    -- view's Sessions pane lists the conversations. true: your cli.json decides.
+    agent_tabs = false,
   },
   -- Also create backend-neutral names for the commands: :Agent, :AgentSend,
   -- :Agents, :AgentNew, ... (ClaudeCode -> Agent). Off by default; a name some
@@ -519,6 +522,9 @@ function M.validate(config)
           "opencode.agent_keybinds." .. id .. " must be a key string, false, or a cli.json keybind object"
         )
       end
+    end
+    if oc.agent_tabs ~= nil then
+      assert(type(oc.agent_tabs) == "boolean", "opencode.agent_tabs must be a boolean")
     end
   end
   if config.command_aliases ~= nil then

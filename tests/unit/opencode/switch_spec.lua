@@ -55,6 +55,8 @@ describe("choosing OpenCode", function()
       assert.is_true(valid({ opencode = { agent_keybinds = { ["command.palette.show"] = "ctrl+y" } } }))
       assert.is_false(valid({ opencode = { agent_keybinds = "ctrl+y" } }))
       assert.is_false(valid({ opencode = { agent_keybinds = { ["command.palette.show"] = 5 } } }))
+      assert.is_true(valid({ opencode = { agent_tabs = true } }))
+      assert.is_false(valid({ opencode = { agent_tabs = "off" } }))
     end)
 
     it("lets the agents view start OpenCode's service by default, or leave it to a launch", function()

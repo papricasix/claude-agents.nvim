@@ -161,6 +161,24 @@ describe("opencode launch and sessions", function()
   end)
 
   describe("launch.build", function()
+    local getenv
+
+    -- An agent launch merges over the variable it inherits, and the tests may
+    -- well run inside such an agent.
+    before_each(function()
+      getenv = os.getenv
+      os.getenv = function(name) -- luacheck: ignore 122
+        if name == "OPENCODE_CLI_CONFIG_CONTENT" then
+          return nil
+        end
+        return getenv(name)
+      end
+    end)
+
+    after_each(function()
+      os.getenv = getenv -- luacheck: ignore 122
+    end)
+
     local function ctx(overrides)
       local base = {
         instance = { port = 4242, server = {} },
@@ -236,13 +254,13 @@ describe("opencode launch and sessions", function()
           agents = { keymaps = { next_session = "<C-j>", prev_session = "<C-k>" } },
         })
         local _, env = launch.build(nil, ctx({ for_tab = false }))
-        expect(env.OPENCODE_CLI_CONFIG_CONTENT).to_be_nil()
+        assert_not_contains(env.OPENCODE_CLI_CONFIG_CONTENT, "keybinds")
       end)
 
       it("follows agent_keybinds: none with false, exactly the table otherwise", function()
         opencode.setup({ backend = "opencode", opencode = { agent_keybinds = false } })
         local _, none = launch.build(nil, ctx({ for_tab = false }))
-        expect(none.OPENCODE_CLI_CONFIG_CONTENT).to_be_nil()
+        assert_not_contains(none.OPENCODE_CLI_CONFIG_CONTENT, "keybinds")
         opencode.setup({ backend = "opencode", opencode = { agent_keybinds = { ["command.palette.show"] = "ctrl+y" } } })
         local _, custom = launch.build(nil, ctx({ for_tab = false }))
         assert_contains(custom.OPENCODE_CLI_CONFIG_CONTENT, '"command.palette.show":"ctrl+y"')
@@ -260,6 +278,51 @@ describe("opencode launch and sessions", function()
         expect(merged.theme).to_be("nord")
         expect(merged.keybinds["app.exit"]).to_be("ctrl+q")
         expect(merged.keybinds["command.palette.show"]).to_be("<leader>p")
+      end)
+    end)
+
+    describe("OpenCode's session tabs in an agent's terminal", function()
+      local real_decode
+
+      before_each(function()
+        real_decode = vim.json.decode
+        vim.json.decode = _G.json_decode
+      end)
+
+      after_each(function()
+        vim.json.decode = real_decode
+      end)
+
+      it("are off, since the Sessions pane lists the conversations", function()
+        local _, env = launch.build(nil, ctx({ for_tab = false }))
+        expect(_G.json_decode(env.OPENCODE_CLI_CONFIG_CONTENT).tabs.mode).to_be("off")
+      end)
+
+      it("are left to the user in a tab's terminal", function()
+        local _, env = launch.build(nil, ctx())
+        expect(env.OPENCODE_CLI_CONFIG_CONTENT).to_be_nil()
+      end)
+
+      it("are left to the user's cli.json with agent_tabs", function()
+        opencode.setup({
+          backend = "opencode",
+          opencode = { agent_tabs = true, agent_keybinds = false },
+        })
+        local _, env = launch.build(nil, ctx({ for_tab = false }))
+        expect(env.OPENCODE_CLI_CONFIG_CONTENT).to_be_nil()
+      end)
+
+      it("go off over the tab settings the variable already held, keeping the rest", function()
+        local _, env = launch.build(
+          nil,
+          ctx({
+            for_tab = false,
+            user_env = { OPENCODE_CLI_CONFIG_CONTENT = '{"tabs":{"mode":"on","layout":"vertical"}}' },
+          })
+        )
+        local merged = _G.json_decode(env.OPENCODE_CLI_CONFIG_CONTENT)
+        expect(merged.tabs.mode).to_be("off")
+        expect(merged.tabs.layout).to_be("vertical")
       end)
     end)
 

@@ -173,14 +173,15 @@ function M.build(cmd_args, ctx)
   env.no_proxy = combined
   env.NO_PROXY = combined
 
-  -- An agent's terminal gives the agents view its session-switching keys, so
-  -- the OpenCode keybinds they would shadow are moved for this TUI only
-  -- (`opencode.agent_keybinds`); the variable is read by the TUI itself.
+  -- An agent's terminal sits in the agents view, which has its own
+  -- session-switching keys and its own list of sessions: the OpenCode keybinds
+  -- those keys would shadow move, and OpenCode's session tabs go, for this TUI
+  -- only (`opencode.agent_cli_config`); the variable is read by the TUI itself.
   if not ctx.for_tab then
-    local keybinds = opencode().agent_keybinds()
-    if keybinds then
+    local overrides = opencode().agent_cli_config()
+    if overrides then
       local existing = env.OPENCODE_CLI_CONFIG_CONTENT or os.getenv("OPENCODE_CLI_CONFIG_CONTENT")
-      env.OPENCODE_CLI_CONFIG_CONTENT = opencode().cli_config_content(existing, keybinds)
+      env.OPENCODE_CLI_CONFIG_CONTENT = opencode().cli_config_content(existing, overrides)
     end
   end
 
