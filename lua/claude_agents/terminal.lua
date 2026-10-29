@@ -490,6 +490,17 @@ local function get_claude_command_and_env(cmd_args, effective_config, instance, 
     })
   end
 
+  -- The model's way to open files here (`open_files`): an MCP server under a
+  -- name of its own on this instance's port, since the CLI shows the model none
+  -- of the IDE connection's tools but two. A file rather than inline JSON, which
+  -- would put the token in the process list. Last on the line: the flag takes
+  -- every following word up to the next option as another config.
+  local mcp = require("claude_agents.open_files").mcp_config(instance)
+  local mcp_path = mcp and lc_ok and live_cursor.write_settings_file(mcp) or nil
+  if mcp_path then
+    cmd_string = cmd_string .. " --mcp-config " .. utils.shell_quote(mcp_path)
+  end
+
   local profile_name = profile and profile.name or nil
   if for_tab then
     profiles.set_pending_tab_launch(

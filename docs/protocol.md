@@ -145,6 +145,8 @@ According to the MCP spec, Claude should be able to call tools, but **current im
 
 The VS Code extension registers 12 tools that Claude can call. Here's the complete specification:
 
+**Only two of them reach the model.** The CLI hides every `mcp__ide__*` tool except `mcp__ide__getDiagnostics` and `mcp__ide__executeCode` (an allowlist in the 2.1.312 binary); the rest are called by the CLI itself (it opens a diff with `openDiff` when the Edit tool runs, and so on). A tool the model should be able to call has to come from an MCP server registered under another name. This plugin's `open_files` does that: every launch passes `--mcp-config` with a `type: "ws"` server named `nvim` that points at the same port on the path `/tools`, with the same `x-claude-code-ide-authorization` header. The CLI's `ws` transport sends the configured headers and the `mcp` subprotocol like its IDE connection does.
+
 ### 1. openFile
 
 **Description**: Open a file in the editor and optionally select a range of text

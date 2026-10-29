@@ -62,6 +62,22 @@ describe("Configuration", function()
     expect(success).to_be_false()
   end)
 
+  it("offers open_files in a new tab by default, and checks what is set", function()
+    expect(config.defaults.open_files.enabled).to_be_true()
+    expect(config.defaults.open_files.layout).to_be("tab")
+    expect(config.defaults.open_files.focus).to_be_true()
+    expect(config.apply({ open_files = { layout = "float" } }).open_files.layout).to_be("float")
+
+    local function rejects(open_files)
+      local ok = pcall(config.apply, { open_files = open_files })
+      return not ok
+    end
+    expect(rejects({ layout = "diagonal" })).to_be_true()
+    expect(rejects({ focus = "yes" })).to_be_true()
+    expect(rejects({ server_name = "has space" })).to_be_true()
+    expect(rejects({ layout = "vsplit", server_name = "editor-1" })).to_be_false()
+  end)
+
   it("should reject invalid log level", function()
     local invalid_config = {
       port_range = { min = 10000, max = 65535 },

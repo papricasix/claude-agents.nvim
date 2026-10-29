@@ -75,6 +75,8 @@ describe("opencode launch and sessions", function()
     end
     sessions = require("claude_agents.opencode.sessions")
     sessions._api = fake_api
+    package.loaded["claude_agents.opencode.mcp"] = nil
+    require("claude_agents.opencode.mcp")._api = fake_api
     launch = require("claude_agents.opencode.launch")
     launch._sessions = sessions
     responses["GET /api/config"] = { default_agent = "build" }
@@ -116,11 +118,17 @@ describe("opencode launch and sessions", function()
       expect(create.opts.body.model.id).to_be("claude-haiku-4-5")
       expect(create.opts.body.location.directory).to_be("/proj")
       local patch = find("PATCH", "/api/session/ses_new")
-      local last = patch.opts.body.permissions[#patch.opts.body.permissions]
-      expect(last.action).to_be("edit")
-      expect(last.effect).to_be("ask")
+      local added = patch.opts.body.permissions
+      expect(added[1].action).to_be("edit")
+      expect(added[1].effect).to_be("ask")
+      -- Then `open_files`: every Neovim's hidden, this one's as the agent decides.
+      local own, any = require("claude_agents.opencode.mcp").actions()
+      expect(added[2].action).to_be(any)
+      expect(added[2].effect).to_be("deny")
+      expect(added[3].action).to_be(own)
+      expect(added[3].effect).to_be("allow")
       -- What it added is on record, so it can take exactly that off again.
-      expect(#patch.opts.body.metadata.claude_agents.rules).to_be(1)
+      expect(#patch.opts.body.metadata.claude_agents.rules).to_be(3)
       expect(sessions.created_here("ses_new")).to_be_true()
     end)
 

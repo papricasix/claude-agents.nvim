@@ -3,6 +3,28 @@ local utils = require("claude_agents.server.utils")
 
 local M = {}
 
+---The path a launch's second MCP server connects on (`open_files`, see
+---`claude_agents.open_files`). The CLI shows the model only `getDiagnostics` and
+---`executeCode` of the IDE connection's tools, so a tool the model may call has to
+---arrive through a server registered under a name of its own, which reaches this
+---same port on this path.
+M.TOOLS_PATH = "/tools"
+
+---What a connection on `path` is: `"tools"` for the tool server, nil for the
+---IDE connection (the CLI's, or OpenCode's editor context).
+---@param path string|nil Request target, query string included.
+---@return "tools"|nil
+function M.role_of_path(path)
+  if type(path) ~= "string" then
+    return nil
+  end
+  local bare = path:match("^[^?#]*")
+  if bare == M.TOOLS_PATH or bare == M.TOOLS_PATH .. "/" then
+    return "tools"
+  end
+  return nil
+end
+
 ---Check if an HTTP request is a valid WebSocket upgrade request
 ---
 ---`allow_tokenless` is the one exception to the token: OpenCode's TUI, told the
@@ -186,11 +208,20 @@ end
 ---@return string response The HTTP response to send
 ---@return table|nil headers The parsed headers if successful
 ---@return boolean|nil tokenless See `validate_upgrade_request`: let in without the token, or refused for coming without one.
+---@return "tools"|nil role See `role_of_path`.
 function M.process_handshake(request, expected_auth_token, allow_tokenless)
   -- Check if it's a valid WebSocket endpoint request
   if not M.is_websocket_endpoint(request) then
     local response = M.create_error_response(404, "WebSocket endpoint not found")
     return false, response, nil
+  end
+
+  local _, path = M.parse_request_line(request)
+  local role = M.role_of_path(path)
+  if role == "tools" then
+    -- The tokenless door is OpenCode's editor context, which calls nothing. A
+    -- connection that comes for tools always brings the token.
+    allow_tokenless = nil
   end
 
   -- Validate the upgrade request
@@ -217,7 +248,7 @@ function M.process_handshake(request, expected_auth_token, allow_tokenless)
     return false, error_response, nil -- error_response is string, nil is for headers
   end
 
-  return true, response, headers_table, tokenless -- headers_table is 'table', compatible with 'table|nil'
+  return true, response, headers_table, tokenless, role -- headers_table is 'table', compatible with 'table|nil'
 end
 
 ---Check if a request buffer contains a complete HTTP request

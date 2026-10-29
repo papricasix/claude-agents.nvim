@@ -12,6 +12,15 @@ M.ERROR_CODES = {
 
 M.tools = {}
 
+---Tools offered to the model, on the launch's tool server (`handshake.TOOLS_PATH`)
+---rather than the IDE connection. The CLI shows the model only `getDiagnostics`
+---and `executeCode` of the IDE connection's tools (2.1.312), so everything in
+---`M.tools` is the CLI's alone; these are reached through an MCP server
+---registered under a name of their own. Each entry's `schema` is a function of
+---the connection (`{ kind = "tab"|"agent" }`), since what a tool can do depends
+---on who launched the CLI.
+M.model_tools = {}
+
 ---Setup the tools module
 function M.setup(server)
   M.server = server
@@ -38,6 +47,27 @@ function M.get_tool_list()
   return tool_list
 end
 
+---The tool list for the launch's tool server.
+---@param ctx { kind: string|nil }|nil
+---@return table[]
+function M.get_model_tool_list(ctx)
+  local tool_list = {}
+  for name, tool_data in pairs(M.model_tools) do
+    local schema = tool_data.schema(ctx or {})
+    if schema then
+      tool_list[#tool_list + 1] = {
+        name = name,
+        description = schema.description,
+        inputSchema = schema.inputSchema,
+      }
+    end
+  end
+  table.sort(tool_list, function(a, b)
+    return a.name < b.name
+  end)
+  return tool_list
+end
+
 ---Register all tools
 function M.register_all()
   -- Register MCP-exposed tools with schemas
@@ -54,6 +84,10 @@ function M.register_all()
 
   -- Register internal tools without schemas (not exposed via MCP)
   M.register(require("claude_agents.tools.close_tab"))
+
+  -- Tools for the model, on the tool server only.
+  local open_files = require("claude_agents.tools.open_files")
+  M.model_tools[open_files.name] = { handler = open_files.handler, schema = open_files.schema }
 end
 
 ---Register a tool
@@ -81,20 +115,24 @@ function M.register(tool_module)
 end
 
 ---Handle an invocation of a tool
-function M.handle_invoke(client, params) -- client needed for blocking tools
+---@param client table|nil Needed for blocking tools.
+---@param params table
+---@param model boolean|nil The call came over the tool server: only `M.model_tools` answer it.
+function M.handle_invoke(client, params, model)
   local tool_name = params.name
   local input = params.arguments
 
-  if not M.tools[tool_name] then
+  local registry = model and M.model_tools or M.tools
+  if not registry[tool_name] then
     return {
       error = {
         code = -32601, -- JSON-RPC Method not found
-        message = "Tool not found: " .. tool_name,
+        message = "Tool not found: " .. tostring(tool_name),
       },
     }
   end
 
-  local tool_data = M.tools[tool_name]
+  local tool_data = registry[tool_name]
   -- Tool handlers are now expected to:
   -- 1. Raise an error (e.g., error({code=..., message=...}) or error("string"))
   -- 2. Return (false, "error message string" or {code=..., message=...}) for pcall-style errors

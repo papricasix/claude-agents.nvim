@@ -670,6 +670,45 @@ describe("claude_agents.terminal (wrapper for Snacks.nvim)", function()
     end)
   end)
 
+  describe("open_files", function()
+    local main, saved_get_instance
+
+    before_each(function()
+      main = require("claude_agents")
+      saved_get_instance = main.get_instance
+      main.get_instance = function()
+        return { server = {}, port = 41234, auth_token = "0123456789abcdef0123456789abcdef" }
+      end
+    end)
+
+    after_each(function()
+      main.get_instance = saved_get_instance
+    end)
+
+    it("points the CLI at this tab's tool server, last on the line", function()
+      terminal_wrapper.open({}, "--resume")
+
+      local cmd_arg = mock_snacks_provider.open:get_call(1).refs[1]
+      local path = cmd_arg:match("%-%-mcp%-config '([^']+)'$")
+      assert.is_string(path, "no trailing --mcp-config in " .. cmd_arg)
+      local f = assert(io.open(path, "r"))
+      local text = f:read("*a")
+      f:close()
+      assert.is_truthy(text:find('"type":"ws"', 1, true))
+      assert.is_truthy(text:find("ws://127.0.0.1:41234/tools", 1, true))
+      -- The token is in the file, never on the command line.
+      assert.is_falsy(cmd_arg:find("0123456789abcdef", 1, true))
+    end)
+
+    it("adds nothing with open_files switched off", function()
+      main.state.config = { bash_changes = false, open_files = { enabled = false } }
+      terminal_wrapper.open({}, "--resume")
+
+      local cmd_arg = mock_snacks_provider.open:get_call(1).refs[1]
+      assert.are.equal("claude --resume", cmd_arg)
+    end)
+  end)
+
   describe("command arguments support", function()
     it("should append cmd_args to base command when provided to open", function()
       terminal_wrapper.open({}, "--resume")

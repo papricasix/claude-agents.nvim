@@ -46,6 +46,15 @@ M.defaults = {
   -- change something else also made in that time is marked ≈. false: leave the
   -- CLI's own setting alone.
   bash_changes = true,
+  -- Let Claude open files here when you ask it to ("open the parser in a
+  -- float"): every launch registers an MCP server (`server_name`) offering the
+  -- tool `open_files`. Calls ask for permission like any MCP tool.
+  open_files = {
+    enabled = true,
+    layout = "tab", -- "tab" | "float" | "split" | "vsplit"; Claude picks another when you name one
+    focus = true, -- move the cursor to what was opened; false keeps it where it was
+    server_name = "nvim", -- the MCP server's name: the tool is mcp__<server_name>__open_files
+  },
   terminal_cmd = nil,
   env = {}, -- Custom environment variables for Claude terminal
   log_level = "info",
@@ -538,6 +547,29 @@ function M.validate(config)
   end
   if config.bash_changes ~= nil then
     assert(type(config.bash_changes) == "boolean", "bash_changes must be a boolean")
+  end
+  if config.open_files ~= nil then
+    local of = config.open_files
+    assert(type(of) == "table", "open_files must be a table")
+    if of.enabled ~= nil then
+      assert(type(of.enabled) == "boolean", "open_files.enabled must be a boolean")
+    end
+    if of.layout ~= nil then
+      assert(
+        of.layout == "tab" or of.layout == "float" or of.layout == "split" or of.layout == "vsplit",
+        "open_files.layout must be 'tab', 'float', 'split' or 'vsplit'"
+      )
+    end
+    if of.focus ~= nil then
+      assert(type(of.focus) == "boolean", "open_files.focus must be a boolean")
+    end
+    if of.server_name ~= nil then
+      -- The CLI's own rule for a server name.
+      assert(
+        type(of.server_name) == "string" and of.server_name:match("^[A-Za-z0-9_-]+$") ~= nil,
+        "open_files.server_name must be letters, digits, '_' or '-'"
+      )
+    end
   end
 
   assert(config.terminal_cmd == nil or type(config.terminal_cmd) == "string", "terminal_cmd must be nil or a string")

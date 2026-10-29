@@ -106,7 +106,7 @@ What is different:
 - **No clickable paths** in its terminal: OpenCode prints none. `<S-CR>` inserts a newline as it does for Claude.
 - **In the agents view, OpenCode's command palette is `ctrl+x p`**, not `ctrl+p`: there `<C-n>`/`<C-p>` switch sessions even inside an agent's terminal, so OpenCode would never see `ctrl+p`. Only the OpenCode agents the view launches are changed, and only while `<C-p>` is a session key; its lists keep the arrow keys. `opencode.agent_keybinds` sets other OpenCode keys for those agents (`{ ["command.palette.show"] = "ctrl+y" }`, any id from OpenCode's keybind list), or `false` leaves them all as they are.
 - **In the agents view, OpenCode shows no session tabs**: the Sessions pane already lists the conversations, and OpenCode keeps one set of tabs per directory, so every agent of a project would show all the others as its tabs. Only the agents the view launches are changed; `opencode.agent_tabs = true` leaves them to your `cli.json`.
-- **The plugin's own tools** (open a file, read diagnostics) are not offered to OpenCode, which has its own.
+- **Of the plugin's own tools, only [opening files](#opening-files) is offered to OpenCode**; diagnostics are not, OpenCode has its own.
 
 OpenCode runs a background service that every OpenCode client shares; the plugin talks to it too, and the agents view lists OpenCode's conversations only while it runs. An OpenCode launch starts it (`opencode service start`), and so does the agents view when it opens in a directory the plugin has launched OpenCode in, so they are listed after a login too. With `opencode.start_service = "launch"` only a launch does, and the view says `◇ OpenCode stopped · gO starts it` instead; `gO`, or `:ClaudeCodeOpencodeStart`, starts it anywhere. A service you switched off (`opencode service set disabled true`) is never started: OpenCode's terminals then run on private servers the plugin cannot reach, and the view and `:checkhealth claude_agents` say how to switch it back on.
 
@@ -163,6 +163,21 @@ On by default. When Claude finishes a plan in plan mode, the plan opens as a mar
 ## Terminal links
 
 On by default. Clicking a file path in Claude's terminal opens it in the editor window next to the terminal, at the line it names; `gf` on a path does the same. Clicks anywhere else go to Claude as before. `terminal_links = { enabled = false }` turns it off, and `click = false` keeps only `gf`.
+
+## Opening files
+
+On by default. Ask Claude to open a file — "open the parser", "show me a.lua and b.lua side by side", "open it in a float" — and it opens here: in a new tab after the one Claude runs in, unless you name another place. Several files open together in one tab, side by side, stacked or in a grid (four files: 2×2); `split` and `vsplit` put each beside the editor window next to the terminal, and no other window changes size. A file already on screen is jumped to instead of opened again, unless you asked for a float or a split. A line or range Claude names puts the cursor there, and the range stays highlighted until you move.
+
+```lua
+open_files = {
+  enabled = true,
+  layout = "tab",       -- "tab" | "float" | "split" | "vsplit": where files go unless you say
+  focus = true,         -- false: open without moving your cursor (or say "in the background")
+  server_name = "nvim", -- Claude calls the tool mcp__nvim__open_files
+}
+```
+
+Claude asks before each call, like any MCP tool; "don't ask again" allows it for the project. A float takes the cursor whatever `focus` says, and `q` closes it. In the agents view a tab opens next to the view, and a split becomes a tab. OpenCode is offered the same tool (`nvim-<id>_open_files`) and, like its other MCP tools, calls it without asking.
 
 ## Per-tab status
 

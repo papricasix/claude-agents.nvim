@@ -78,7 +78,7 @@ Bottom left: the subagents the session started, as a tree, with its background s
 
 ## Diffs and files
 
-Each agent has its own connection to Neovim, so a diff goes to the agent that asked for it. Files an agent opens, and with unified.nvim its diffs, appear as floats titled with the agent, stacked so several can wait for you at once. `:w` accepts and `:q` rejects, as everywhere else. The live cursor and the plan view do not run inside the view: every window there is a pane.
+Each agent has its own connection to Neovim, so a diff goes to the agent that asked for it. Files an agent opens, and with unified.nvim its diffs, appear as floats titled with the agent, stacked so several can wait for you at once. `:w` accepts and `:q` rejects, as everywhere else. A file you ask an agent to open ([opening files](guide.md#opening-files)) goes to a new tab next to the view, or to a float if you say so; the view has no window to split. The live cursor and the plan view do not run inside the view: every window there is a pane.
 
 ## Configuration
 

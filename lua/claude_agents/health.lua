@@ -257,7 +257,24 @@ local function check_instances(claudecode)
 
       local connected = status.client_count and status.client_count > 0
       if connected then
-        info(("%s: %d client(s) connected"):format(label, status.client_count))
+        -- The tool server (`open_files`) is a second connection from the same CLI.
+        local tool_conns = 0
+        for _, client in ipairs(status.clients or {}) do
+          if client.role == "tools" then
+            tool_conns = tool_conns + 1
+          end
+        end
+        if tool_conns > 0 then
+          info(
+            ("%s: %d client(s) connected (%d of them the open_files tool server)"):format(
+              label,
+              status.client_count,
+              tool_conns
+            )
+          )
+        else
+          info(("%s: %d client(s) connected"):format(label, status.client_count))
+        end
       else
         info(("%s: no Claude connected yet (launch one with :ClaudeCode)"):format(label))
       end

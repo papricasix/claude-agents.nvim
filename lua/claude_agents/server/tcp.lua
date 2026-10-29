@@ -263,9 +263,12 @@ end
 ---Broadcast a message to all connected clients
 ---@param server TCPServer The server object
 ---@param message string The message to broadcast
-function M.broadcast(server, message)
+---@param accept (fun(client: WebSocketClient): boolean)|nil Only the clients this says yes to.
+function M.broadcast(server, message, accept)
   for _, client in pairs(server.clients) do
-    client_manager.send_message(client, message)
+    if not accept or accept(client) then
+      client_manager.send_message(client, message)
+    end
   end
 end
 

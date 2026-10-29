@@ -68,6 +68,11 @@ local function create_instance(tab_id, opts)
         if client and client.tokenless then
           return { tools = {} }
         end
+        -- The launch's tool server gets the tools the model may call, shaped for
+        -- whoever launched it (an agent has no tab of its own to split).
+        if client and client.role == "tools" then
+          return { tools = tools.get_model_tool_list({ kind = state.kind }) }
+        end
         return { tools = tools.get_tool_list() }
       end,
 
@@ -87,7 +92,7 @@ local function create_instance(tab_id, opts)
           " Arguments: ",
           vim.inspect(params and params.arguments)
         )
-        local result_or_error_table = tools.handle_invoke(client, params)
+        local result_or_error_table = tools.handle_invoke(client, params, client and client.role == "tools" or nil)
 
         if result_or_error_table and result_or_error_table._deferred then
           logger.debug("server", "Tool is blocking - setting up deferred response")
@@ -424,7 +429,11 @@ local function create_instance(tab_id, opts)
     }
 
     local json_message = vim.json.encode(message)
-    tcp_server.broadcast(state.server, json_message)
+    -- Selections and @ mentions are for the IDE connection; the tool server
+    -- (`client.role == "tools"`) is an ordinary MCP server to the CLI.
+    tcp_server.broadcast(state.server, json_message, function(client)
+      return client.role ~= "tools"
+    end)
     return true
   end
 

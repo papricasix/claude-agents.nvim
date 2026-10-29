@@ -55,17 +55,48 @@ function M.for_agent(agent_rules)
   return added
 end
 
----A session's rules with the plugin's rules for an agent in place of any the
----plugin added before. The user's own session rules keep their order, ahead.
----@param current table[]|nil The session's rules now.
----@param previous table[]|nil What the plugin added last time (from the session's metadata).
+---What a ruleset decides for a tool's action (tools are asked about with
+---resource `*`; last match wins; nothing matching means ask).
+---@param rules table[]|nil
+---@param action string
+---@return "allow"|"deny"|"ask"
+function M.decide(rules, action)
+  local effect = "ask"
+  for _, rule in ipairs(type(rules) == "table" and rules or {}) do
+    if type(rule) == "table" and M.wildcard(rule.action, action) and M.wildcard(rule.resource, "*") then
+      effect = rule.effect
+    end
+  end
+  return effect
+end
+
+---The rules that keep `open_files` to the Neovim that launched a session.
+---
+---Every session in a directory sees every MCP server added there, and each
+---Neovim adds its own (`opencode.mcp`): the first rule hides all of them — a
+---`deny` with resource `*` takes a tool out of the session's list — and the
+---second gives this Neovim's back whatever the agent would have decided for it,
+---so an agent that refuses everything (`explore`) still refuses it.
 ---@param agent_rules table[]|nil The agent's effective ruleset.
----@return table[] rules The session's new rules.
----@return table[] added What the plugin added this time, to record.
-function M.compose(current, previous, agent_rules)
+---@param own string This Neovim's tool action.
+---@param any string A pattern matching every Neovim's.
+---@return table[]
+function M.for_tool(agent_rules, own, any)
+  return {
+    { action = any, resource = "*", effect = "deny" },
+    { action = own, resource = "*", effect = M.decide(agent_rules, own) },
+  }
+end
+
+---A session's rules with `added` in place of what the plugin added before
+---(always the tail). The user's own session rules keep their order, ahead.
+---@param current table[]|nil The session's rules now.
+---@param previous table[]|nil What the plugin added last time.
+---@param added table[]
+---@return table[]
+function M.replace_tail(current, previous, added)
   current = type(current) == "table" and current or {}
   previous = type(previous) == "table" and previous or {}
-  -- The plugin's rules are always the tail; drop that tail if it is still there.
   local keep = #current
   if #previous > 0 and #current >= #previous then
     local matches = true
@@ -83,11 +114,22 @@ function M.compose(current, previous, agent_rules)
   for i = 1, keep do
     rules[#rules + 1] = vim.deepcopy(current[i])
   end
-  local added = M.for_agent(agent_rules)
   for _, rule in ipairs(added) do
     rules[#rules + 1] = rule
   end
-  return rules, added
+  return rules
+end
+
+---A session's rules with the plugin's rules for an agent in place of any the
+---plugin added before. The user's own session rules keep their order, ahead.
+---@param current table[]|nil The session's rules now.
+---@param previous table[]|nil What the plugin added last time (from the session's metadata).
+---@param agent_rules table[]|nil The agent's effective ruleset.
+---@return table[] rules The session's new rules.
+---@return table[] added What the plugin added this time, to record.
+function M.compose(current, previous, agent_rules)
+  local added = M.for_agent(agent_rules)
+  return M.replace_tail(current, previous, added), added
 end
 
 ---A session's rules without the plugin's (review switched off, or the agent
@@ -96,9 +138,7 @@ end
 ---@param previous table[]|nil
 ---@return table[]
 function M.strip(current, previous)
-  local rules = M.compose(current, previous, nil)
-  table.remove(rules) -- the ask rule compose just appended
-  return rules
+  return M.replace_tail(current, previous, {})
 end
 
 ---What OpenCode would decide for an edit of `path` under a ruleset (last match

@@ -186,6 +186,11 @@ function M.build(cmd_args, ctx)
   end
 
   if session_id then
+    -- `open_files` for this directory, added while the session is prepared: the
+    -- model's tool list is read per turn, so it is there by the first prompt.
+    pcall(function()
+      require("claude_agents.opencode.mcp").register(opencode().canonical(ctx.cwd))
+    end)
     local err = M._sessions.ensure_sync(session_id, {
       directory = opencode().canonical(ctx.cwd),
       title = ctx.name,
@@ -279,7 +284,14 @@ function M.ended(session_id, opts)
     server.arm_tokenless(false)
   end
   if session_id then
-    require("claude_agents.opencode.bridge").untrack(session_id)
+    local bridge = require("claude_agents.opencode.bridge")
+    local entry = bridge.get(session_id)
+    bridge.untrack(session_id)
+    if entry and not opts.keep then
+      pcall(function()
+        require("claude_agents.opencode.mcp").released(entry.cwd)
+      end)
+    end
     if opts.keep then
       M._sessions.relaunching(session_id)
     else

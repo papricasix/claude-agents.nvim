@@ -108,7 +108,12 @@ function M.apply_rules(info, agent, cb)
       cb(err)
     end)
   end
-  if not opencode().config().review_edits then
+  local review = opencode().config().review_edits
+  -- `open_files`: every Neovim's server is visible in the directory, so the
+  -- session is kept to this one's (`rules.for_tool`).
+  local mcp = require("claude_agents.opencode.mcp")
+  local tool = mcp.enabled()
+  if not review and not tool then
     if type(previous) == "table" and #previous > 0 then
       write(rules.strip(info.permissions, previous), {})
     else
@@ -125,8 +130,14 @@ function M.apply_rules(info, agent, cb)
         cb(err or "no agent")
         return
       end
-      local new_rules, added = rules.compose(info.permissions, previous, data.permissions)
-      write(new_rules, added)
+      local added = review and rules.for_agent(data.permissions) or {}
+      if tool then
+        local own_action, any_action = mcp.actions()
+        for _, rule in ipairs(rules.for_tool(data.permissions, own_action, any_action)) do
+          added[#added + 1] = rule
+        end
+      end
+      write(rules.replace_tail(info.permissions, previous, added), added)
     end)
   end
   agent = agent or info.agent or agents[info.id]

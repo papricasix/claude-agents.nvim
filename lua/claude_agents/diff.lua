@@ -551,9 +551,11 @@ M._closest_rect_index = closest_rect_index
 ---Reuses `find_main_editor_window` for suitability (skips terminals, sidebars,
 ---floats, and the live-preview split) and picks by screen geometry. Returns nil
 ---when there is no suitable editor window to take over.
+---@param term_win integer|nil The terminal to measure from, when the caller knows
+---       which Claude asked (one in another tab); the current tab's otherwise.
 ---@return number|nil win_id
-local function find_window_closest_to_terminal()
-  local term = find_claudecode_terminal_window()
+local function find_window_closest_to_terminal(term_win)
+  local term = (term_win and vim.api.nvim_win_is_valid(term_win)) and term_win or find_claudecode_terminal_window()
   local tab = term and vim.api.nvim_win_get_tabpage(term) or vim.api.nvim_get_current_tabpage()
 
   local candidates = {}

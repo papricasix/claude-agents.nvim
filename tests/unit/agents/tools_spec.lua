@@ -53,6 +53,14 @@ describe("agents.tools", function()
       expect(tools.label("PowerShell", { command = "cargo build" })).to_be("cargo build")
     end)
 
+    it("names the files open_files opened, and where, under either CLI's name for it", function()
+      local input = { files = { { path = "/p/lua/a.lua", line = 12 }, { path = "/p/b.lua" } }, layout = "vsplit" }
+      expect(tools.label("mcp__nvim__open_files", input)).to_be("a.lua:12, b.lua  (vsplit)")
+      expect(tools.label("nvim-1a2b3c4d_open_files", { files = { { path = "a.txt" } } })).to_be("a.txt")
+      -- Another server's tool of the same name is not ours to read.
+      expect(tools.label("other_open_files", { files = { { path = "a.txt" } } })).to_be("other_open_files")
+    end)
+
     it("flattens a multi-line command onto one line", function()
       expect(tools.label("Bash", { command = "cd /tmp\nls\n" })).to_be("cd /tmp ls")
     end)

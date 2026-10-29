@@ -135,7 +135,9 @@ local function is_connected(inst)
 
   if status.clients and #status.clients > 0 then
     for _, info in ipairs(status.clients) do
-      if info.handshake_complete == true then
+      -- The launch's tool server connects too, often first; it is not the
+      -- connection that takes selections and @ mentions.
+      if info.handshake_complete == true and info.role ~= "tools" then
         return true
       end
     end
@@ -507,6 +509,12 @@ function M.setup(opts)
       pcall(function()
         require("claude_agents.terminal_links").cleanup()
       end)
+      -- The `open_files` servers this Neovim added to OpenCode point at a port
+      -- about to close; only if any were added.
+      local oc_mcp = package.loaded["claude_agents.opencode.mcp"]
+      if oc_mcp then
+        pcall(oc_mcp.shutdown)
+      end
       pcall(function()
         require("claude_agents.agents_view").cleanup()
       end)

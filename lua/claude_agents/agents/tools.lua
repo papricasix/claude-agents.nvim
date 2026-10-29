@@ -251,6 +251,37 @@ local LABELS = {
 LABELS.Agent = LABELS.Task
 LABELS.PowerShell = LABELS.Bash
 
+---`open_files` (the plugin's own tool): the files and where they went.
+---@param input table
+---@return string|nil
+local function open_files_label(input)
+  if type(input.files) ~= "table" then
+    return nil
+  end
+  local names = {}
+  for _, file in ipairs(input.files) do
+    local path = type(file) == "table" and file.path or file
+    if type(path) == "string" and path ~= "" then
+      local name = path:match("([^/\\]+)[/\\]*$") or path
+      names[#names + 1] = type(file) == "table" and type(file.line) == "number" and (name .. ":" .. file.line) or name
+    end
+  end
+  if #names == 0 then
+    return nil
+  end
+  local text = table.concat(names, ", ")
+  return oneline(input.layout) and (text .. "  (" .. input.layout .. ")") or text
+end
+
+---Whether a tool is `open_files`, as the CLI names it: `mcp__<server>__open_files`
+---for Claude, `<server>-<id>_open_files` for OpenCode.
+---@param name string
+---@return boolean
+local function is_open_files(name)
+  local _, tool = mcp_parts(name)
+  return tool == "open_files" or name:match("^[%w_-]+%-%x%x%x%x%x%x%x%x_open_files$") ~= nil
+end
+
 ---One line naming what a tool call was for.
 ---@param name string|nil Tool name as the CLI recorded it.
 ---@param input table|nil The call's input.
@@ -262,6 +293,9 @@ function M.label(name, input)
   end
   local rule = LABELS[tool]
   local text = rule and rule(input) or nil
+  if not text and is_open_files(tool) then
+    text = open_files_label(input)
+  end
   if not text then
     text = first_of(input, FALLBACK_FIELDS)
   end

@@ -170,6 +170,15 @@ function M.handle(event)
     return
   end
 
+  -- A location's runtime MCP servers go with it (reload, eviction).
+  if etype == "location.shutdown" then
+    local location = type(event.location) == "table" and event.location or data.location or data
+    pcall(function()
+      require("claude_agents.opencode.mcp").location_shutdown(location)
+    end)
+    return
+  end
+
   if etype == "form.created" then
     local form = type(data.form) == "table" and data.form or data
     local entry = tracked[form.sessionID]
@@ -295,6 +304,9 @@ function M.handle(event)
     require("claude_agents.opencode.sessions").note_used(entry.root)
     if is_root then
       dispatch(entry, hook_event(entry, session_id, { hook_event_name = "UserPromptSubmit" }))
+      pcall(function()
+        require("claude_agents.opencode.mcp").turn_started(entry.cwd)
+      end)
     end
   elseif etype == "session.execution.succeeded" or etype == "session.execution.failed" then
     local name
@@ -348,6 +360,10 @@ function M.resync()
   if #roots == 0 then
     return
   end
+  -- A restarted service has lost the `open_files` servers added at runtime.
+  pcall(function()
+    require("claude_agents.opencode.mcp").resync()
+  end)
   local api = require("claude_agents.opencode.api")
   api.call("GET", "/api/session/active", nil, function(err, data)
     if err then

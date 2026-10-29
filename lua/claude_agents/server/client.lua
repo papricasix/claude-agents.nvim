@@ -11,6 +11,7 @@ local M = {}
 ---@field state string Connection state: "connecting", "connected", "closing", "closed"
 ---@field buffer string Incoming data buffer
 ---@field handshake_complete boolean Whether WebSocket handshake is complete
+---@field role "tools"|nil The launch's tool server rather than the IDE connection (see `handshake.role_of_path`)
 ---@field last_ping number Timestamp of last ping sent
 ---@field last_pong number Timestamp of last pong received
 
@@ -56,7 +57,7 @@ function M.process_data(client, data, on_message, on_close, on_error, auth_token
         logger.debug("client", "No authentication required for client:", client.id)
       end
 
-      local success, response_from_handshake, _, tokenless =
+      local success, response_from_handshake, _, tokenless, role =
         handshake.process_handshake(request, auth_token, allow_tokenless)
 
       -- Log authentication results
@@ -106,6 +107,9 @@ function M.process_data(client, data, on_message, on_close, on_error, auth_token
           client.buffer = remaining
           -- Let in without the token: served notifications, never tools.
           client.tokenless = tokenless == true or nil
+          -- The launch's tool server (`handshake.TOOLS_PATH`): offered only the
+          -- tools the model may call, and sent none of the IDE's notifications.
+          client.role = role
           logger.debug("client", "WebSocket connection established for client:", client.id)
 
           if #client.buffer > 0 then
@@ -336,6 +340,7 @@ function M.get_client_info(client)
     id = client.id,
     state = client.state,
     handshake_complete = client.handshake_complete,
+    role = client.role,
     buffer_size = #client.buffer,
     last_ping = client.last_ping,
     last_pong = client.last_pong,
