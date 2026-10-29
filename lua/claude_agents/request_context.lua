@@ -24,6 +24,7 @@ local M = {}
 ---@field tab integer|nil Tabpage the owning Claude was launched in.
 ---@field session_id string|nil Conversation id, when the owner is an agent.
 ---@field kind "tab"|"agent"|nil
+---@field backend "claude"|"opencode"|nil Which CLI asked; nil is Claude.
 
 ---@type ClaudeCodeRequestContext|nil
 local current = nil

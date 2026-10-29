@@ -174,10 +174,25 @@ open_files = {
   layout = "tab",       -- "tab" | "float" | "split" | "vsplit": where files go unless you say
   focus = true,         -- false: open without moving your cursor (or say "in the background")
   server_name = "nvim", -- Claude calls the tool mcp__nvim__open_files
+  notes = {
+    enabled = true,
+    range_mark = "bar",  -- the lines a note is about: "bar" (sign column) | "background" | "number" | false
+    max_lines = 8,       -- longer notes end in "… N more lines" until expanded
+    max_width = 100,     -- widest a note is wrapped to
+    keymaps = { next = "]n", prev = "[n" }, -- in buffers that have notes; false: none
+  },
 }
 ```
 
 Claude asks before each call, like any MCP tool; "don't ask again" allows it for the project. A float takes the cursor whatever `focus` says, and `q` closes it. In the agents view a tab opens next to the view, and a split becomes a tab. OpenCode is offered the same tool (`nvim-<id>_open_files`) and, like its other MCP tools, calls it without asking.
+
+### Notes
+
+When Claude has something to say about a spot in a file it opens — why it matters to your question, what the code does there — it can leave a note above that line ("show me where the parser handles quotes and explain"). A note is a callout in the file: `✻ Claude` and a title, then a few lines of text, indented to the code, with `code` and **bold** rendered. The lines it is about carry a bar in the sign column (`range_mark`). Notes from an agent name it (`✻ plan-2`), OpenCode's say `◇ OpenCode`.
+
+Notes stay while you read, scroll and edit, and follow their code when Claude rewrites the file. They go when you clear them, or when the same conversation sends new notes for that file; other conversations' notes stay.
+
+`]n` / `[n` jump between the notes in a buffer. `:ClaudeCodeNotes` lists every note in the quickfix list; `:ClaudeCodeNotes clear` removes the buffer's notes (`clear!` everywhere), `toggle` hides and shows them all, and `expand` / `collapse` show a long note whole or cut it again (`!` for every note). Notes are not kept across restarts.
 
 ## Per-tab status
 

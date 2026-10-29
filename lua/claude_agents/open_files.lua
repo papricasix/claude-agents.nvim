@@ -28,6 +28,11 @@
 --- `focus = false` leaves the cursor where it was. A float always takes focus:
 --- one left unfocused over the terminal being typed in could not be closed with
 --- `q`.
+---
+--- A file may carry `notes`, drawn above their lines by `claude_agents.notes`
+--- until the user clears them; a file with notes and no `line` puts the cursor
+--- on the first note. Each conversation's notes on a file replace its earlier
+--- ones there and no one else's.
 ---@brief ]]
 ---@module 'claude_agents.open_files'
 
@@ -90,6 +95,7 @@ end
 ---@field tab integer|nil Tabpage the asking Claude belongs to.
 ---@field kind "tab"|"agent"|nil
 ---@field session_id string|nil
+---@field backend "claude"|"opencode"|nil
 ---@field cwd string|nil Where relative paths are taken from.
 ---@field term_win integer|nil The window showing its terminal, if one does.
 
@@ -122,7 +128,7 @@ function M.asker(rc)
   if not tab or not vim.api.nvim_tabpage_is_valid(tab) then
     tab = vim.api.nvim_get_current_tabpage()
   end
-  local asker = { tab = tab, kind = rc.kind, session_id = rc.session_id }
+  local asker = { tab = tab, kind = rc.kind, session_id = rc.session_id, backend = rc.backend }
   if rc.kind == "agent" and rc.session_id then
     local ok, registry = pcall(require, "claude_agents.agents.registry")
     local term = ok and registry.get(rc.session_id) or nil
@@ -615,7 +621,7 @@ end
 ---@return { code: integer, message: string }|nil err
 local function read_files(raw, cwd)
   if type(raw) ~= "table" or #raw == 0 then
-    return fail("files must be a non-empty list of { path, line?, end_line? }", M.INVALID)
+    return fail("files must be a non-empty list of { path, line?, end_line?, notes? }", M.INVALID)
   end
   local files, missing = {}, {}
   for i, entry in ipairs(raw) do
@@ -625,17 +631,34 @@ local function read_files(raw, cwd)
     if type(entry) ~= "table" or type(entry.path) ~= "string" or entry.path == "" then
       return fail(("files[%d] needs a path"):format(i), M.INVALID)
     end
+    local notes
+    if entry.notes ~= nil then
+      local notes_err
+      notes, notes_err = require("claude_agents.notes").parse(entry.notes)
+      if not notes then
+        return fail(("files[%d].%s"):format(i, notes_err), M.INVALID)
+      end
+    end
     local path = resolve(entry.path, cwd)
     local stat = vim.loop.fs_stat(path)
     if not stat then
       missing[#missing + 1] = path
     else
       local line = positive_int(entry.line)
+      local end_line = line and positive_int(entry.end_line) or nil
+      -- Notes and nowhere asked for: the first note is where to look.
+      if not line and notes and #notes > 0 then
+        line = notes[1].line
+        for _, note in ipairs(notes) do
+          line = math.min(line, note.line)
+        end
+      end
       files[#files + 1] = {
         path = path,
         line = line,
-        end_line = line and positive_int(entry.end_line) or nil,
+        end_line = end_line,
         directory = stat.type == "directory",
+        notes = notes,
       }
     end
   end
@@ -656,6 +679,88 @@ local function go_back(win, terminal)
   if terminal and vim.bo[vim.api.nvim_win_get_buf(win)].buftype == "terminal" then
     pcall(vim.cmd, "startinsert")
   end
+end
+
+---What an agent is called: its session's title in the agents view, else the
+---name it was launched with, else the start of its id.
+---@param session_id string
+---@return string
+local function agent_name(session_id)
+  local model = package.loaded["claude_agents.agents.model"]
+  local row = model and model.row and model.row(session_id)
+  local name = row and row.title
+  if not name then
+    local ok, registry = pcall(require, "claude_agents.agents.registry")
+    local term = ok and registry.get(session_id) or nil
+    name = term and term.name
+  end
+  return (type(name) == "string" and name ~= "") and name or session_id:sub(1, 8)
+end
+
+---Who writes a call's notes: the key their next notes replace them by, and the
+---name the header shows. A tab's own Claude is just Claude; an agent is named,
+---since several may write in one file.
+---@param asker ClaudeCodeOpenAsker
+---@return string owner
+---@return string writer
+local function note_author(asker)
+  local opencode = asker.backend == "opencode"
+    or (type(asker.session_id) == "string" and asker.session_id:match("^ses_") ~= nil)
+  local glyph = opencode and require("claude_agents.opencode").MARK or "✻"
+  if asker.kind == "agent" and asker.session_id then
+    return "agent:" .. asker.session_id, glyph .. " " .. utils.truncate(agent_name(asker.session_id), 24)
+  end
+  return ("tab:%s:%s"):format(tostring(asker.tab), opencode and "opencode" or "claude"),
+    glyph .. (opencode and " OpenCode" or " Claude")
+end
+
+---Put a file's notes in the buffer `win` shows. Notes the call did not mention
+---are left as they are.
+---@param win integer
+---@param file table
+---@param author { owner: string, writer: string, shown: integer, cleared: string[] }
+local function apply_notes(win, file, author)
+  if not file.notes or not vim.api.nvim_win_is_valid(win) then
+    return
+  end
+  local buf = vim.api.nvim_win_get_buf(win)
+  local placed = require("claude_agents.notes").set(buf, author.owner, author.writer, file.notes)
+  if #file.notes == 0 then
+    author.cleared[#author.cleared + 1] = file.path
+  end
+  author.shown = author.shown + placed
+end
+
+---What the call's notes came to, for the model.
+---@param asker ClaudeCodeOpenAsker
+---@param author { shown: integer, cleared: string[], dropped: string[], off: boolean }
+---@return string
+local function notes_message(asker, author)
+  local parts = {}
+  if author.off then
+    parts[#parts + 1] = " Notes are switched off in this editor; none were shown."
+  end
+  if author.shown > 0 then
+    parts[#parts + 1] = (" Showed %d note%s; they stay until the user clears them."):format(
+      author.shown,
+      author.shown == 1 and "" or "s"
+    )
+  end
+  if #author.cleared > 0 then
+    local names = {}
+    for _, path in ipairs(author.cleared) do
+      names[#names + 1] = shown(asker, path)
+    end
+    parts[#parts + 1] = " Removed your notes from " .. table.concat(names, ", ") .. "."
+  end
+  if #author.dropped > 0 then
+    local names = {}
+    for _, path in ipairs(author.dropped) do
+      names[#names + 1] = shown(asker, path)
+    end
+    parts[#parts + 1] = " Notes are shown in files only, not in " .. table.concat(names, ", ") .. "."
+  end
+  return table.concat(parts)
 end
 
 ---Open files for the model.
@@ -689,6 +794,22 @@ function M.open(req, asker)
     return fail("A float shows one file; use layout 'tab' for several", M.INVALID)
   end
 
+  local notes = require("claude_agents.notes")
+  local notes_on = notes.enabled()
+  local author = { shown = 0, cleared = {}, dropped = {}, off = false }
+  author.owner, author.writer = note_author(asker)
+  for _, file in ipairs(files) do
+    if file.notes and not notes_on then
+      author.off = author.off or #file.notes > 0
+      file.notes = nil
+    elseif file.notes and file.directory then
+      if #file.notes > 0 then
+        author.dropped[#author.dropped + 1] = file.path
+      end
+      file.notes = nil
+    end
+  end
+
   -- Asked for by name, a float or a split is opened even for a file already on
   -- screen. Decided on what the call said, before the agents view turns a split
   -- into a tab.
@@ -712,13 +833,16 @@ function M.open(req, asker)
       if focus then
         pcall(vim.api.nvim_set_current_win, win)
       end
+      apply_notes(win, files[1], author)
       place_cursor(win, files[1])
+      notes.reveal(win)
       local tabnr = vim.api.nvim_tabpage_get_number(vim.api.nvim_win_get_tabpage(win))
       return {
-        message = ("%s was already open in tab %d; %s."):format(
+        message = ("%s was already open in tab %d; %s.%s"):format(
           describe(asker, files[1]),
           tabnr,
-          focus and "moved the cursor there" or "left the cursor where it was"
+          focus and "moved the cursor there" or "left the cursor where it was",
+          notes_message(asker, author)
         ),
         layout = layout,
         windows = { win },
@@ -733,9 +857,14 @@ function M.open(req, asker)
     if not win then
       return fail("Could not open a float for " .. files[1].path)
     end
+    apply_notes(win, files[1], author)
     place_cursor(win, files[1])
+    notes.reveal(win)
     return {
-      message = ("Opened %s in a float; q closes it."):format(describe(asker, files[1])),
+      message = ("Opened %s in a float; q closes it.%s"):format(
+        describe(asker, files[1]),
+        notes_message(asker, author)
+      ),
       layout = layout,
       windows = { win },
       tab = vim.api.nvim_get_current_tabpage(),
@@ -778,7 +907,9 @@ function M.open(req, asker)
   for _, entry in ipairs(placed) do
     opened[#opened + 1] = entry.file
     wins[#wins + 1] = entry.win
+    apply_notes(entry.win, entry.file, author)
     place_cursor(entry.win, entry.file)
+    notes.reveal(entry.win)
   end
 
   if focus then
@@ -795,6 +926,7 @@ function M.open(req, asker)
   if skipped and #skipped > 0 then
     message = message .. " No room for: " .. table.concat(skipped, ", ") .. "."
   end
+  message = message .. notes_message(asker, author)
   return { message = message, layout = layout, windows = wins, tab = tab, jumped = false }
 end
 

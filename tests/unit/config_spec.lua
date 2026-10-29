@@ -78,6 +78,29 @@ describe("Configuration", function()
     expect(rejects({ layout = "vsplit", server_name = "editor-1" })).to_be_false()
   end)
 
+  it("shows notes by default, marks their lines with a bar, and checks what is set", function()
+    local notes = config.defaults.open_files.notes
+    expect(notes.enabled).to_be_true()
+    expect(notes.range_mark).to_be("bar")
+    expect(notes.max_lines).to_be(8)
+    expect(notes.keymaps.next).to_be("]n")
+    local applied = config.apply({ open_files = { notes = { range_mark = false, keymaps = { prev = false } } } })
+    expect(applied.open_files.notes.range_mark).to_be_false()
+    expect(applied.open_files.notes.keymaps.next).to_be("]n")
+    expect(applied.open_files.layout).to_be("tab")
+
+    local function rejects(notes_opts)
+      return not pcall(config.apply, { open_files = { notes = notes_opts } })
+    end
+    expect(rejects("on")).to_be_true()
+    expect(rejects({ range_mark = "underline" })).to_be_true()
+    expect(rejects({ max_lines = 0 })).to_be_true()
+    expect(rejects({ max_width = 2.5 })).to_be_true()
+    expect(rejects({ keymaps = "]n" })).to_be_true()
+    expect(rejects({ keymaps = { next = "" } })).to_be_true()
+    expect(rejects({ range_mark = "number", max_lines = 3, keymaps = false })).to_be_false()
+  end)
+
   it("should reject invalid log level", function()
     local invalid_config = {
       port_range = { min = 10000, max = 65535 },

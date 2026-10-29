@@ -54,6 +54,15 @@ M.defaults = {
     layout = "tab", -- "tab" | "float" | "split" | "vsplit"; Claude picks another when you name one
     focus = true, -- move the cursor to what was opened; false keeps it where it was
     server_name = "nvim", -- the MCP server's name: the tool is mcp__<server_name>__open_files
+    -- Notes Claude may leave above the lines it opens a file at, until you clear
+    -- them (:ClaudeCodeNotes clear) or the same conversation sends new ones there.
+    notes = {
+      enabled = true,
+      range_mark = "bar", -- the lines a note is about: "bar" (sign column) | "background" | "number" | false
+      max_lines = 8, -- lines of a note shown before "… N more" (:ClaudeCodeNotes expand)
+      max_width = 100, -- widest a note is wrapped to, in cells
+      keymaps = { next = "]n", prev = "[n" }, -- bound in buffers that have notes; false: none
+    },
   },
   terminal_cmd = nil,
   env = {}, -- Custom environment variables for Claude terminal
@@ -569,6 +578,45 @@ function M.validate(config)
         type(of.server_name) == "string" and of.server_name:match("^[A-Za-z0-9_-]+$") ~= nil,
         "open_files.server_name must be letters, digits, '_' or '-'"
       )
+    end
+    if of.notes ~= nil then
+      local notes = of.notes
+      assert(type(notes) == "table", "open_files.notes must be a table")
+      if notes.enabled ~= nil then
+        assert(type(notes.enabled) == "boolean", "open_files.notes.enabled must be a boolean")
+      end
+      if notes.range_mark ~= nil then
+        assert(
+          notes.range_mark == false
+            or notes.range_mark == "bar"
+            or notes.range_mark == "background"
+            or notes.range_mark == "number",
+          "open_files.notes.range_mark must be 'bar', 'background', 'number' or false"
+        )
+      end
+      for _, key in ipairs({ "max_lines", "max_width" }) do
+        if notes[key] ~= nil then
+          assert(
+            type(notes[key]) == "number" and notes[key] >= 1 and math.floor(notes[key]) == notes[key],
+            "open_files.notes." .. key .. " must be a whole number of at least 1"
+          )
+        end
+      end
+      if notes.keymaps ~= nil then
+        assert(
+          notes.keymaps == false or type(notes.keymaps) == "table",
+          "open_files.notes.keymaps must be a table or false"
+        )
+        if type(notes.keymaps) == "table" then
+          for _, key in ipairs({ "next", "prev" }) do
+            local lhs = notes.keymaps[key]
+            assert(
+              lhs == nil or lhs == false or (type(lhs) == "string" and lhs ~= ""),
+              "open_files.notes.keymaps." .. key .. " must be a key or false"
+            )
+          end
+        end
+      end
     end
   end
 

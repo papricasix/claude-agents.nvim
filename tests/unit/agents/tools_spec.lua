@@ -111,6 +111,33 @@ describe("agents.tools", function()
   end)
 
   describe("what the float shows", function()
+    it("shows the notes an open_files call left, under the answer", function()
+      local input = {
+        files = {
+          {
+            path = "/p/lua/a.lua",
+            notes = {
+              { line = 12, end_line = 14, title = "Retry loop", text = "Retries **three** times.\nThen gives up." },
+              { line = 30, text = "Second." },
+            },
+          },
+          { path = "/p/b.lua" },
+        },
+      }
+      local result = { content = { { type = "text", text = "Opened a.lua in a new tab." } } }
+      local body = tools.body("mcp__nvim__open_files", input, result)
+      expect(body.filetype).to_be("markdown")
+      expect(body.lines[1]).to_be("Opened a.lua in a new tab.")
+      local text = table.concat(body.lines, "\n")
+      expect(text:find("## Notes", 1, true) ~= nil).to_be_true()
+      expect(text:find("### a.lua:12-14 · Retry loop\nRetries **three** times.\nThen gives up.", 1, true) ~= nil).to_be_true()
+      expect(text:find("### a.lua:30\nSecond.", 1, true) ~= nil).to_be_true()
+
+      -- No notes: the answer as any MCP tool's.
+      local plain = tools.body("nvim-1a2b3c4d_open_files", { files = { { path = "a.txt" } } }, result)
+      expect(#plain.lines).to_be(1)
+    end)
+
     it("puts the command above its output, and names the stream it came out of", function()
       local body = tools.body("Bash", { command = "ls" }, { stdout = "a.lua\nb.lua\n", stderr = "" })
       expect(body.lines[1]).to_be("$ ls")

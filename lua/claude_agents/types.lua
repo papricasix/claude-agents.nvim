@@ -142,7 +142,7 @@
 ---@field models ClaudeCodeModelOption[]
 ---@field profiles { default: string|nil, list: ClaudeCodeProfile[]|nil }? Launch profiles (see `claude_agents.profiles`)
 ---@field bash_changes boolean? Ask the CLI to record what each Bash command changed (`bashEditDiffEnabled`)
----@field open_files { enabled: boolean?, layout: "tab"|"float"|"split"|"vsplit"|nil, focus: boolean?, server_name: string? }? The model's `open_files` tool (see `claude_agents.open_files`)
+---@field open_files { enabled: boolean?, layout: "tab"|"float"|"split"|"vsplit"|nil, focus: boolean?, server_name: string?, notes: { enabled: boolean?, range_mark: "bar"|"background"|"number"|false|nil, max_lines: integer?, max_width: integer?, keymaps: { next: string|false|nil, prev: string|false|nil }|false|nil }? }? The model's `open_files` tool (see `claude_agents.open_files`, `claude_agents.notes`)
 ---@field disable_broadcast_debouncing? boolean
 ---@field enable_broadcast_debouncing_in_tests? boolean
 ---@field terminal ClaudeCodeTerminalConfig?

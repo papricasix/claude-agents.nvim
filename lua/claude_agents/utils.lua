@@ -450,4 +450,61 @@ function M.claude_config_dir()
   return vim.fn.expand("~/.claude")
 end
 
+---`vim.diff` indices from one version of a file's lines to another.
+---@param a string[]
+---@param b string[]
+---@return integer[][]|nil hunks nil when no diff is available or it failed.
+function M.line_hunks(a, b)
+  local diff = (vim.text and vim.text.diff) or vim.diff
+  if not diff then
+    return nil
+  end
+  local function text_of(lines)
+    return #lines == 0 and "" or (table.concat(lines, "\n") .. "\n")
+  end
+  local ok, hunks = pcall(diff, text_of(a), text_of(b), { result_type = "indices" })
+  if ok and type(hunks) == "table" then
+    return hunks
+  end
+  return nil
+end
+
+---Where a line of one version of a file is in another.
+---
+---A line in a stretch both versions share moves by whatever was added or removed
+---above it. A line inside a change lands on its counterpart in the other version,
+---or where the change left off when there is none.
+---@param hunks integer[][] `line_hunks` from one version to the other.
+---@param row integer 1-based line in the first version.
+---@param total integer Lines in the second.
+---@return integer
+function M.map_line(hunks, row, total)
+  local function clamp(line)
+    return math.max(1, math.min(line, math.max(total, 1)))
+  end
+  local offset = 0
+  for _, hunk in ipairs(hunks) do
+    local from, from_count, to, to_count = hunk[1], hunk[2], hunk[3], hunk[4]
+    if from_count == 0 then
+      -- Lines added after `from`.
+      if row <= from then
+        break
+      end
+      offset = offset + to_count
+    else
+      if row < from then
+        break
+      end
+      if row < from + from_count then
+        if to_count == 0 then
+          return clamp(to + 1)
+        end
+        return clamp(to + math.min(row - from, to_count - 1))
+      end
+      offset = offset + to_count - from_count
+    end
+  end
+  return clamp(row + offset)
+end
+
 return M

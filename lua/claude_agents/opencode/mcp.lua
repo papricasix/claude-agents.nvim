@@ -165,6 +165,7 @@ local function call_tool(params)
     tab = entry.tab,
     session_id = entry.kind == "agent" and entry.root or nil,
     kind = entry.kind,
+    backend = "opencode",
   })
   local ok, outcome = pcall(tools.handle_invoke, nil, { name = params.name, arguments = params.arguments }, true)
   context.set(saved)

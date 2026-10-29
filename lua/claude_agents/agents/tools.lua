@@ -692,6 +692,46 @@ local BODIES = {
 }
 BODIES.PowerShell = BODIES.Bash
 
+---`open_files` with notes: the answer, then each note under the file and lines
+---it was left at, as the user read it in the file. nil when the call left none.
+---@param input table|nil
+---@param result any
+---@return { lines: string[], filetype: string|nil, ansi: boolean|nil }|nil
+local function open_files_body(input, result)
+  local sections = {}
+  for _, file in ipairs(type(input) == "table" and type(input.files) == "table" and input.files or {}) do
+    local path = type(file) == "table" and type(file.path) == "string" and file.path or ""
+    local notes = path ~= "" and type(file.notes) == "table" and file.notes or {}
+    for _, note in ipairs(notes) do
+      if type(note) == "table" and type(note.text) == "string" then
+        local where = path:match("([^/\\]+)[/\\]*$") or path
+        if type(note.line) == "number" then
+          where = where .. ":" .. note.line
+          if type(note.end_line) == "number" and note.end_line > note.line then
+            where = where .. "-" .. note.end_line
+          end
+        end
+        local title = oneline(note.title)
+        sections[#sections + 1] = { "", "### " .. where .. (title and (" · " .. title) or "") }
+        extend(sections[#sections], split_lines(note.text))
+      end
+    end
+  end
+  if #sections == 0 then
+    return nil
+  end
+  local lines = content_lines(result)
+    or (type(result) == "table" and content_lines(result.content))
+    or (type(result) == "string" and split_lines(result))
+    or {}
+  lines[#lines + 1] = ""
+  lines[#lines + 1] = "## Notes"
+  for _, section in ipairs(sections) do
+    extend(lines, section)
+  end
+  return { lines = lines, filetype = "markdown", ansi = nil }
+end
+
 ---What a float shows for one tool call.
 ---@param name string|nil Tool name.
 ---@param input table|nil The call's input.
@@ -714,6 +754,13 @@ function M.body(name, input, result)
     local rendered = rule_fn(input, result, tool)
     if rendered then
       return { lines = rendered.lines, filetype = rendered.filetype, ansi = rendered.ansi }
+    end
+  end
+
+  if is_open_files(tool) then
+    local rendered = open_files_body(input, result)
+    if rendered then
+      return rendered
     end
   end
 

@@ -1068,6 +1068,17 @@ create_commands = function()
     desc = "Toggle showing Claude's plan-mode plan in an editor split (optionally: on | off)",
   })
 
+  vim.api.nvim_create_user_command("ClaudeCodeNotes", function(opts)
+    require("claude_agents.notes").command(opts.args, opts.bang)
+  end, {
+    nargs = "?",
+    bang = true,
+    complete = function()
+      return require("claude_agents.notes").SUBCOMMANDS
+    end,
+    desc = "Claude's notes in files it opened: list (quickfix, the default) | clear[!] | toggle | next | prev | expand[!] | collapse[!] (!: everywhere)",
+  })
+
   vim.api.nvim_create_user_command("ClaudeCodeAgents", function(opts)
     require("claude_agents.agents_view").toggle(opts.args ~= "" and opts.args or nil)
   end, {

@@ -28,6 +28,53 @@ function M.schema(ctx)
     or "Where the files go: 'tab' (a new tab), 'float' (one file over the screen; q closes it), "
       .. "'split' or 'vsplit' (a split per file beside the editor window next to this conversation's terminal)."
 
+  local file_properties = {
+    path = {
+      type = "string",
+      description = "Absolute path; a relative one is taken from this conversation's working directory.",
+    },
+    line = {
+      type = "integer",
+      minimum = 1,
+      description = "Line to put the cursor on (centred). Without it, the cursor goes to the first note.",
+    },
+    end_line = {
+      type = "integer",
+      minimum = 1,
+      description = "Last line of a range to highlight, starting at line.",
+    },
+  }
+  local notes_on = require("claude_agents.notes").enabled()
+  if notes_on then
+    file_properties.notes = {
+      type = "array",
+      description = "Notes the user reads in the file, each drawn above its line and kept until they dismiss it: "
+        .. "what is worth knowing at that spot (why it matters to what they asked, what the code does there, "
+        .. "what to look at). Use your judgment: add notes when you have something specific to say about a place "
+        .. "in the file, and leave them out when there is nothing to add. A sentence or three each; `code` and "
+        .. "**bold** are rendered, other markdown is shown as typed. Your next notes for this file replace these; "
+        .. "an empty list removes them.",
+      items = {
+        type = "object",
+        properties = {
+          line = { type = "integer", minimum = 1, description = "Line the note is about; it is drawn above it." },
+          end_line = {
+            type = "integer",
+            minimum = 1,
+            description = "Last line the note is about, when it covers a range starting at line.",
+          },
+          title = {
+            type = "string",
+            description = "A few words naming the point, shown in the note's header and in the user's list of notes.",
+          },
+          text = { type = "string", description = "The note." },
+        },
+        required = { "line", "text" },
+        additionalProperties = false,
+      },
+    }
+  end
+
   return {
     description = "Open files in the user's Neovim, the editor this conversation runs in. "
       .. "Call this only when the user asks you to open or show a file in their editor "
@@ -37,6 +84,7 @@ function M.schema(ctx)
       .. (agent and "" or ", or in one split each")
       .. ". A single file that is already visible in some window is jumped to instead of opened again, "
       .. (agent and "unless a float was asked for. " or "unless a float or split was asked for. ")
+      .. (notes_on and "A file can carry notes, shown to the user above the lines they are about. " or "")
       .. ("Defaults: layout '%s', focus %s."):format(default_layout, tostring(default_focus)),
     inputSchema = {
       type = "object",
@@ -47,22 +95,7 @@ function M.schema(ctx)
           description = "The files, in the order they should appear.",
           items = {
             type = "object",
-            properties = {
-              path = {
-                type = "string",
-                description = "Absolute path; a relative one is taken from this conversation's working directory.",
-              },
-              line = {
-                type = "integer",
-                minimum = 1,
-                description = "Line to put the cursor on (centred).",
-              },
-              end_line = {
-                type = "integer",
-                minimum = 1,
-                description = "Last line of a range to highlight, starting at line.",
-              },
-            },
+            properties = file_properties,
             required = { "path" },
             additionalProperties = false,
           },

@@ -85,7 +85,8 @@ vim.fn.writefile({ "one", "two", "three", "four", "five" }, project .. "/a.txt")
 vim.fn.system({ "git", "-C", project, "init", "-q" })
 vim.cmd.cd(project)
 
----The tab the call should have made: a.txt, cursor on line 2, lines 2-3 lit.
+---The tab the call should have made: a.txt, cursor on line 2, lines 2-3 lit, a
+---note above line 2.
 local function check_opened()
   local opened = vim.wait(120000, function()
     return #vim.api.nvim_list_tabpages() > 1
@@ -104,9 +105,12 @@ local function check_opened()
   check("the cursor is on line 2", vim.api.nvim_win_get_cursor(win)[1] == 2, vim.api.nvim_win_get_cursor(win)[1])
   local marks = vim.api.nvim_buf_get_extmarks(buf, require("claude_agents.open_files")._ns, 0, -1, {})
   check("lines 2-3 are highlighted", #marks == 2, #marks)
+  local notes = require("claude_agents.notes").items(buf)
+  check("a note is drawn above line 2", #notes == 1 and notes[1].line == 2, vim.inspect(notes))
 end
 
-local PROMPT = "Open a.txt in my editor at lines 2-3, in a new tab, using the open_files tool. Do nothing else."
+local PROMPT = "Open a.txt in my editor at lines 2-3, in a new tab, using the open_files tool, "
+  .. "with a note on line 2 saying it is the second line. Do nothing else."
 
 if part == "claude" then
   if vim.fn.executable("claude") ~= 1 then
