@@ -22,6 +22,24 @@ describe("server: a client let in without the token", function()
     expect(inst.tokenless_allowed({})).to_be_false()
   end)
 
+  it("counts the clients it refused, and reports them in its status", function()
+    local inst = server_module.new_instance(1, { instance_id = "tab:1", kind = "tab" })
+    local ok = inst.start({ port_range = { min = 10000, max = 65535 } }, "0123456789abcdef0123456789abcdef")
+    expect(ok).to_be_true()
+    expect(inst.get_status().tokenless_refused).to_be(0)
+
+    local server_obj = inst.state.server
+    expect(server_obj.allow_tokenless()).to_be_false()
+    expect(server_obj.allow_tokenless()).to_be_false()
+    inst.arm_tokenless(true)
+    expect(server_obj.allow_tokenless()).to_be_true()
+
+    local status = inst.get_status()
+    expect(status.tokenless_refused).to_be(2)
+    expect(type(status.tokenless_refused_at)).to_be("number")
+    inst.stop()
+  end)
+
   it("is offered no tools and may call none", function()
     local inst = server_module.new_instance(1, { instance_id = "tab:1", kind = "tab" })
     inst.register_handlers()

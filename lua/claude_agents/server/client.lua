@@ -68,7 +68,13 @@ function M.process_data(client, data, on_message, on_close, on_error, auth_token
         end
       else
         -- Log specific authentication failure details
-        if auth_token and response_from_handshake:find("auth") then
+        if tokenless then
+          -- No token and no Origin: an OpenCode TUI that inherited a port this
+          -- plugin gave a CLI (started from its shell tool, say). It retries
+          -- every 10s while it runs, and nothing here can stop it; the server
+          -- counts these for :checkhealth instead.
+          logger.debug("client", "Refused a client without the token: " .. client.id)
+        elseif auth_token and response_from_handshake:find("auth") then
           logger.warn(
             "client",
             "Authentication failed for client "

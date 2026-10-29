@@ -369,6 +369,36 @@ describe("WebSocket handshake: a client let in without the token (OpenCode)", fu
     assert.is_false(valid)
   end)
 
+  it("flags a refusal that came without the token and without an Origin", function()
+    local refused = function()
+      return false
+    end
+    local valid, _, tokenless = handshake.validate_upgrade_request(request(), TOKEN, refused)
+    assert.is_false(valid)
+    assert.is_true(tokenless)
+    -- Whether or not the server has a door to ask.
+    valid, _, tokenless = handshake.validate_upgrade_request(request(), TOKEN)
+    assert.is_false(valid)
+    assert.is_true(tokenless)
+    -- A browser, or a client with a wrong token, is not that refusal.
+    valid, _, tokenless = handshake.validate_upgrade_request(request({ "Origin: http://evil.example" }), TOKEN, refused)
+    assert.is_false(valid)
+    assert.is_nil(tokenless)
+    valid, _, tokenless =
+      handshake.validate_upgrade_request(request({ "x-claude-code-ide-authorization: wrong-token-value" }), TOKEN)
+    assert.is_false(valid)
+    assert.is_nil(tokenless)
+  end)
+
+  it("passes that flag on through process_handshake", function()
+    local success, response, _, tokenless = handshake.process_handshake(request(), TOKEN, function()
+      return false
+    end)
+    assert.is_false(success)
+    assert_contains(response, "400 Bad Request")
+    assert.is_true(tokenless)
+  end)
+
   it("reports the tokenless handshake through process_handshake", function()
     local success, response, _, tokenless = handshake.process_handshake(request(), TOKEN, function()
       return true

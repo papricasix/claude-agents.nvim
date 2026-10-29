@@ -261,6 +261,18 @@ local function check_instances(claudecode)
       else
         info(("%s: no Claude connected yet (launch one with :ClaudeCode)"):format(label))
       end
+
+      local refused = status.tokenless_refused or 0
+      if refused > 0 then
+        -- `info` takes no advice list, so the explanation goes in the line.
+        info(
+          (
+            "%s: refused %d connection(s) without the token, the last at %s. An OpenCode started inside a"
+            .. " terminal this plugin launched (by its shell tool, say) inherits this port and retries every"
+            .. " 10 seconds until it exits; nothing needs doing"
+          ):format(label, refused, os.date("%H:%M:%S", status.tokenless_refused_at))
+        )
+      end
     end
   end
 end

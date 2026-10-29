@@ -14,6 +14,7 @@
 
 - Answering an agent's diff left its terminal in normal mode, so the next keys meant for the agent failed with `E21: Cannot make changes`. Focus now goes back to the terminal you were typing in, in insert mode, and from the tab where you answered an agent's diff back to the agent.
 - A connection to the editor that was refused printed `handle … is already closing` errors.
+- An OpenCode started from inside a Claude or OpenCode terminal (by its shell tool, say) took over that editor's port, was refused for having no token, and printed a `Missing authentication header` warning every 10 seconds for as long as it ran. That refusal is now logged quietly, and `:checkhealth` says how many there were and when the last one was.
 - `agents.resume_mode = "fork"` started a brand new conversation, with the session id typed in as its first message, instead of a copy of the session: `--fork-session` was passed without the `--resume` it belongs to.
 
 ## [1.2.1] - 2026-10-16

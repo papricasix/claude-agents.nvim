@@ -30,6 +30,9 @@ local function create_instance(tab_id, opts)
     instance_id = opts.instance_id,
     session_id = opts.session_id,
     kind = opts.kind or "tab",
+    -- Tokenless clients refused (see `allow_tokenless`), and when the last was.
+    tokenless_refused = 0,
+    tokenless_refused_at = nil,
   }
 
   local inst = { state = state }
@@ -193,7 +196,12 @@ local function create_instance(tab_id, opts)
     state.port = server_obj.port
     state.ping_timer = tcp_server.start_ping_timer(server_obj, 30000)
     server_obj.allow_tokenless = function()
-      return inst.tokenless_allowed(server_obj.clients)
+      local allowed = inst.tokenless_allowed(server_obj.clients)
+      if not allowed then
+        state.tokenless_refused = state.tokenless_refused + 1
+        state.tokenless_refused_at = os.time()
+      end
+      return allowed
     end
 
     return true, server_obj.port
@@ -430,6 +438,8 @@ local function create_instance(tab_id, opts)
       port = state.port,
       client_count = tcp_server.get_client_count(state.server),
       clients = tcp_server.get_clients_info(state.server),
+      tokenless_refused = state.tokenless_refused,
+      tokenless_refused_at = state.tokenless_refused_at,
     }
   end
 

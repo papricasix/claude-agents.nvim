@@ -17,7 +17,7 @@ local M = {}
 ---@param allow_tokenless (fun(headers: table): boolean)|nil
 ---@return boolean valid True if it's a valid WebSocket upgrade request
 ---@return table|string headers_or_error Headers table if valid, error message if not
----@return boolean|nil tokenless True when it was let in without the token.
+---@return boolean|nil tokenless True when it came without the token and without an `Origin`: let in that way when `valid`, refused at that door otherwise.
 function M.validate_upgrade_request(request, expected_auth_token, allow_tokenless)
   local headers = utils.parse_http_headers(request)
 
@@ -53,13 +53,14 @@ function M.validate_upgrade_request(request, expected_auth_token, allow_tokenles
 
     local auth_header = headers["x-claude-code-ide-authorization"]
     if not auth_header then
-      if type(allow_tokenless) == "function" and headers["origin"] == nil then
+      local tokenless = headers["origin"] == nil
+      if tokenless and type(allow_tokenless) == "function" then
         local ok_allow, allowed = pcall(allow_tokenless, headers)
         if ok_allow and allowed then
           return true, headers, true
         end
       end
-      return false, "Missing authentication header: x-claude-code-ide-authorization"
+      return false, "Missing authentication header: x-claude-code-ide-authorization", tokenless or nil
     end
 
     -- Check for empty auth header
@@ -184,7 +185,7 @@ end
 ---@return boolean success True if handshake was successful
 ---@return string response The HTTP response to send
 ---@return table|nil headers The parsed headers if successful
----@return boolean|nil tokenless True when it was let in without the token.
+---@return boolean|nil tokenless See `validate_upgrade_request`: let in without the token, or refused for coming without one.
 function M.process_handshake(request, expected_auth_token, allow_tokenless)
   -- Check if it's a valid WebSocket endpoint request
   if not M.is_websocket_endpoint(request) then
@@ -199,7 +200,7 @@ function M.process_handshake(request, expected_auth_token, allow_tokenless)
     assert(type(validation_payload) == "string", "validation_payload should be a string on error")
     local error_message = validation_payload
     local response = M.create_error_response(400, "Bad WebSocket upgrade request: " .. error_message)
-    return false, response, nil
+    return false, response, nil, tokenless
   end
 
   -- If is_valid_upgrade is true, validation_payload must be the headers table
