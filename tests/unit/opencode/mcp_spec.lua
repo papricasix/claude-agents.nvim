@@ -127,6 +127,7 @@ describe("opencode open_files endpoint", function()
       expect(reply.id).to_be(0)
       expect(reply.result.protocolVersion).to_be("2025-11-25")
       expect(reply.result.capabilities.tools).to_be_table()
+      expect(reply.result.instructions:find("open_files", 1, true) ~= nil).to_be_true()
 
       expect(status_of(post({ jsonrpc = "2.0", method = "notifications/initialized" }))).to_be(202)
     end)

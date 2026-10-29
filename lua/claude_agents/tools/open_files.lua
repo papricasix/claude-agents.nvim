@@ -84,7 +84,7 @@ function M.schema(ctx)
       .. (agent and "" or ", or in one split each")
       .. ". A single file that is already visible in some window is jumped to instead of opened again, "
       .. (agent and "unless a float was asked for. " or "unless a float or split was asked for. ")
-      .. (notes_on and "A file can carry notes, shown to the user above the lines they are about. " or "")
+      .. (notes_on and "A file can carry notes, shown to the user above the lines they are about: this is how to annotate " .. "code, explain it in the editor or comment on lines (virtual text), and there is no other tool for it. " or "")
       .. ("Defaults: layout '%s', focus %s."):format(default_layout, tostring(default_focus)),
     inputSchema = {
       type = "object",

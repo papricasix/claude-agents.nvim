@@ -87,6 +87,28 @@ function M.mcp_config(instance)
   }
 end
 
+---What the tool server tells the model in its `initialize` answer.
+---
+---Claude Code shows a server's instructions in the system prompt, while its
+---tools show only their names until its tool search loads them: this is where
+---the model learns that `open_files` also annotates.
+---@return string|nil instructions nil when the feature is off.
+function M.instructions()
+  if not M.enabled() then
+    return nil
+  end
+  local text = "This server is the user's Neovim, the editor this conversation runs in. Its open_files tool "
+    .. "opens files there when the user asks to open or show them."
+  if require("claude_agents.notes").enabled() then
+    text = text
+      .. " It also leaves notes in those files: short explanations drawn above the lines they are about "
+      .. "(virtual text the user reads in place, kept until they dismiss it). There is no separate annotation "
+      .. "tool. When the user asks you to annotate code, explain it in their editor, comment on lines or walk "
+      .. "them through a file, call open_files with notes on the lines your explanation is about."
+  end
+  return text
+end
+
 --------------------------------------------------------------------------------
 -- Who asked
 --------------------------------------------------------------------------------

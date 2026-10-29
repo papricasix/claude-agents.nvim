@@ -118,6 +118,27 @@ describe("server: the tool server connection", function()
       assert.same({ "tab", "float" }, layouts("agent"))
     end)
 
+    it("tells the tool server's client how to annotate, and the IDE connection nothing", function()
+      local inst = server_module.new_instance(1, { instance_id = "tab:1", kind = "tab" })
+      inst.register_handlers()
+      local handlers = inst.state.handlers
+
+      local empty_dict = vim.empty_dict
+      vim.empty_dict = empty_dict or function()
+        return {}
+      end
+      local answer = handlers["initialize"]({ role = "tools" }, {})
+      local ide_answer = handlers["initialize"]({}, {})
+      vim.empty_dict = empty_dict
+      expect(answer.instructions:find("open_files", 1, true) ~= nil).to_be_true()
+      expect(answer.instructions:find("no separate annotation tool", 1, true) ~= nil).to_be_true()
+      expect(ide_answer.instructions).to_be_nil()
+
+      -- A tool search for what users say finds it by its description.
+      local tool = handlers["tools/list"]({ role = "tools" }, {}).tools[1]
+      expect(tool.description:find("annotate", 1, true) ~= nil).to_be_true()
+    end)
+
     it("answers each connection only from its own tools", function()
       local inst = server_module.new_instance(1, { instance_id = "tab:1", kind = "tab" })
       inst.register_handlers()
@@ -193,5 +214,17 @@ describe("open_files.mcp_config", function()
     expect(open_files.mcp_config({ port = nil, auth_token = "tok" })).to_be_nil()
     package.loaded["claude_agents"] = { state = { config = { open_files = { enabled = false } } } }
     expect(open_files.mcp_config({ port = 1, auth_token = "tok" })).to_be_nil()
+  end)
+
+  it("mentions notes in the server's instructions only while they are on", function()
+    expect(open_files.instructions():find("notes", 1, true) ~= nil).to_be_true()
+
+    package.loaded["claude_agents"] = { state = { config = { open_files = { notes = { enabled = false } } } } }
+    local text = open_files.instructions()
+    expect(text:find("open_files", 1, true) ~= nil).to_be_true()
+    expect(text:find("notes", 1, true)).to_be_nil()
+
+    package.loaded["claude_agents"] = { state = { config = { open_files = { enabled = false } } } }
+    expect(open_files.instructions()).to_be_nil()
   end)
 end)

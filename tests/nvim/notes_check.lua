@@ -176,7 +176,7 @@ do
 
   -- The bar spans the range: the sign shows on every line of it. Asked of the
   -- extmarks, not the screen: headless 0.12.2 corrupts its heap when a redrawn
-  -- `nvim_open_term` buffer is deleted later (`reset`), every time.
+  -- `nvim_open_term` buffer is deleted (`reset`).
   local signs = 0
   for lnum = 12, 15 do
     local placed = vim.api.nvim_buf_get_extmarks(buf, -1, { lnum - 1, 0 }, { lnum - 1, -1 }, {

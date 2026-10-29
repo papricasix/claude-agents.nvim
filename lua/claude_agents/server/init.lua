@@ -53,6 +53,9 @@ local function create_instance(tab_id, opts)
             name = "claudecode-neovim",
             version = claudecode_main.version:string(),
           },
+          -- Only the launch's tool server is an MCP server the model reads about.
+          instructions = client and client.role == "tools" and require("claude_agents.open_files").instructions()
+            or nil,
         }
       end,
 

@@ -200,6 +200,7 @@ function M.handle_message(message)
         name = "claudecode-neovim",
         version = (main and main.version and main.version.string) and main.version:string() or "0",
       },
+      instructions = open_files().instructions(),
     })
   elseif method == "ping" then
     return rpc_reply(message.id, vim.empty_dict())
