@@ -421,20 +421,32 @@ end
 -- Extmarks
 --------------------------------------------------------------------------------
 
----Text cells of the narrowest window showing `buf`: virtual lines belong to the
----buffer, so every window draws the same ones.
+---Text cells a buffer's notes are wrapped to. Virtual lines belong to the
+---buffer, so every window draws the same ones and the narrowest window that can
+---show a note decides: one in the current tab, else one in another tab. A
+---window squeezed below a note's minimum or to a single row (another window
+---maximized beside it) shows nothing readable and does not count; when every
+---window is squeezed, the widest decides.
 ---@param buf integer
 ---@return integer
 local function text_width(buf)
-  local best
+  local tab = vim.api.nvim_get_current_tabpage()
+  local here, elsewhere, widest
   for _, win in ipairs(vim.fn.win_findbuf(buf)) do
     local info = vim.fn.getwininfo(win)[1]
     if info then
       local width = info.width - info.textoff
-      best = best and math.min(best, width) or width
+      widest = math.max(widest or width, width)
+      if width >= MIN_WIDTH + 3 and info.height > 1 then
+        if vim.api.nvim_win_get_tabpage(win) == tab then
+          here = math.min(here or width, width)
+        else
+          elsewhere = math.min(elsewhere or width, width)
+        end
+      end
     end
   end
-  return best or (vim.o.columns - 8)
+  return here or elsewhere or widest or (vim.o.columns - 8)
 end
 
 ---Indent of the code a note sits above: the line's own, or for a blank line the
@@ -492,7 +504,8 @@ local function set_mark(buf, note, row, end_row, width)
     -- Bar, its space, and one cell of padding on the right.
     local room = avail - 3
     local indent = math.max(0, math.min(indent_of(buf, row), room - MIN_WIDTH))
-    local text = math.max(1, math.min(o.max_width, room - indent))
+    -- Never narrower than the minimum: a window too narrow for it clips the note.
+    local text = math.max(math.min(MIN_WIDTH, o.max_width), math.min(o.max_width, room - indent))
     mark.virt_lines = render_note(note, indent, text, o.max_lines)
     mark.virt_lines_above = true
     if o.range_mark == "bar" then
@@ -650,8 +663,8 @@ local function ensure_global_autocmds()
     return
   end
   state.global_group = vim.api.nvim_create_augroup("ClaudeCodeNotes", { clear = true })
-  -- Widths change: the narrowest window showing a buffer is what notes wrap to.
-  vim.api.nvim_create_autocmd({ "WinResized", "VimResized", "WinClosed" }, {
+  -- Widths change, and so does which tab's windows count (`text_width`).
+  vim.api.nvim_create_autocmd({ "WinResized", "VimResized", "WinClosed", "TabEnter" }, {
     group = state.global_group,
     callback = function()
       if next(state.bufs) then

@@ -26,7 +26,7 @@ local function file(name, lines)
   vim.fn.writefile(out, path)
   return path
 end
-local a, b = file("a.lua"), file("b.lua")
+local a, b, c = file("a.lua"), file("b.lua"), file("c.lua")
 
 local checks = 0
 local function check(cond, what)
@@ -291,6 +291,63 @@ do
   for _, line in ipairs(marks(buf)[1].lines) do
     check(vim.fn.strdisplaywidth(line) <= narrow, "resize: re-wrapped to the window")
   end
+end
+
+-- One file twice in a grid row, one copy maximized: the squeezed copy does not
+-- decide the width; the current tab's windows come before another tab's; and a
+-- window too narrow for a note clips it rather than crushing it.
+do
+  reset()
+  local tab = claude_tab()
+  local text = string.rep("word ", 30)
+  local result = assert(open_files.open({
+    arrangement = "grid",
+    files = { { path = a, notes = { { line = 10, text = text } } }, { path = a }, { path = b }, { path = c } },
+  }, asker(tab)))
+  local buf = vim.api.nvim_win_get_buf(result.windows[1])
+  local function widths()
+    vim.cmd("doautocmd WinResized")
+    vim.wait(50)
+    local out = {}
+    for i, line in ipairs(marks(buf)[1].lines) do
+      out[i] = vim.fn.strdisplaywidth(line)
+    end
+    return out
+  end
+  local function all_at_least(list, n)
+    for _, w in ipairs(list) do
+      if w < n then
+        return false
+      end
+    end
+    return true
+  end
+
+  vim.api.nvim_set_current_win(result.windows[1])
+  vim.cmd("wincmd |")
+  vim.cmd("wincmd _")
+  check(vim.fn.getwininfo(result.windows[2])[1].width <= 2, "maximized: the other copy is squeezed")
+  local maximized = widths()
+  check(#maximized <= 4 and all_at_least(maximized, 60), "maximized: wrapped to the window that shows it")
+
+  vim.api.nvim_set_current_win(result.windows[3])
+  vim.cmd("wincmd |")
+  vim.cmd("wincmd _")
+  check(all_at_least(widths(), 60), "every copy squeezed: the widest decides")
+
+  vim.cmd("wincmd =")
+  local grid_width = widths()[1]
+  vim.cmd("tabedit " .. vim.fn.fnameescape(a))
+  vim.cmd("doautocmd TabEnter")
+  check(widths()[1] > grid_width, "another tab: its own full-width window decides")
+  vim.cmd("tabclose")
+
+  vim.api.nvim_set_current_win(result.windows[1])
+  vim.cmd("only")
+  vim.cmd("vsplit " .. vim.fn.fnameescape(b))
+  vim.cmd("wincmd l")
+  vim.cmd("vertical resize 12")
+  check(all_at_least(widths(), 20), "too narrow: clipped at the minimum, not crushed")
 end
 
 -- Indented code: the note is indented with it.
