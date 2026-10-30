@@ -720,6 +720,15 @@ local KEY_SPECS = {
     end,
   },
   {
+    field = "new_alt",
+    panes = { "sessions", "center" },
+    group = "Sessions",
+    desc = "Start a new agent",
+    run = function()
+      M.new_agent()
+    end,
+  },
+  {
     field = "new_as",
     panes = { "sessions", "center" },
     group = "Sessions",
@@ -1221,12 +1230,11 @@ end
 ---@param buf integer
 ---@param kind string
 local function apply_notice_keys(buf, kind)
-  local new_lhs = keymap_for("new", "a")
-  if new_lhs then
-    map(buf, new_lhs, function()
-      M.new_agent()
-    end, "Claude agents: start a new agent")
+  local function start_new()
+    M.new_agent()
   end
+  map(buf, keymap_for("new", "a"), start_new, "Claude agents: start a new agent")
+  map(buf, keymap_for("new_alt", "o"), start_new, "Claude agents: start a new agent")
 
   -- The empty-project screen can say OpenCode's service is stopped, so it takes
   -- the key that starts it, like `gs` below.

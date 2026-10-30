@@ -435,6 +435,12 @@ describe("Configuration", function()
       expect(ok).to_be_true()
       expect(pcall(config.apply, { agents = { keymaps = { new_as = 3 } } })).to_be_false()
     end)
+
+    it("takes the agents view's second new-agent key", function()
+      expect(config.defaults.agents.keymaps.new_alt).to_be("o")
+      expect(pcall(config.apply, { agents = { keymaps = { new_alt = false } } })).to_be_true()
+      expect(pcall(config.apply, { agents = { keymaps = { new_alt = 3 } } })).to_be_false()
+    end)
   end)
 
   teardown()

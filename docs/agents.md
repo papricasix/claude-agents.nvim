@@ -28,7 +28,7 @@ The top right lists this project's conversations from the last two weeks, each w
 | `<C-n>` / `<C-p>` | Select the next or previous session, from any pane, even inside the terminal. A session that is not running is shown, not started |
 | `<CR>`            | Show the session under the cursor in the centre, resuming it if it is not running                                                 |
 | `i`               | Go into the selected session's terminal, starting it if needed                                                                    |
-| `a`               | Start a new agent                                                                                                                 |
+| `a` / `o`         | Start a new agent                                                                                                                 |
 | `ga`              | Start a new agent on your subscription or an API key, picked from a menu                                                          |
 | `gi`              | Resume the session under a profile you pick; a running one is restarted under it, its conversation carried on                     |
 | `A`               | Start a new agent named after this session, numbered on (`plan` → `plan-2`), with a fresh context                                 |

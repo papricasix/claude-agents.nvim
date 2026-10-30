@@ -234,6 +234,7 @@ M.defaults = {
     keymaps = {
       select = "<CR>",
       new = "a",
+      new_alt = "o", -- a second key for `new`, in the sessions pane and on the centre's notice screens
       -- Start a new agent named after this session, numbered on: `plan` →
       -- `plan-2`, and from `plan-2` → `plan-3`. The row under the cursor in the
       -- sessions pane, the selected session elsewhere.
@@ -1010,6 +1011,7 @@ function M.validate(config)
       local fields = {
         "select",
         "new",
+        "new_alt",
         "follow_up",
         "stop",
         "delete",

@@ -1289,6 +1289,35 @@ describe("agents_view", function()
       expect(#launched).to_be(1)
     end)
 
+    it("takes the second new-agent key in the sessions pane and on a stopped session's screen", function()
+      local function key_on(buf, lhs)
+        for _, keymap in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
+          if keymap.lhs == lhs then
+            return keymap
+          end
+        end
+      end
+
+      agents_view.setup(base_config({ enabled = true, keymaps = { new_alt = "o" } }))
+      rows = { { session_id = "aaa", title = "First" } }
+      open_view()
+      expect(agents_view._state().notice_kind).to_be("offer")
+
+      key_on(agents_view._state().notice_buf, "o").callback()
+      expect(#launched).to_be(1)
+      key_on(agents_view._state().bufs.sessions, "o").callback()
+      expect(#launched).to_be(2)
+    end)
+
+    it("leaves the second new-agent key unbound when it is turned off", function()
+      agents_view.setup(base_config({ enabled = true, keymaps = { new_alt = false } }))
+      rows = { { session_id = "aaa", title = "First" } }
+      open_view()
+      for _, keymap in ipairs(vim.api.nvim_buf_get_keymap(agents_view._state().notice_buf, "n")) do
+        expect(keymap.lhs ~= "o").to_be_true()
+      end
+    end)
+
     it("leaves <CR> unbound on a notice screen when the select key is turned off", function()
       agents_view.setup(base_config({ enabled = true, keymaps = { select = false } }))
       open_view()
