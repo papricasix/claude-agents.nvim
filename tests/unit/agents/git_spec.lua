@@ -383,4 +383,178 @@ describe("agents.git", function()
       expect(none).to_be_nil()
     end)
   end)
+
+  describe("the worktree a session's changes are in", function()
+    -- A worktree made with `git worktree add` is a sibling folder whose `.git` is
+    -- a file naming its own directory inside the repository. The CLI records none
+    -- of it: the session keeps running in the project and edits there by path.
+    local loop = vim.uv or vim.loop
+    local saved
+    local fs -- [path] = "dir" | file text
+    local links -- [path prefix] = what it really is
+
+    ---@param path string
+    ---@return string
+    local function resolve(path)
+      for from, to in pairs(links) do
+        if path:sub(1, #from) == from then
+          path = to .. path:sub(#from + 1)
+        end
+      end
+      local parts = {}
+      for part in path:gmatch("[^/]+") do
+        if part == ".." then
+          parts[#parts] = nil
+        elseif part ~= "." then
+          parts[#parts + 1] = part
+        end
+      end
+      return "/" .. table.concat(parts, "/")
+    end
+
+    before_each(function()
+      fs, links = {}, {}
+      saved = {
+        fs_stat = loop.fs_stat,
+        fs_open = loop.fs_open,
+        fs_read = loop.fs_read,
+        fs_close = loop.fs_close,
+        fs_realpath = loop.fs_realpath,
+      }
+      loop.fs_stat = function(path)
+        local entry = fs[resolve(path)]
+        if entry == nil then
+          return nil
+        end
+        return { type = entry == "dir" and "directory" or "file" }
+      end
+      loop.fs_open = function(path)
+        local real = resolve(path)
+        return type(fs[real]) == "string" and fs[real] ~= "dir" and real or nil
+      end
+      loop.fs_read = function(fd)
+        return fs[fd]
+      end
+      loop.fs_close = function()
+        return true
+      end
+      loop.fs_realpath = function(path)
+        local real = resolve(path)
+        return fs[real] ~= nil and real or nil
+      end
+      package.loaded["claude_agents.agents.git"] = nil
+      git = require("claude_agents.agents.git")
+
+      -- The project, and a worktree beside it on its own branch.
+      fs["/w/proj/.git"] = "dir"
+      fs["/w/proj/.git/worktrees/proj-fix"] = "dir"
+      fs["/w/proj/.git/worktrees/proj-fix/HEAD"] = "ref: refs/heads/fix/thing\n"
+      fs["/w/proj-fix/.git"] = "gitdir: /w/proj/.git/worktrees/proj-fix\n"
+    end)
+
+    after_each(function()
+      for name, fn in pairs(saved) do
+        loop[name] = fn
+      end
+    end)
+
+    it("names the worktree a change went to, and its branch", function()
+      local worktree = git.worktree_of_changes("/w/proj", { "/w/proj-fix/lua/a.lua" })
+      assert.same({ path = "/w/proj-fix", name = "proj-fix", branch = "fix/thing" }, worktree)
+    end)
+
+    it("keeps it while notes and journals are written in the main checkout", function()
+      -- Work kept in a worktree for its commits still writes untracked files in
+      -- the project beside it; the newest change alone would drop the mark at
+      -- every one of them.
+      local worktree = git.worktree_of_changes("/w/proj", {
+        "/w/proj/docs/journals/plan.md",
+        "/w/proj/scratchpad/try.sh",
+        "/w/proj-fix/lua/a.lua",
+      })
+      expect(worktree.name).to_be("proj-fix")
+    end)
+
+    it("takes the worktree changed most recently", function()
+      fs["/w/proj/.git/worktrees/proj-two"] = "dir"
+      fs["/w/proj-two/.git"] = "gitdir: /w/proj/.git/worktrees/proj-two\n"
+      local worktree = git.worktree_of_changes("/w/proj", { "/w/proj-two/b.lua", "/w/proj-fix/a.lua" })
+      expect(worktree.name).to_be("proj-two")
+      -- Detached: no branch to name.
+      expect(worktree.branch).to_be_nil()
+    end)
+
+    it("answers nothing for changes in the main checkout alone", function()
+      expect(git.worktree_of_changes("/w/proj", { "/w/proj/lua/a.lua" })).to_be_nil()
+      expect(git.worktree_of_changes("/w/proj", {})).to_be_nil()
+    end)
+
+    it("answers nothing once the worktree is removed", function()
+      expect(git.worktree_of_changes("/w/proj", { "/w/proj-fix/a.lua" })).not_to_be_nil()
+      -- `git worktree remove`: the folder goes, while the walk up from it is
+      -- still remembered.
+      fs["/w/proj-fix/.git"] = nil
+      expect(git.worktree_of_changes("/w/proj", { "/w/proj-fix/a.lua" })).to_be_nil()
+    end)
+
+    it("passes over changes outside the repository", function()
+      -- Another repository's worktree, a submodule (a repository of its own,
+      -- though its `.git` is a file too) and a file in no repository at all.
+      fs["/w/other/.git"] = "dir"
+      fs["/w/other/.git/worktrees/other-wt"] = "dir"
+      fs["/w/other-wt/.git"] = "gitdir: /w/other/.git/worktrees/other-wt\n"
+      fs["/w/proj/vendor/lib/.git"] = "gitdir: ../../.git/modules/lib\n"
+      fs["/w/proj/.git/modules/lib"] = "dir"
+      local worktree = git.worktree_of_changes("/w/proj", {
+        "/w/other-wt/x.lua",
+        "/w/proj/vendor/lib/y.lua",
+        "/home/me/.claude/memory/z.md",
+      })
+      expect(worktree).to_be_nil()
+    end)
+
+    it("reads a gitdir git wrote relative to the worktree", function()
+      fs["/w/proj/.git/worktrees/proj-rel"] = "dir"
+      fs["/w/proj/.git/worktrees/proj-rel/HEAD"] = "ref: refs/heads/rel\n"
+      fs["/w/proj-rel/.git"] = "gitdir: ../proj/.git/worktrees/proj-rel\n"
+      local worktree = git.worktree_of_changes("/w/proj", { "/w/proj-rel/a.lua" })
+      expect(worktree and worktree.name).to_be("proj-rel")
+      expect(worktree.branch).to_be("rel")
+    end)
+
+    it("knows the repository however its directory is spelled", function()
+      -- git writes the real path into the worktree's `.git`; the session may run
+      -- in the project through a symlink (`/tmp` is one on macOS).
+      links["/link"] = "/w"
+      local worktree = git.worktree_of_changes("/link/proj", { "/link/proj-fix/a.lua" })
+      expect(worktree and worktree.name).to_be("proj-fix")
+    end)
+
+    it("names the worktree the session runs in when it changed nothing there", function()
+      local worktree = git.worktree_of_changes("/w/proj-fix", { "/w/proj/a.lua" })
+      expect(worktree and worktree.name).to_be("proj-fix")
+      expect(git.worktree_of_changes("/w/proj-fix", {})).not_to_be_nil()
+    end)
+
+    it("answers nothing for a session outside any repository", function()
+      expect(git.worktree_of_changes("/nowhere", { "/w/proj-fix/a.lua" })).to_be_nil()
+      expect(git.worktree_of_changes(nil, { "/w/proj-fix/a.lua" })).to_be_nil()
+    end)
+
+    it("answers from a fast context, where vim.fn raises", function()
+      -- The model asks while painting, but its folds land in libuv callbacks.
+      local real_fn = vim.fn
+      vim.fn = setmetatable({}, {
+        __index = function(_, name)
+          return function()
+            error("E5560: vim.fn." .. name .. " must not be called in a fast event context")
+          end
+        end,
+      })
+      local ok, worktree = pcall(git.worktree_of_changes, "/w/proj", { "/w/proj/n.md", "/w/proj-fix/a.lua" })
+      vim.fn = real_fn
+      expect(ok).to_be_true()
+      expect(worktree and worktree.name).to_be("proj-fix")
+    end)
+  end)
 end)

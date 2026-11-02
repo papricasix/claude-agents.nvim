@@ -383,6 +383,134 @@ function M.forget_roots()
   roots = {}
 end
 
+---The start of a small file — a `.git` file, a `HEAD` — read with libuv alone,
+---since the caller may be in a fast context.
+---@param path string
+---@return string|nil
+local function read_small(path)
+  local fd = uv and uv.fs_open(path, "r", 438)
+  if not fd then
+    return nil
+  end
+  local text = uv.fs_read(fd, 4096, 0)
+  uv.fs_close(fd)
+  return type(text) == "string" and text or nil
+end
+
+---@class ClaudeCodeAgentsCheckout One checkout of a git repository.
+---@field root string The working copy's top directory.
+---@field gitdir string Its own git directory.
+---@field common string The repository's directory, which every checkout of it shares.
+---@field linked boolean Added with `git worktree add`, rather than the repository's main checkout.
+
+---What kind of checkout a working copy is, from the `.git` at its top.
+---
+---The main checkout has a `.git` directory, which is the repository. A linked
+---worktree has a `.git` file naming its own directory inside the repository,
+---`gitdir: <repo>/.git/worktrees/<name>` (relative when git is told to write it
+---so); a submodule's file names `<super>/.git/modules/<name>`, which is a
+---repository of its own.
+---@param root string A directory holding a `.git`.
+---@return ClaudeCodeAgentsCheckout|nil checkout nil when it has none (any more).
+function M.checkout(root)
+  local marker = root .. "/.git"
+  local stat = uv and uv.fs_stat(marker)
+  if not stat then
+    return nil
+  end
+  if stat.type == "directory" then
+    return { root = root, gitdir = marker, common = marker, linked = false }
+  end
+  local gitdir = (read_small(marker) or ""):match("^gitdir:%s*(.-)%s*$")
+  if not gitdir or gitdir == "" then
+    return nil
+  end
+  if not is_absolute(gitdir) then
+    gitdir = root .. "/" .. gitdir
+  end
+  local common = gitdir:match("^(.*)[/\\]worktrees[/\\][^/\\]+[/\\]?$")
+  return { root = root, gitdir = gitdir, common = common or gitdir, linked = common ~= nil }
+end
+
+--- Separators are case-folded with the rest on Windows, where both spellings of a
+--- drive letter name one directory. Decided once, at load: `utils.path_key` asks
+--- `vim.fn`, which a fast context does not allow.
+local FOLD_CASE = package.config:sub(1, 1) == "\\"
+
+---One spelling for a repository's directory: git writes the real path into a
+---worktree's `.git` file, while the session's own directory may reach the same
+---repository through a symlink (`/tmp` on macOS).
+---@param path string
+---@return string
+local function repository_key(path)
+  local real = (uv and uv.fs_realpath(path)) or path
+  local key = real:gsub("\\", "/"):gsub("/+$", "")
+  return FOLD_CASE and key:lower() or key
+end
+
+---@param dir string
+---@return string
+local function basename(dir)
+  return dir:match("([^/\\]+)[/\\]*$") or dir
+end
+
+---The worktree a session works in, read from where it changed things: the
+---linked worktree of its own repository it changed a file in most recently,
+---while that worktree is still there; else the checkout it runs in, when that is
+---a linked worktree.
+---
+---The CLI records the worktrees it makes (`EnterWorktree`, `--worktree`). One
+---made with `git worktree add` — a sibling folder beside the project, say — it
+---knows nothing of: the session keeps running in the project and edits the
+---worktree's files by their paths.
+---
+---Not simply the checkout of its newest change. Work kept in a worktree for its
+---commits still writes untracked notes, journals and scratch files in the main
+---checkout beside it, and each of those would take the answer away until the
+---next edit in the worktree. A worktree is over when it is removed, and its
+---checkout then answers nothing. A change outside the repository (a memory file,
+---the temporary scratchpad, another repository) is passed over.
+---
+---libuv only, like the rest of the walk.
+---@param cwd string|nil Where the session runs.
+---@param paths string[] Files it changed, newest change first.
+---@return ClaudeCodeAgentsWorktree|nil
+function M.worktree_of_changes(cwd, paths)
+  if type(cwd) ~= "string" or cwd == "" then
+    return nil
+  end
+  local home_root = M.root_of(cwd .. "/")
+  local home = home_root and M.checkout(home_root)
+  if not home then
+    return nil
+  end
+  local repository = repository_key(home.common)
+
+  local found
+  local seen = {}
+  for _, path in ipairs(type(paths) == "table" and paths or {}) do
+    local root = M.root_of(path)
+    if root and not seen[root] then
+      seen[root] = true
+      local checkout = M.checkout(root)
+      if checkout and checkout.linked and repository_key(checkout.common) == repository then
+        found = checkout
+        break
+      end
+    end
+  end
+  found = found or home
+  if not found.linked then
+    return nil
+  end
+  local head = read_small(found.gitdir .. "/HEAD")
+  return {
+    path = found.root,
+    name = basename(found.root),
+    branch = head and head:match("^ref:%s*refs/heads/(.-)%s*$") or nil,
+  }
+end
+
 ---Status letters for paths that need not share a working copy.
 ---
 ---`status` asks one repository, and a path outside it is answered with silence:

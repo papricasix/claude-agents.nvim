@@ -1289,6 +1289,77 @@ function M.set_sort(key, desc)
   return M.sort_mode()
 end
 
+--- How long a worktree read from a session's changes is trusted before its
+--- checkout is looked at again: one removed with `git worktree remove` stops
+--- being where the session works, and nothing in the transcript says so.
+local WORKED_IN_RECHECK_MS = 2000
+
+--- `[summary] = { lines, size, at, worktree }`: what `worked_in` last read from a
+--- fold. Keyed weakly by the summary table, which a refold replaces.
+local worked = setmetatable({}, { __mode = "k" })
+
+---The files a session changed, newest change first.
+---@param summary ClaudeCodeAgentsSummary
+---@return string[]
+local function changed_newest_first(summary)
+  local changed = {}
+  for index, path in ipairs(summary.order or {}) do
+    local file = summary.files and summary.files[path]
+    local edits = file and file.edits
+    local last = edits and edits[#edits]
+    if last then
+      changed[#changed + 1] = { path = path, at = last.to or last.ts or 0, index = index }
+    end
+  end
+  table.sort(changed, function(a, b)
+    if a.at ~= b.at then
+      return a.at > b.at
+    end
+    return a.index > b.index
+  end)
+  local paths = {}
+  for i, entry in ipairs(changed) do
+    paths[i] = entry.path
+  end
+  return paths
+end
+
+---The worktree a row's conversation works in, wherever that is.
+---
+---What the CLI stamped wins, and that includes its saying "none" (`false`): it
+---only stamps the worktrees it makes itself. Otherwise the answer is read from
+---the session's changes (`git.worktree_of_changes`), which is what finds a
+---worktree made with `git worktree add` — the session keeps running in the
+---project and edits the worktree's files by their paths.
+---@param row table
+---@return ClaudeCodeAgentsWorktree|nil
+local function worked_in(row)
+  if row.worktree then
+    return row.worktree
+  end
+  local summary = row.path and transcript.get(row.path)
+  if not summary or summary.worktree == false then
+    return nil
+  end
+  local ok, git = pcall(require, "claude_agents.agents.git")
+  if not ok or type(git.worktree_of_changes) ~= "function" then
+    return nil
+  end
+  local now = M._now_ms()
+  local memo = worked[summary]
+  if
+    memo
+    and memo.lines == summary.lines
+    and memo.size == summary.size
+    and (memo.worktree == nil or now - memo.at < WORKED_IN_RECHECK_MS)
+  then
+    return memo.worktree
+  end
+  local worktree = git.worktree_of_changes(summary.cwd or row.cwd, changed_newest_first(summary))
+  worked[summary] = { lines = summary.lines, size = summary.size, at = now, worktree = worktree }
+  return worktree
+end
+
 ---The worktree a row's conversation works in, when that is somewhere other than
 ---the directory this view is attached to.
 ---
@@ -1298,7 +1369,7 @@ end
 ---@param row table
 ---@return ClaudeCodeAgentsWorktree|nil
 local function worktree_elsewhere(row)
-  local worktree = row.worktree
+  local worktree = worked_in(row)
   if not worktree then
     return nil
   end
@@ -2149,15 +2220,17 @@ end
 ---works in, else the directory it ran in.
 ---
 ---Not where it is resumed (`row.cwd`, see `place_of`). In a worktree every file
----the conversation touches is under `<repo>/.claude/worktrees/<name>/`, and named
----from the repository that prefix is most of a pane's width on every row. A file
----it touched outside the worktree — before it entered, say — keeps its whole
----path, which is right: it is a different checkout's file of the same name.
+---the conversation touches is under `<repo>/.claude/worktrees/<name>/` (or the
+---folder `git worktree add` made), and named from the repository that prefix is
+---most of a pane's width on every row. A file it touched outside the worktree —
+---before it entered, say — keeps its whole path, which is right: it is a
+---different checkout's file of the same name.
 ---@return string|nil cwd
 function M.selected_cwd()
   local row = state.selected and state.by_id[state.selected]
-  if row and row.worktree then
-    return row.worktree.path
+  local worktree = row and worked_in(row)
+  if worktree then
+    return worktree.path
   end
   return (row and row.cwd) or state.cwd
 end

@@ -22,6 +22,8 @@ describe("agents.model", function()
   local invalidated -- paths whose fold the model dropped
   local rehomed -- [old path] = the fold the stubbed store carries over to a moved transcript
   local git_roots -- [path] = the working copy the stubbed git says a file is in
+  local changes_worktree -- the worktree the stubbed git reads out of a session's changes
+  local worktree_asks -- every question put to it, in order
 
   local function summary_for(id, fields)
     return vim.tbl_extend("force", {
@@ -42,6 +44,7 @@ describe("agents.model", function()
     summaries, scans, live, git_calls, scheduled, deleted, stale = {}, {}, {}, 0, {}, {}, {}
     git_result = {}
     elsewhere, locates, invalidated, git_roots, rehomed = {}, {}, {}, {}, {}
+    changes_worktree, worktree_asks = nil, {}
     launch_names, launch_times = {}, {}
     held, provisional_calls = {}, {}
 
@@ -178,6 +181,12 @@ describe("agents.model", function()
         cb(git_result)
       end,
       forget_roots = function() end,
+      -- Which checkout a change is in is the git spec's to pin down; here a spec
+      -- names the worktree a session's changes say it works in.
+      worktree_of_changes = function(cwd, paths)
+        worktree_asks[#worktree_asks + 1] = { cwd = cwd, paths = paths }
+        return changes_worktree
+      end,
     }
     -- The grouping is the git spec's to pin down. Here every file is in the
     -- project unless a spec says otherwise, and `status` is looked up per call
@@ -744,6 +753,109 @@ describe("agents.model", function()
       model.refresh_list()
       expect(row_of("aaa").worktree).to_be_nil()
       expect(model.selected_cwd()).to_be("/proj")
+    end)
+
+    describe("in a worktree the CLI did not make", function()
+      -- `git worktree add ../proj-fix`: the CLI stamps nothing, the session keeps
+      -- running in the project, and only the files it changes say where it works.
+      local SIBLING = { path = "/proj-fix", name = "proj-fix", branch = "fix/thing" }
+
+      local function changed_files()
+        return {
+          files = {
+            ["/proj/notes.md"] = { kind = "edit", edits = { { ts = 10, kind = "edit" } } },
+            ["/proj/read.lua"] = { kind = "read", edits = {} },
+            ["/proj-fix/a.lua"] = { kind = "edit", edits = { { ts = 5, kind = "edit" }, { ts = 30, kind = "edit" } } },
+            -- A shell command's change is dated by when it ended.
+            ["/proj-fix/b.lua"] = { kind = "edit", edits = { { ts = 20, to = 50, kind = "edit", via = "bash" } } },
+          },
+          order = { "/proj/notes.md", "/proj/read.lua", "/proj-fix/a.lua", "/proj-fix/b.lua" },
+          lines = 40,
+          size = 4000,
+        }
+      end
+
+      it("marks the session with the worktree its changes went to", function()
+        changes_worktree = SIBLING
+        summaries.aaa = summary_for("aaa", changed_files())
+        summaries.bbb = summary_for("bbb")
+        model.attach(1, "/proj")
+        model.select("aaa")
+
+        expect(row_of("aaa").worktree.name).to_be("proj-fix")
+        expect(model.worktree_of("aaa").branch).to_be("fix/thing")
+        -- Named from the worktree, like one the CLI made; resumed where it runs.
+        expect(model.selected_cwd()).to_be("/proj-fix")
+        expect(model.row("aaa").cwd).to_be("/proj")
+      end)
+
+      it("hands git the changed files newest first, leaving reads out", function()
+        summaries.aaa = summary_for("aaa", changed_files())
+        model.attach(1, "/proj")
+        model.rows()
+
+        local ask = worktree_asks[#worktree_asks]
+        expect(ask.cwd).to_be("/proj")
+        assert.same({ "/proj-fix/b.lua", "/proj-fix/a.lua", "/proj/notes.md" }, ask.paths)
+      end)
+
+      it("asks once per fold, and again when the transcript grew", function()
+        summaries.aaa = summary_for("aaa", changed_files())
+        model.attach(1, "/proj")
+        model.rows()
+        local asked = #worktree_asks
+        model.rows()
+        model.worktree_of("aaa")
+        expect(#worktree_asks).to_be(asked)
+
+        summaries.aaa.lines = 41
+        model.rows()
+        expect(#worktree_asks).to_be(asked + 1)
+      end)
+
+      it("looks again at a worktree it found, since removing one leaves no trace", function()
+        local clock = 1000
+        model._now_ms = function()
+          return clock
+        end
+        changes_worktree = SIBLING
+        summaries.aaa = summary_for("aaa", changed_files())
+        model.attach(1, "/proj")
+        expect(row_of("aaa").worktree).not_to_be_nil()
+
+        -- `git worktree remove`: the transcript has not moved.
+        changes_worktree = nil
+        clock = clock + 500
+        expect(row_of("aaa").worktree).not_to_be_nil()
+        clock = clock + 2000
+        expect(row_of("aaa").worktree).to_be_nil()
+      end)
+
+      it("believes the CLI when it said the session is in no worktree", function()
+        -- Its word on the worktrees it makes: left, or never entered one.
+        changes_worktree = SIBLING
+        summaries.aaa = summary_for("aaa", vim.tbl_extend("force", changed_files(), { worktree = false }))
+        model.attach(1, "/proj")
+
+        expect(row_of("aaa").worktree).to_be_nil()
+        expect(#worktree_asks).to_be(0)
+      end)
+
+      it("believes the CLI's own worktree over the changes", function()
+        changes_worktree = SIBLING
+        summaries.aaa = summary_for("aaa", vim.tbl_extend("force", changed_files(), { worktree = WORKTREE }))
+        model.attach(1, "/proj")
+
+        expect(row_of("aaa").worktree.name).to_be("wt1")
+      end)
+
+      it("does not mark it in a view opened inside that worktree", function()
+        changes_worktree = SIBLING
+        summaries.aaa = summary_for("aaa", changed_files())
+        model.attach(1, "/proj-fix")
+
+        expect(row_of("aaa").worktree).to_be_nil()
+      end)
     end)
 
     it("keeps the mark and the title while a moved transcript is still unread", function()
