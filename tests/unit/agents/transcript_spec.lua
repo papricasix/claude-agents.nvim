@@ -1795,6 +1795,196 @@ describe("agents.transcript", function()
     it("answers nil for a transcript that is not there", function()
       expect(history("/p/missing.jsonl", "/proj/x.lua")).to_be_nil()
     end)
+
+    describe("of a session and its subagents together", function()
+      local SESSION, RUN = "/p/s.jsonl", "/p/s/subagents/agent-a1.jsonl"
+
+      local function merged(paths, file)
+        local result, called = nil, false
+        transcript.merged_history(paths, file, function(hist)
+          result, called = hist, true
+        end)
+        assert.is_true(called, "merged_history() did not answer")
+        return result
+      end
+
+      local function edit(id, old, new, ts, extra)
+        return result_line(
+          id,
+          vim.tbl_extend("force", {
+            filePath = "/proj/x.lua",
+            oldString = old,
+            newString = new,
+            structuredPatch = patch({ "-" .. old, "+" .. new }),
+          }, extra or {}),
+          ts
+        )
+      end
+
+      it("puts every step in the order it happened, to the millisecond", function()
+        -- The subagent's edit lands between two of the session's inside one second.
+        put(SESSION, {
+          edit("toolu_s1", "a", "b", "2026-08-02T20:19:59.100Z"),
+          edit("toolu_s2", "c", "d", "2026-08-02T20:19:59.900Z"),
+        })
+        put(RUN, { edit("toolu_r1", "b", "c", "2026-08-02T20:19:59.500Z") })
+        local hist = merged({ SESSION, RUN }, "/proj/x.lua")
+        local ids = {}
+        for _, step in ipairs(hist.steps) do
+          ids[#ids + 1] = step.tool_id
+        end
+        expect(table.concat(ids, ",")).to_be("toolu_s1,toolu_r1,toolu_s2")
+        expect(table.concat(hist.sources, ",")).to_be("1,2,1")
+        expect(#hist.hunks).to_be(3)
+        expect(hist.hunks[2]).to_be(hist.steps[2].hunks[1])
+      end)
+
+      it("drops a read's picture of the file once another transcript wrote it in between", function()
+        put(SESSION, {
+          read_content_line("/proj/x.lua", "a\n", { ts = "2026-08-02T20:19:50.000Z" }),
+          edit("toolu_s1", "b", "c", "2026-08-02T20:19:59.000Z"),
+          -- What the call recorded itself is true whatever ran before it.
+          edit("toolu_s2", "c", "d", "2026-08-02T20:20:30.000Z", { originalFile = "c\n" }),
+        })
+        put(RUN, { edit("toolu_r1", "a", "b", "2026-08-02T20:19:55.000Z") })
+        local hist = merged({ SESSION, RUN }, "/proj/x.lua")
+        expect(hist.steps[2].tool_id).to_be("toolu_s1")
+        expect(hist.steps[2].before).to_be_nil()
+        expect(hist.steps[3].before).to_be("c\n")
+        -- The transcript's own history keeps it: only the merged view knows better.
+        expect(history(SESSION, "/proj/x.lua").steps[1].before).to_be("a\n")
+      end)
+
+      it("keeps a read's picture when nothing else wrote the file since", function()
+        put(SESSION, {
+          read_content_line("/proj/x.lua", "a\n", { ts = "2026-08-02T20:19:50.000Z" }),
+          edit("toolu_s1", "a", "b", "2026-08-02T20:19:59.000Z"),
+        })
+        put(RUN, { edit("toolu_r1", "b", "c", "2026-08-02T20:20:30.000Z") })
+        local hist = merged({ SESSION, RUN }, "/proj/x.lua")
+        expect(hist.steps[1].before).to_be("a\n")
+        -- And the record rebuilds the file across both transcripts.
+        local states = require("claude_agents.agents.patch").reconstruct(hist.steps, hist.read_anchor)
+        expect(table.concat(states[2], "|")).to_be("c")
+      end)
+
+      it("places the newest whole read after every step older than it", function()
+        put(SESSION, {
+          edit("toolu_s1", "a", "b", "2026-08-02T20:19:50.000Z"),
+          read_content_line("/proj/x.lua", "b\n", { ts = "2026-08-02T20:19:55.000Z" }),
+        })
+        put(RUN, { edit("toolu_r1", "b", "c", "2026-08-02T20:20:00.000Z") })
+        local hist = merged({ SESSION, RUN }, "/proj/x.lua")
+        expect(hist.read_anchor.step).to_be(1)
+        expect(hist.read_anchor.content).to_be("b\n")
+      end)
+
+      it("is the transcript's own history when only one touched the file", function()
+        put(SESSION, { edit("toolu_s1", "a", "b") })
+        put(RUN, { edit_line("/proj/elsewhere.lua", 1, 0) })
+        local hist = merged({ SESSION, RUN }, "/proj/x.lua")
+        expect(hist).to_be(history(SESSION, "/proj/x.lua"))
+      end)
+
+      it("hands out the same merged history while neither transcript has changed", function()
+        put(SESSION, { edit("toolu_s1", "a", "b", "2026-08-02T20:19:50.000Z") })
+        put(RUN, { edit("toolu_r1", "b", "c", "2026-08-02T20:20:00.000Z") })
+        local first = merged({ SESSION, RUN }, "/proj/x.lua")
+        expect(merged({ SESSION, RUN }, "/proj/x.lua")).to_be(first)
+        append(RUN, { edit("toolu_r2", "c", "d", "2026-08-02T20:20:10.000Z") })
+        local after = merged({ SESSION, RUN }, "/proj/x.lua")
+        expect(after == first).to_be_false()
+        expect(#after.steps).to_be(3)
+      end)
+    end)
+  end)
+
+  describe("run totals", function()
+    local RUN = "/p/s/subagents/agent-a1.jsonl"
+    local OTHER = "/p/gone/subagents/agent-b2.jsonl"
+
+    local function totals(path)
+      local result, called = nil, false
+      transcript.run_totals(path, function(t)
+        result, called = t, true
+      end)
+      assert.is_true(called, "run_totals() did not answer")
+      return result
+    end
+
+    it("folds a run's transcript once, then answers from what it read while the file is unchanged", function()
+      put(RUN, { edit_line("/proj/x.lua", 3, 1) })
+      local t = totals(RUN)
+      expect(t.added).to_be(3)
+      expect(t.removed).to_be(1)
+      local before = #reads
+      expect(totals(RUN).added).to_be(3)
+      expect(#reads).to_be(before)
+      expect(transcript.run_stale(RUN)).to_be_false()
+
+      append(RUN, { edit_line("/proj/x.lua", 2, 0) })
+      expect(transcript.run_stale(RUN)).to_be_true()
+      expect(totals(RUN).added).to_be(5)
+    end)
+
+    it("is kept in the warm cache for the runs of sessions it keeps, and read back", function()
+      put("/p/s.jsonl", { edit_line("/proj/x.lua", 1, 0) })
+      fold("/p/s.jsonl")
+      put(RUN, { edit_line("/proj/x.lua", 4, 2) })
+      put(OTHER, { edit_line("/proj/x.lua", 9, 9) })
+      totals(RUN)
+      totals(OTHER) -- its session is not one the cache keeps
+
+      local encode, fn_readable, fn_read = vim.json.encode, vim.fn.filereadable, vim.fn.readfile
+      vim.json.encode = _G.json_encode
+      transcript.cache_save()
+      local written = vim._written_files[transcript.cache_path()]
+      local saved = _G.json_decode(table.concat(written, "\n"))
+      expect(saved.runs[RUN].added).to_be(4)
+      expect(saved.runs[OTHER]).to_be_nil()
+
+      transcript.reset()
+      install_io()
+      vim.fn.filereadable = function()
+        return 1
+      end
+      vim.fn.readfile = function()
+        return written
+      end
+      local ok, err = pcall(transcript.cache_load)
+      vim.json.encode, vim.fn.filereadable, vim.fn.readfile = encode, fn_readable, fn_read
+      assert.is_true(ok, tostring(err))
+
+      local before = #reads
+      local t = totals(RUN)
+      expect(t.added).to_be(4)
+      expect(t.removed).to_be(2)
+      expect(#reads).to_be(before) -- from the warm record, unread
+    end)
+
+    it("says which workflow runs a run launched, from its fold or the warm record", function()
+      put(RUN, {
+        vim.json.encode({
+          type = "assistant",
+          timestamp = "2026-08-02T20:19:58.000Z",
+          message = {
+            role = "assistant",
+            content = { { type = "tool_use", id = "toolu_wf", name = "Workflow", input = {} } },
+          },
+        }),
+        vim.json.encode({
+          type = "user",
+          timestamp = "2026-08-02T20:19:59.000Z",
+          message = { role = "user", content = { { type = "tool_result", tool_use_id = "toolu_wf", content = "ok" } } },
+          toolUseResult = { status = "async_launched", taskId = "wt", taskType = "local_workflow", runId = "wf_9" },
+        }),
+      })
+      totals(RUN)
+      local launched = transcript.workflows_of(RUN)
+      expect(#launched).to_be(1)
+      expect(launched[1].run_id).to_be("wf_9")
+      expect(launched[1].task_id).to_be("wt")
+    end)
   end)
 
   describe("shell commands that changed files", function()
@@ -2343,6 +2533,119 @@ describe("agents.transcript", function()
       end
       expect(answered).to_be_true() -- callers are always answered, never stranded
       expect(transcript.get("/p/big.jsonl").added < 180).to_be_true()
+    end)
+
+    describe("a scan's state while it reads", function()
+      local queue, base
+
+      ---Reads wait in `queue` until a spec lets them land.
+      local function hold_reads()
+        transcript._chunk_size = 4096
+        queue = {}
+        base = transcript._io.read
+        transcript._io.read = function(path, offset, len, cb)
+          queue[#queue + 1] = function()
+            base(path, offset, len, cb)
+          end
+        end
+      end
+
+      ---Let `n` reads land, or every read until none is left (each landed read
+      ---queues the next).
+      local function land(n)
+        local left = n or math.huge
+        while left > 0 and #queue > 0 do
+          table.remove(queue, 1)()
+          left = left - 1
+        end
+      end
+
+      local function big(n)
+        local lines = {}
+        for _ = 1, n do
+          lines[#lines + 1] = edit_line("/proj/x.lua", 3, 0)
+        end
+        return lines
+      end
+
+      it("is partial until a fold from the top has read the whole file", function()
+        hold_reads()
+        put("/p/big.jsonl", big(60))
+        local answered = nil
+        transcript.summary("/p/big.jsonl", function(sum)
+          answered = sum
+        end)
+        land(1)
+        local reading = transcript.get("/p/big.jsonl")
+        -- Visible as it fills in, but no session row may call it folded yet.
+        expect(reading.added > 0).to_be_true()
+        expect(reading.partial).to_be_true()
+        expect(transcript.stale("/p/big.jsonl")).to_be_true()
+        land()
+        expect(answered.added).to_be(180)
+        expect(answered.partial).to_be_nil()
+      end)
+
+      it("stays partial when stopped part way, and the next ask starts over", function()
+        hold_reads()
+        put("/p/big.jsonl", big(60))
+        transcript.summary("/p/big.jsonl", function() end)
+        land(1)
+        transcript.cancel_all()
+        land()
+        local stopped = transcript.get("/p/big.jsonl")
+        expect(stopped.partial).to_be_true()
+        expect(stopped.size).to_be(0) -- not the file's size: it did not read all of it
+
+        transcript._io.read = base
+        expect(fold("/p/big.jsonl").added).to_be(180)
+      end)
+
+      it("carries an extension stopped part way on from where it got to", function()
+        put("/p/big.jsonl", big(10))
+        expect(fold("/p/big.jsonl").added).to_be(30)
+        hold_reads()
+        append("/p/big.jsonl", big(50))
+        transcript.summary("/p/big.jsonl", function() end)
+        land(1)
+        transcript.cancel_all()
+        land()
+        transcript._io.read = base
+        -- Every line counted once: the stopped part is not read again.
+        expect(fold("/p/big.jsonl").added).to_be(180)
+      end)
+
+      it("leaves the next scan's slot alone when a stopped one's last read lands", function()
+        hold_reads()
+        put("/p/big.jsonl", big(60))
+        transcript.summary("/p/big.jsonl", function() end)
+        land(1)
+        transcript.cancel_all()
+        local stale_read = table.remove(queue, 1)
+        -- Scans started from the top from here on.
+        local held = transcript._io.read
+        local from_top = 0
+        transcript._io.read = function(path, offset, len, cb)
+          if offset == 0 then
+            from_top = from_top + 1
+          end
+          held(path, offset, len, cb)
+        end
+        -- A new scan starts before the stopped one's read comes back.
+        local answers = 0
+        transcript.summary("/p/big.jsonl", function()
+          answers = answers + 1
+        end)
+        stale_read()
+        -- A third ask joins the scan in flight rather than starting another.
+        transcript.summary("/p/big.jsonl", function()
+          answers = answers + 1
+        end)
+        land()
+        expect(from_top).to_be(1)
+        expect(answers).to_be(2)
+        expect(transcript.get("/p/big.jsonl").added).to_be(180)
+      end)
     end)
   end)
 

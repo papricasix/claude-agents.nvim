@@ -1844,6 +1844,9 @@ describe("agents_view", function()
         transcript_path = function()
           return "/store/aaa.jsonl"
         end,
+        file_sources = function()
+          return { "/store/aaa.jsonl" }
+        end,
         rows = function()
           return {}
         end,
@@ -1911,6 +1914,61 @@ describe("agents_view", function()
     it("opens the row under the cursor", function()
       agents_view.open_under_cursor()
       expect(opened[1]).to_be("/proj/a.lua")
+    end)
+
+    describe("a subagent's worktree", function()
+      local ROOT = "/proj/.claude/worktrees/agent-x1"
+      local seen, subagent_opens
+
+      before_each(function()
+        seen, subagent_opens = nil, {}
+        payloads[1] = { path = ROOT .. "/p.lua", root = ROOT, worktree = { name = "rewrite", path = ROOT } }
+        payloads[2] =
+          { kind = "worktree", root = ROOT, agent_id = "x1", agent_path = "/store/aaa/subagents/agent-x1.jsonl" }
+        local file_view = package.loaded["claude_agents.agents.file_view"]
+        local open = file_view.open
+        file_view.open = function(opts, done)
+          seen = opts
+          open(opts, done)
+        end
+        package.loaded["claude_agents.agents.model"].file_sources = function(path)
+          return { "/store/aaa.jsonl", "/store/aaa/subagents/agent-x1.jsonl", path }
+        end
+        package.loaded["claude_agents.agents.subagent_view"] = {
+          open = function(opts, done)
+            subagent_opens[#subagent_opens + 1] = opts
+            if done then
+              done(nil)
+            end
+          end,
+        }
+      end)
+
+      after_each(function()
+        package.loaded["claude_agents.agents.subagent_view"] = nil
+      end)
+
+      it("opens a file in it named from the worktree, from every transcript that touched it", function()
+        agents_view.open_under_cursor()
+        expect(seen.cwd).to_be(ROOT)
+        expect(seen.worktree).to_be("rewrite")
+        expect(seen.transcripts[2]).to_be("/store/aaa/subagents/agent-x1.jsonl")
+        expect(seen.transcripts[3]).to_be(ROOT .. "/p.lua")
+      end)
+
+      it("steps over its rule, which is no file", function()
+        agents_view.open_under_cursor()
+        press("<C-n>")
+        expect(opened[2]).to_be("/proj/c.lua")
+      end)
+
+      it("opens the subagent that worked there from its rule", function()
+        vim.api.nvim_win_set_cursor(agents_view._state().wins.changes, { 2, 0 })
+        agents_view.open_under_cursor()
+        expect(#subagent_opens).to_be(1)
+        expect(subagent_opens[1].agent_id).to_be("x1")
+        expect(subagent_opens[1].path).to_be("/store/aaa/subagents/agent-x1.jsonl")
+      end)
     end)
 
     it("moves to the next file rather than the next session", function()
@@ -2088,6 +2146,9 @@ describe("agents_view", function()
         end,
         transcript_path = function()
           return "/store/" .. selected .. ".jsonl"
+        end,
+        file_sources = function()
+          return { "/store/" .. selected .. ".jsonl" }
         end,
         rows = function()
           return {}

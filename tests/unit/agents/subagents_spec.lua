@@ -236,6 +236,43 @@ describe("agents.subagents", function()
       expect(out[2].worktree).to_be("/proj/.claude/worktrees/agent-isolated")
     end)
 
+    it("knows a run that works in the worktree of the run that started it", function()
+      -- A run started by a worktree run, with no worktree of its own, records its
+      -- parent's (2.1.319: `inheritedWorktreePath`).
+      local root = "/proj/.claude/worktrees/agent-isolated"
+      agent("isolated", { first = NOW - 200, worktree = root })
+      agent("helper", { first = NOW - 100, parent = "isolated" })
+      local meta = DIR .. "/agent-helper.meta.json"
+      local decoded = _G.json_decode(fs[meta].data)
+      decoded.inheritedWorktreePath = root
+      decoded.spawnedWithWorktree = true
+      put(meta, { vim.json.encode(decoded) }, NOW - 100)
+
+      local by_id = {}
+      for _, run in ipairs(subagents.scan(SESSION)) do
+        by_id[run.id] = run
+      end
+      expect(by_id.helper.worktree).to_be(root)
+      expect(by_id.helper.worktree_inherited).to_be_true()
+      expect(by_id.isolated.worktree_inherited).to_be_nil()
+      -- The Tasks pane marks both.
+      for _, row in ipairs(rows({ live = true })) do
+        expect(row.worktree).to_be(root)
+      end
+    end)
+
+    it("says when the CLI removed a run's worktree for leaving nothing changed", function()
+      agent("tidy", { first = NOW - 100 })
+      local meta = DIR .. "/agent-tidy.meta.json"
+      local decoded = _G.json_decode(fs[meta].data)
+      decoded.spawnedWithWorktree = true
+      decoded.worktreeCleanlyRemoved = true
+      put(meta, { vim.json.encode(decoded) }, NOW - 100)
+      local run = subagents.scan(SESSION)[1]
+      expect(run.worktree).to_be_nil()
+      expect(run.worktree_removed).to_be_true()
+    end)
+
     it("draws a subagent whose parent it cannot see from the top", function()
       agent("orphan", { parent = "missing" })
       local out = rows({ live = true })
@@ -843,6 +880,20 @@ describe("agents.subagents", function()
           expect(out[2].phase).to_be("Review")
           expect(out[2].workflow).to_be("wtask")
           expect(out[2].path).to_be(RUN .. "/agent-a1.jsonl")
+        end)
+
+        it("counts a run's agents among the session's runs, beside its subagents", function()
+          put(SESSION, launch(NOW - 60))
+          agent("sub", { first = NOW - 55 })
+          run_agent("a1", "find bugs", "Review", NOW - 50)
+          put(RUN .. "/journal.jsonl", { '{"type":"started","agentId":"a1","label":"find bugs","phase":"Review"}' })
+          fold_all()
+          local seen = {}
+          for _, run in ipairs(subagents.runs(SESSION)) do
+            seen[#seen + 1] = run.id .. "=" .. run.path
+          end
+          table.sort(seen)
+          expect(table.concat(seen, "|")).to_be("a1=" .. RUN .. "/agent-a1.jsonl|sub=" .. DIR .. "/agent-sub.jsonl")
         end)
 
         it("takes the end from the run record, and calls an agent it cut off stopped", function()

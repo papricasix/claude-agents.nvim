@@ -51,6 +51,20 @@ function M.title(path, root, note)
   return utils.path_title(path, root, note, float.title_width())
 end
 
+---A title's note, with the worktree the file is in after it: `(vs HEAD) ⎇ fix
+---the parser`. A file in a worktree is named relative to it, which alone would
+---not say it is not the checkout's own.
+---@param worktree string|nil What the worktree is called (`model.changes`'s rule).
+---@param note string|nil
+---@return string|nil
+local function with_worktree(worktree, note)
+  if type(worktree) ~= "string" or worktree == "" then
+    return note
+  end
+  local mark = require("claude_agents.agents.render").WORKTREE_MARK .. " " .. worktree
+  return note and (note .. " " .. mark) or mark
+end
+
 ---@return boolean
 local function unified_available()
   return (pcall(require, "unified.diff"))
@@ -917,7 +931,7 @@ end
 ---no session's history can answer it. Same float, same inline rendering, a
 ---different baseline. In an svn working copy the baseline is `BASE`, the
 ---revision the file was last updated to, and the float says so.
----@param opts { session_id: string?, path: string, line: integer?, cwd: string?, reuse: integer? }
+---@param opts { session_id: string?, path: string, line: integer?, cwd: string?, worktree: string?, reuse: integer? }
 ---@param done fun(win: integer|nil)|nil
 function M.open_against_head(opts, done)
   local path = opts and opts.path
@@ -944,7 +958,7 @@ function M.open_against_head(opts, done)
         vim.notify("ClaudeCode: " .. reason, vim.log.levels.WARN)
         return finish(nil)
       end
-      local title = M.title(path, opts.cwd, "(deleted since " .. rev .. ")")
+      local title = M.title(path, opts.cwd, with_worktree(opts.worktree, "(deleted since " .. rev .. ")"))
       return finish(open_text_diff(opts.session_id, path, head, {}, title, opts.reuse, rev))
     end)
     return
@@ -963,7 +977,11 @@ function M.open_against_head(opts, done)
     -- Not committed: untracked, or added since. Diffing against nothing reads
     -- every line as an addition, which is what it is.
     local before = head or {}
-    local title = M.title(path, opts.cwd, head and ("(vs " .. rev .. ")") or ("(new since " .. rev .. ")"))
+    local title = M.title(
+      path,
+      opts.cwd,
+      with_worktree(opts.worktree, head and ("(vs " .. rev .. ")") or ("(new since " .. rev .. ")"))
+    )
 
     if head and M._same_lines(head, lines) then
       vim.notify("ClaudeCode: " .. name .. " matches " .. rev, vim.log.levels.INFO)
@@ -987,10 +1005,15 @@ end
 ---`era` (a Changes row between checkpoints) shows the edits inside that span as
 ---one diff (`open_range`), titled by the era's `note`; an era the history holds
 ---no step for falls back the same way.
----@param opts { session_id: string?, transcript: string?, path: string, line: integer?,
+---
+---`transcripts` are the session's transcript and its subagents' that touched the
+---file; their histories are read as one (`transcript.merged_history`). Without it,
+---`transcript` alone is read. `transcript` is also where an edit only a hook has
+---reported is held.
+---@param opts { session_id: string?, transcript: string?, transcripts: string[]?, path: string, line: integer?,
 ---             read: { start_line: integer, num_lines: integer }?, prefer: "diff"|"read"|"step"?,
 ---             tool_id: string?, era: { from: number?, to: number?, note: string }?,
----             cwd: string?, reuse: integer?, uncertain: boolean? }
+---             cwd: string?, worktree: string?, reuse: integer?, uncertain: boolean? }
 ---@param done fun(win: integer|nil)|nil Called once the float is up (the history read is async).
 function M.open(opts, done)
   local path = opts and opts.path
@@ -1011,7 +1034,7 @@ function M.open(opts, done)
     if caution then
       note = note and (note .. " " .. caution) or caution
     end
-    return M.title(path, opts.cwd, note)
+    return M.title(path, opts.cwd, with_worktree(opts.worktree, note))
   end
 
   local function finish(win)
@@ -1155,7 +1178,11 @@ function M.open(opts, done)
     return finish(win)
   end
 
-  transcript.file_history(opts.transcript, path, function(history)
+  local sources = opts.transcripts
+  if type(sources) ~= "table" or #sources == 0 then
+    sources = { opts.transcript }
+  end
+  transcript.merged_history(sources, path, function(history)
     if opts.prefer == "step" and opts.tool_id and history then
       for index, step in ipairs(history.steps or {}) do
         if step.tool_id == opts.tool_id then

@@ -3871,6 +3871,20 @@ function open_row(payload, pane, lnum, action, nav_opts)
     return
   end
 
+  -- The rule over a worktree's files in Changes: the run that worked there, as
+  -- `<CR>` on its Tasks row would show it. A worktree no known run was given (the
+  -- session's own, say) has no transcript of its own to show.
+  if payload and payload.kind == "worktree" then
+    if action ~= "diff" then
+      return opened(nil)
+    end
+    if not payload.agent_id then
+      logger.warn("agents", "no subagent of this session was given " .. tostring(payload.root))
+      return opened(nil)
+    end
+    payload = { kind = "subagent", agent_id = payload.agent_id, path = payload.agent_path, key = payload.key }
+  end
+
   -- A subagent run: its transcript, rendered. `<CR>` on one of its own subagents
   -- swaps that one into the same float, and the stepping keys are rebound there.
   if payload and payload.kind == "subagent" then
@@ -3908,12 +3922,17 @@ function open_row(payload, pane, lnum, action, nav_opts)
     return opened(nil)
   end
 
+  -- A file in a worktree is named from the worktree, and the float says which.
+  local root = payload.root or model.selected_cwd()
+  local worktree = type(payload.worktree) == "table" and payload.worktree.name or nil
+
   if action == "head" then
     file_view.open_against_head({
       session_id = model.selected(),
       path = payload.path,
       line = payload.line,
-      cwd = model.selected_cwd(),
+      cwd = root,
+      worktree = worktree,
       reuse = nav_opts.reuse,
     }, opened)
     return
@@ -3938,6 +3957,9 @@ function open_row(payload, pane, lnum, action, nav_opts)
   file_view.open({
     session_id = model.selected(),
     transcript = model.transcript_path(),
+    -- Its subagents' transcripts too, where they touched the file: what the
+    -- session did to it is what all of them did.
+    transcripts = model.file_sources(payload.path),
     path = payload.path,
     line = payload.line,
     read = read,
@@ -3947,7 +3969,8 @@ function open_row(payload, pane, lnum, action, nav_opts)
     era = payload.era,
     -- A shell command's change that may include someone else's says so on top.
     uncertain = payload.uncertain,
-    cwd = model.selected_cwd(),
+    cwd = root,
+    worktree = worktree,
     reuse = nav_opts.reuse,
   }, opened)
 end

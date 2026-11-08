@@ -960,6 +960,52 @@ describe("agents.render", function()
   end)
 
   describe("changes pane", function()
+    it("heads a worktree's files with a rule naming it, and names them from the worktree", function()
+      local changes = render.create_buf("changes")
+      local root = "/proj/.claude/worktrees/agent-x1"
+      render.changes(changes, {
+        { path = "/proj/a.lua", status = "M", added = 1, removed = 0 },
+        { kind = "worktree", root = root, name = "rewrite the parser", agent_id = "x1", agent_path = "/s/x1.jsonl" },
+        { path = root .. "/lua/p.lua", status = "M", added = 4, removed = 1, root = root, worktree = { name = "x" } },
+      }, { width = 40, cwd = "/proj" })
+
+      local lines = lines_of(changes)
+      expect(lines[1]:find("a.lua", 1, true) ~= nil).to_be_true()
+      expect(lines[2]:find("── " .. render.WORKTREE_MARK .. " rewrite the parser ─", 1, true) ~= nil).to_be_true()
+      expect(vim.fn.strdisplaywidth(lines[2])).to_be(40)
+      -- Relative to the worktree, not `.claude/worktrees/agent-x1/…` from the project.
+      expect(lines[3]:find(" lua/p.lua", 1, true) ~= nil).to_be_true()
+      expect(lines[3]:find(".claude", 1, true)).to_be_nil()
+
+      local rule = render.payload_at(changes, 2)
+      expect(rule.kind).to_be("worktree")
+      expect(rule.agent_id).to_be("x1")
+      expect(rule.path).to_be_nil() -- not a file: stepping and git pass over it
+      expect(render.payload_at(changes, 3).root).to_be(root)
+
+      local mark_hl = nil
+      for _, mark in ipairs(vim._extmarks or {}) do
+        if
+          mark.bufnr == changes
+          and mark.row == 1
+          and lines[2]:sub(mark.col + 1, mark.opts.end_col) == render.WORKTREE_MARK
+        then
+          mark_hl = mark.opts.hl_group
+        end
+      end
+      expect(mark_hl).to_be("ClaudeCodeAgentsWorktree")
+    end)
+
+    it("keys a worktree's rule by era, so the cursor holds on the right one", function()
+      local changes = render.create_buf("changes")
+      local root = "/proj/.claude/worktrees/agent-x1"
+      render.changes(changes, {
+        { kind = "worktree", root = root, name = "w", era = { index = 2 } },
+        { kind = "worktree", root = root, name = "w", era = { index = 1 } },
+      }, { width = 30, cwd = "/proj" })
+      expect(render.payload_at(changes, 1).key == render.payload_at(changes, 2).key).to_be_false()
+    end)
+
     it("draws the git letter next to transcript counts", function()
       local changes = render.create_buf("changes")
       render.changes(changes, {

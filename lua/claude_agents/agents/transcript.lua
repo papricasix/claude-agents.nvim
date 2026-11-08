@@ -120,6 +120,13 @@ local SHELL_COMMAND_LIMIT = 512
 --- Live summaries: [path] = ClaudeCodeAgentsSummary.
 local cache = {}
 
+--- What each run transcript (a subagent's, a workflow agent's) added up to when
+--- it was last folded, `[path] = { size, mtime, ino, added, removed, workflows }`,
+--- mirrored to the warm cache. A finished run's transcript never changes again,
+--- so while its file is the one these were read from, a session's row counts the
+--- run's work without reading it (`M.run_totals`).
+local run_totals = {}
+
 --- In-flight scans: [path] = { cancelled, rerun, waiters }.
 local inflight = {}
 
@@ -161,22 +168,25 @@ local config = nil
 ---@field path string The file.
 ---@field hunks table[] Every `structuredPatch` hunk for it, oldest edit first, annotated by `patch.annotate`.
 ---@field created boolean The session created the file (its first touch was a write with no patch).
----@field reads { start_line: integer, num_lines: integer, ts: number }[]
+---@field reads { start_line: integer, num_lines: integer, ts: number, at: number }[]
 ---@field content string|nil Content of the last `Write`, when the session wrote the whole file.
 ---@field steps ClaudeCodeAgentsFileStep[] The same edits one call at a time, oldest first.
----@field read_anchor { step: integer, content: string }|nil A whole-file read after the last step: the file as it stood then.
+---@field read_anchor { step: integer, content: string, at: number }|nil A whole-file read after the last step: the file as it stood then.
 ---@field reconstruction table<integer, string[]>|nil `patch.reconstruct`'s answer, memoised by `file_view`.
 ---@field last_ts number
+---@field sources integer[]|nil A history merged from several transcripts (`merge_histories`): which one each step came from, by position in the list it was given.
 
 ---@class ClaudeCodeAgentsFileStep One call that changed the file.
 ---@field tool_id string|nil The `toolu_…` id of the call (nil when the result names none).
 ---@field kind "edit"|"write"|"bash" A `Write` carries the whole file; an `Edit` only its patch; `bash` is a shell command's change, as the CLI diffed it.
 ---@field hunks table[] This call's own hunks — the same tables `hunks` above holds.
 ---@field before string|nil The file as the call found it: `originalFile`, a whole read just before, or `""` for a creation.
+---@field before_at number|nil When `before` was read, if it came from a whole read rather than from the call itself: true of the file only while nothing else wrote it in between.
 ---@field content string|nil The file as the `Write` left it (`""` for a shell command that deleted it).
 ---@field created boolean The call created the file.
 ---@field unknown boolean|nil A shell command changed the file and the CLI kept no diff of it: nothing can be rebuilt across this step.
 ---@field ts number
+---@field at number The same moment with its fraction: what orders steps from several transcripts.
 
 ---@class ClaudeCodeAgentsEdit One change to a file, dated, as `touch_file` records it.
 ---@field ts number
@@ -234,7 +244,7 @@ local config = nil
 ---@field ino integer|nil
 ---@field offset integer Bytes consumed, always a line boundary.
 ---@field skipped integer Lines that decoded but matched no known shape.
----@field partial boolean|nil Counts came from the warm cache; no fold state yet.
+---@field partial boolean|nil Not a fold of the whole file: counts from the warm cache with no fold state yet, or a fold from the top that is still reading (or was stopped part way).
 
 ---@class ClaudeCodeAgentsWorktree A git worktree a conversation works in.
 ---@field path string The worktree's own directory.
@@ -2436,9 +2446,11 @@ end
 ---
 ---In place: `cache[path]` and `M.events(path)` hand the same table out, so the
 ---consumers holding it see the refold rather than a summary that stopped moving.
+---Marked `partial` until the refold reaches the end, like any fold from the top.
 ---@param sum ClaudeCodeAgentsSummary
 local function restart_summary(sum)
   local fresh = new_summary(sum.path)
+  fresh.partial = true
   fresh.rewinds = sum.rewinds
   for _, rewind in ipairs(fresh.rewinds) do
     rewind.dropped = 0
@@ -2575,6 +2587,58 @@ local function fold_chunks(sum, st, job, done)
   step()
 end
 
+---Whether a path is a run's transcript (a subagent's or a workflow agent's)
+---rather than a conversation's.
+---@param path string
+---@return boolean
+local function is_run_path(path)
+  return path:find("[/\\]subagents[/\\]") ~= nil
+end
+
+---The workflow runs a summary records launching, in the shape
+---`subagents.scan_workflow` takes.
+---@param sum ClaudeCodeAgentsSummary
+---@return table[]
+local function workflow_launches(sum)
+  local out = {}
+  for task_id, task in pairs(sum.tasks or {}) do
+    if task.task_type == "workflow" and type(task.run_id) == "string" then
+      out[#out + 1] = {
+        task_id = task_id,
+        task_type = "workflow",
+        run_id = task.run_id,
+        transcript_dir = task.transcript_dir,
+        started_ts = task.started_ts,
+      }
+    end
+  end
+  table.sort(out, function(a, b)
+    return a.task_id < b.task_id
+  end)
+  return out
+end
+
+---Whether a record was read from the file `st` describes.
+---@param rec { size: integer?, mtime: number?, ino: any }
+---@param st table
+---@return boolean
+local function same_file(rec, st)
+  return rec.size == st.size and rec.mtime == st.mtime and (rec.ino == nil or st.ino == nil or rec.ino == st.ino)
+end
+
+---@param path string
+---@param sum ClaudeCodeAgentsSummary A complete fold of it.
+local function remember_run(path, sum)
+  run_totals[path] = {
+    size = sum.size,
+    mtime = sum.mtime,
+    ino = sum.ino,
+    added = sum.added or 0,
+    removed = sum.removed or 0,
+    workflows = workflow_launches(sum),
+  }
+end
+
 ---Fold a transcript up to date, calling back with its summary.
 ---
 ---Returns the cached summary in the same tick when nothing changed. Concurrent
@@ -2608,17 +2672,39 @@ local function fold_summary(path, cb)
 
   if not can_extend(sum, st) then
     sum = new_summary(path)
+    -- Visible from the first chunk (`get` and `events` hand it out, and the
+    -- selected session's panes fill in as it reads), but not a fold of the file
+    -- until it has read all of it: a session row built from it in the meantime
+    -- would be called folded and keep a count of half the transcript.
+    sum.partial = true
     cache[path] = sum
   end
 
   local function finish()
+    -- A newer job may hold the slot by now: a cancelled scan's last read can land
+    -- after the next one started.
+    if inflight[path] == job then
+      inflight[path] = nil
+    end
+    if job.cancelled then
+      -- Stopped part way. What was read is kept, and so is the size it was read
+      -- against: a fold from the top stays `partial` and starts over when next
+      -- asked, an extension carries on from `offset`. Callers are still answered,
+      -- never stranded.
+      for _, waiter in ipairs(job.waiters) do
+        pcall(waiter, sum)
+      end
+      return
+    end
     sum.size = st.size
     sum.mtime = st.mtime
     sum.ino = st.ino
     sum.partial = nil
-    inflight[path] = nil
+    if is_run_path(path) then
+      remember_run(path, sum)
+    end
     local waiters = job.waiters
-    if job.rerun and not job.cancelled then
+    if job.rerun then
       -- The file grew while we were reading it; fold the remainder before
       -- answering, so no caller is ever handed knowingly stale counts.
       M.summary(path, function(fresh)
@@ -2661,6 +2747,77 @@ function M.summary(path, cb)
   when_current(path, function()
     fold_summary(path, cb)
   end)
+end
+
+---What a run's transcript (a subagent's, a workflow agent's) adds to its
+---session's counts: `{ added, removed, workflows }`, or nil when it has none.
+---
+---Answered without a read while the file is the one last folded — from a fold
+---in memory, else from the warm cache's record of one — and folded otherwise. A
+---session's row counts every run it started, and the runs' transcripts add up to
+---about as much as the sessions'; a finished run never changes, so after its
+---first fold this costs a stat. The callback may run in the same tick.
+---@param path string
+---@param cb fun(totals: { added: integer, removed: integer, workflows: table[] }|nil)
+function M.run_totals(path, cb)
+  local st = type(path) == "string" and M._io.stat(path) or nil
+  if not st then
+    cb(nil)
+    return
+  end
+  local warm = run_totals[path]
+  if warm and same_file(warm, st) then
+    cb(warm)
+    return
+  end
+  local sum = cache[path]
+  if sum and not sum.partial and same_file(sum, st) then
+    remember_run(path, sum)
+    cb(run_totals[path])
+    return
+  end
+  M.summary(path, function(fresh)
+    -- A scan stopped part way read only part of the run.
+    if not fresh or fresh.partial then
+      cb(nil)
+      return
+    end
+    remember_run(path, fresh)
+    cb(run_totals[path])
+  end)
+end
+
+---Whether a run's transcript has moved on since its totals were taken: one stat.
+---
+---`stale` asks of folds alone, and a run counted from the warm cache has none,
+---so it would read as moved on for ever.
+---@param path string
+---@return boolean
+function M.run_stale(path)
+  local st = type(path) == "string" and M._io.stat(path) or nil
+  if not st then
+    return false
+  end
+  local warm = run_totals[path]
+  if warm and same_file(warm, st) then
+    return false
+  end
+  local sum = cache[path]
+  return not (sum and not sum.partial and same_file(sum, st))
+end
+
+---The workflow runs a transcript records launching, in the shape
+---`subagents.scan_workflow` takes: from its fold, else from what the warm cache
+---remembers of a run transcript.
+---@param path string
+---@return table[]
+function M.workflows_of(path)
+  local sum = cache[path]
+  if sum and not sum.partial then
+    return workflow_launches(sum)
+  end
+  local warm = run_totals[path]
+  return warm and warm.workflows or {}
 end
 
 ---Whether a transcript has moved on since it was last folded: one stat, no read.
@@ -3368,7 +3525,8 @@ end
 ---@param entry table Decoded transcript line.
 ---@param diff table Its `bashEditDiff`.
 ---@param ts number
-local function fold_bash_history(hist, entry, diff, ts)
+---@param at number `ts` with its fraction.
+local function fold_bash_history(hist, entry, diff, ts, at)
   if diff.skipped == true then
     return
   end
@@ -3406,6 +3564,7 @@ local function fold_bash_history(hist, entry, diff, ts)
     created = created,
     unknown = unknown or nil,
     ts = ts,
+    at = at,
   }
   for _, hunk in ipairs(hunks) do
     hist.hunks[#hist.hunks + 1] = hunk
@@ -3414,6 +3573,7 @@ local function fold_bash_history(hist, entry, diff, ts)
     step.before = ""
   elseif hist.read_anchor and hist.read_anchor.step == #hist.steps then
     step.before = hist.read_anchor.content
+    step.before_at = hist.read_anchor.at
   end
   hist.read_anchor = nil
   hist.steps[#hist.steps + 1] = step
@@ -3431,9 +3591,16 @@ local function fold_history(hist, entry)
     return
   end
   local ts = M._iso_to_epoch(entry.timestamp)
+  -- Sub-second: steps from several transcripts are put in one order by it
+  -- (`merge_histories`), and a subagent's edits land milliseconds apart from
+  -- its parent's.
+  local at = M._iso_to_epoch_precise(entry.timestamp)
+  if at == 0 then
+    at = ts
+  end
 
   if type(result.bashEditDiff) == "table" then
-    fold_bash_history(hist, entry, result.bashEditDiff, ts)
+    fold_bash_history(hist, entry, result.bashEditDiff, ts, at)
     return
   end
 
@@ -3445,6 +3612,7 @@ local function fold_history(hist, entry)
         start_line = start_line,
         num_lines = tonumber(file.numLines) or 1,
         ts = ts,
+        at = at,
       }
     end
     -- A read of the whole file *is* the file at that moment (measured equal to
@@ -3456,7 +3624,7 @@ local function fold_history(hist, entry)
       and type(file.content) == "string"
       and not file.truncatedByTokenCap
     then
-      hist.read_anchor = { step = #hist.steps, content = file.content }
+      hist.read_anchor = { step = #hist.steps, content = file.content, at = at }
     end
     if ts > hist.last_ts then
       hist.last_ts = ts
@@ -3487,6 +3655,7 @@ local function fold_history(hist, entry)
     content = type(result.content) == "string" and result.content or nil,
     created = result.type == "create" or (#hunks == 0 and type(result.content) == "string"),
     ts = ts,
+    at = at,
   }
   for _, hunk in ipairs(hunks) do
     if type(hunk) == "table" and type(hunk.lines) == "table" then
@@ -3503,6 +3672,7 @@ local function fold_history(hist, entry)
     step.before = ""
   elseif hist.read_anchor and hist.read_anchor.step == #hist.steps then
     step.before = hist.read_anchor.content
+    step.before_at = hist.read_anchor.at
   end
   hist.read_anchor = nil
   hist.steps[#hist.steps + 1] = step
@@ -3650,6 +3820,176 @@ function M.file_history(transcript_path, file_path, cb)
   when_current(transcript_path, function()
     file_history_impl(transcript_path, file_path, cb)
   end)
+end
+
+---Several transcripts' histories of one file as one: a session's and its
+---subagents', which write the same files from the same process.
+---
+---Steps are put in the order they happened, by their sub-second times; a tie
+---keeps the order of `parts`, then each transcript's own. The anchors carry over
+---with one exception: a `before` that came from a whole read (`before_at`)
+---described the file when that transcript read it, and once another transcript
+---wrote the file in between it no longer does — so that step loses it, rather
+---than have `patch.reconstruct` rebuild from a file that never existed. A
+---`before` the call itself recorded (`originalFile`, a creation) is always true.
+---The whole read after the last step that survives is the newest one, placed
+---after every step older than it.
+---
+---One history comes back as it is, so its memoised reconstruction is kept.
+---@param path string
+---@param parts (ClaudeCodeAgentsFileHistory|false|nil)[] In the order ties are broken in.
+---@return ClaudeCodeAgentsFileHistory|nil
+function M.merge_histories(path, parts)
+  local present = {}
+  -- `pairs`, not `ipairs`: a transcript with no history of the file is a hole.
+  -- So is one that read the transcript and found nothing about the file.
+  for index, part in pairs(parts) do
+    if part and (#(part.steps or {}) > 0 or #(part.reads or {}) > 0 or part.read_anchor) then
+      present[#present + 1] = { hist = part, source = index }
+    end
+  end
+  table.sort(present, function(a, b)
+    return a.source < b.source
+  end)
+  if #present == 0 then
+    -- Nothing anywhere: the first transcript's empty history, as it answered.
+    for index = 1, #parts do
+      if parts[index] then
+        return parts[index] or nil
+      end
+    end
+    return nil
+  end
+  if #present == 1 then
+    return present[1].hist
+  end
+
+  local all = {}
+  for _, part in ipairs(present) do
+    for index, step in ipairs(part.hist.steps or {}) do
+      all[#all + 1] = { step = step, source = part.source, index = index, at = step.at or step.ts or 0 }
+    end
+  end
+  table.sort(all, function(a, b)
+    if a.at ~= b.at then
+      return a.at < b.at
+    end
+    if a.source ~= b.source then
+      return a.source < b.source
+    end
+    return a.index < b.index
+  end)
+
+  ---@type ClaudeCodeAgentsFileHistory
+  local hist = { path = path, hunks = {}, steps = {}, created = false, reads = {}, last_ts = 0, sources = {} }
+  for n, item in ipairs(all) do
+    local step = item.step
+    if step.before ~= nil and step.before_at ~= nil then
+      for m = n - 1, 1, -1 do
+        local earlier = all[m]
+        if earlier.at < step.before_at then
+          break
+        end
+        if earlier.source ~= item.source then
+          -- A copy: the step is the transcript's own cached table.
+          local copy = {}
+          for key, value in pairs(step) do
+            copy[key] = value
+          end
+          copy.before, copy.before_at = nil, nil
+          step = copy
+          break
+        end
+      end
+    end
+    hist.steps[n] = step
+    hist.sources[n] = item.source
+    for _, hunk in ipairs(step.hunks or {}) do
+      hist.hunks[#hist.hunks + 1] = hunk
+    end
+    if type(step.content) == "string" and step.kind == "write" then
+      hist.content = step.content
+    end
+  end
+  hist.created = all[1] ~= nil and all[1].step.created == true
+
+  local anchor = nil
+  for _, part in ipairs(present) do
+    local h = part.hist
+    for _, read in ipairs(h.reads or {}) do
+      hist.reads[#hist.reads + 1] = read
+    end
+    if (h.last_ts or 0) > hist.last_ts then
+      hist.last_ts = h.last_ts
+    end
+    local candidate = h.read_anchor
+    if candidate and (not anchor or (candidate.at or 0) > (anchor.at or 0)) then
+      anchor = candidate
+    end
+  end
+  table.sort(hist.reads, function(a, b)
+    return (a.at or a.ts or 0) < (b.at or b.ts or 0)
+  end)
+  if anchor then
+    local after = 0
+    for n, item in ipairs(all) do
+      if item.at <= (anchor.at or 0) then
+        after = n
+      end
+    end
+    hist.read_anchor = { step = after, content = anchor.content, at = anchor.at }
+  end
+  return hist
+end
+
+--- Merged histories already built, `[paths\0\0file] = { parts, history }`, handed
+--- out again while every part is the same table `file_history` cached — so the
+--- reconstruction `file_view` memoises on a history survives a reopen.
+local merged_cache = {}
+
+---Everything a session and its subagents did to one file (`merge_histories`).
+---
+---With one transcript this is `file_history`.
+---@param transcript_paths string[] The session's own first: ties are broken in this order.
+---@param file_path string
+---@param cb fun(history: ClaudeCodeAgentsFileHistory|nil)
+function M.merged_history(transcript_paths, file_path, cb)
+  local paths = {}
+  for _, path in ipairs(transcript_paths or {}) do
+    if type(path) == "string" then
+      paths[#paths + 1] = path
+    end
+  end
+  if #paths <= 1 then
+    M.file_history(paths[1], file_path, cb)
+    return
+  end
+  local parts, waiting = {}, #paths
+  for index, path in ipairs(paths) do
+    M.file_history(path, file_path, function(part)
+      parts[index] = part or false
+      waiting = waiting - 1
+      if waiting > 0 then
+        return
+      end
+      local key = table.concat(paths, "\0") .. "\0\0" .. file_path
+      local hit = merged_cache[key]
+      local same = hit ~= nil
+      for i = 1, #paths do
+        if not hit or hit.parts[i] ~= parts[i] then
+          same = false
+          break
+        end
+      end
+      if same then
+        cb(hit.history)
+        return
+      end
+      local history = M.merge_histories(file_path, parts)
+      merged_cache[key] = { parts = parts, history = history }
+      cb(history)
+    end)
+  end
 end
 
 --------------------------------------------------------------------------------
@@ -3887,6 +4227,8 @@ function M.reset()
   M.cancel_all()
   cache = {}
   history_cache = {}
+  merged_cache = {}
+  run_totals = {}
   cwd_cache = {}
   provisional = {}
 end
@@ -3958,16 +4300,31 @@ function M.cache_load()
       cache[file] = sum
     end
   end
+  -- A run's totals are only ever used while its file is the one they were read
+  -- from, so an entry from a file that has moved on since is harmless.
+  for file, rec in pairs(type(decoded.runs) == "table" and decoded.runs or {}) do
+    if type(rec) == "table" and not run_totals[file] then
+      run_totals[file] = {
+        size = tonumber(rec.size) or -1,
+        mtime = tonumber(rec.mtime) or -1,
+        ino = rec.ino,
+        added = tonumber(rec.added) or 0,
+        removed = tonumber(rec.removed) or 0,
+        workflows = type(rec.workflows) == "table" and rec.workflows or {},
+      }
+    end
+  end
 end
 
----Persist the display essentials of every folded session.
+---Persist the display essentials of every folded session, and the totals of
+---their runs.
 function M.cache_save()
   local path = M.cache_path()
   local entries = {}
   for file, sum in pairs(cache) do
-    -- Subagent transcripts are folded for the Subagents pane and never listed as
-    -- sessions, so a warm count for one would only grow the file.
-    if sum.size > 0 and not file:find("[/\\]subagents[/\\]") then
+    -- A run's transcript is never listed as a session: what a row needs of it is
+    -- its totals, kept apart below.
+    if sum.size > 0 and not is_run_path(file) then
       entries[file] = {
         name = sum.name,
         title = sum.title,
@@ -3985,9 +4342,18 @@ function M.cache_save()
       }
     end
   end
+  -- Only the runs of sessions kept above: the store holds every run ever folded,
+  -- and one whose session has left the list would only grow the file.
+  local runs = {}
+  for file, rec in pairs(run_totals) do
+    local base = file:match("^(.-)[/\\]subagents[/\\]")
+    if base and entries[base .. ".jsonl"] then
+      runs[file] = rec
+    end
+  end
   pcall(function()
     vim.fn.mkdir(path:match("^(.*)[/\\][^/\\]*$") or ".", "p")
-    local encoded = vim.json.encode({ version = CACHE_VERSION, entries = entries })
+    local encoded = vim.json.encode({ version = CACHE_VERSION, entries = entries, runs = runs })
     vim.fn.writefile(vim.split(encoded, "\n", { plain = true }), path)
   end)
 end

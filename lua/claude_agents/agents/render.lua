@@ -59,9 +59,10 @@ M.FLAG_MARK = FLAG_MARK
 
 --- What a session working in a git worktree wears, after the flag if it has one:
 --- its changes are in another checkout, on another branch, and nothing else on
---- the row says so. The same mark sets off a subagent that was given a worktree
---- of its own in the Tasks pane. U+2387, the branch glyph prompts fall back to
---- without a patched font: one cell wide and, like the flag, not emoji-capable.
+--- the row says so. The same mark sets off a subagent working in a worktree in
+--- the Tasks pane, and heads a worktree's files in Changes. U+2387, the branch
+--- glyph prompts fall back to without a patched font: one cell wide and, like
+--- the flag, not emoji-capable.
 local WORKTREE_MARK = "⎇"
 M.WORKTREE_MARK = WORKTREE_MARK
 
@@ -862,6 +863,45 @@ function M.rewind_line(event, width, now)
     }
 end
 
+---The rule a git worktree's files are listed under in Changes, and its payload.
+---
+---`── ⎇ rewrite the parser ──`: the files below it, down to the next rule, are in
+---that worktree — another checkout, on another branch — and are named relative to
+---it. It is called what the run that worked there was sent to do. Cut like a
+---checkpoint's name, so a stub of rule survives at the right edge. Inside a
+---checkpoint's era it heads that era's files from the worktree, so its key says
+---which era.
+---@param entry { root: string, name: string?, branch: string?, agent_id: string?, agent_path: string?, era: table? }
+---@param width integer
+---@return string line
+---@return table payload
+---@return integer mark_at Byte column the worktree mark starts at.
+function M.worktree_line(entry, width)
+  local head = GUTTER .. "── "
+  local mark_at = #head
+  head = head .. WORKTREE_MARK
+  local name = type(entry.name) == "string" and entry.name ~= "" and entry.name or entry.root
+  local room = width - vim.fn.strdisplaywidth(head) - vim.fn.strdisplaywidth(" ") - vim.fn.strdisplaywidth(" ──")
+  if room >= 2 then
+    head = head .. " " .. M.truncate(name, room)
+  end
+  head = head .. " "
+  local rest = width - vim.fn.strdisplaywidth(head)
+  local line = head .. string.rep("─", math.max(2, rest))
+  local era = entry.era
+  return line,
+    {
+      kind = "worktree",
+      root = entry.root,
+      name = entry.name,
+      branch = entry.branch,
+      agent_id = entry.agent_id,
+      agent_path = entry.agent_path,
+      key = "worktree\0" .. tostring(entry.root) .. (era and ("\0" .. tostring(era.index)) or ""),
+    },
+    mark_at
+end
+
 ---Add a checkpoint's rule to a pane being drawn: the line, its payload, and one
 ---mark across it.
 ---@param out { lines: string[], marks: table[], payloads: table<integer, table> }
@@ -1028,9 +1068,11 @@ end
 ---
 ---With checkpoints on the session, a file is listed once per era it was edited
 ---in (`entry.era`, carried on the row so `<CR>` opens that era's diff), and a
----`kind = "checkpoint"` entry is the rule between two eras.
+---`kind = "checkpoint"` entry is the rule between two eras. A `kind = "worktree"`
+---entry heads the files of a git worktree (`worktree_line`); each of those names
+---the worktree as its `root`, and is shown relative to it.
 ---@param buf integer
----@param entries table[] `{ path, status, added, removed, deleted, scratchpad, era }` or `{ kind = "checkpoint", ts, index }`
+---@param entries table[] `{ path, status, added, removed, deleted, scratchpad, era, root, worktree }`, `{ kind = "checkpoint", ts, index }` or `{ kind = "worktree", root, name }`
 ---@param opts { cwd: string?, width: integer?, now: number? }|nil
 function M.changes(buf, entries, opts)
   opts = opts or {}
@@ -1055,7 +1097,7 @@ function M.changes(buf, entries, opts)
       added = entry.added_age_ms,
       removed = entry.removed_age_ms,
     }, entry.unknown)
-    local path = M.relative_path(entry.path, opts.cwd)
+    local path = M.relative_path(entry.path, entry.root or opts.cwd)
     local head = string.format(" %s%s", status, entry.uncertain and UNCERTAIN_MARK or " ")
     -- Floors at 1 cell, so the counts stay inside the pane.
     local name =
@@ -1073,6 +1115,8 @@ function M.changes(buf, entries, opts)
       event_kind = entry.kind,
       era = era,
       uncertain = entry.uncertain,
+      root = entry.root,
+      worktree = entry.worktree,
       key = era and (entry.path .. "\0" .. tostring(era.index)) or entry.path,
     }
 
@@ -1101,6 +1145,15 @@ function M.changes(buf, entries, opts)
   for index, entry in ipairs(entries) do
     if entry.kind == "checkpoint" then
       push_checkpoint(out, index, entry, width, opts.now, hl("checkpoint"))
+    elseif entry.kind == "worktree" then
+      -- Drawn like a checkpoint's rule, with the mark in the worktree colour the
+      -- Sessions and Tasks panes give it.
+      local line, payload, mark_at = M.worktree_line(entry, width)
+      lines[#lines + 1] = line
+      payload_map[index] = payload
+      marks[#marks + 1] = { row = index - 1, col = 0, end_col = #line, hl = hl("checkpoint") }
+      marks[#marks + 1] =
+        { row = index - 1, col = mark_at, end_col = mark_at + #WORKTREE_MARK, hl = hl("worktree"), priority = 160 }
     else
       draw(index, entry)
     end
@@ -1172,8 +1225,9 @@ function M.subagents(buf, rows, opts)
     local is_workflow = row.kind == "workflow"
     local is_shell = row.kind == "shell"
     local is_monitor = is_shell and row.task_type == "monitor"
-    -- A subagent given a worktree of its own (`isolation: "worktree"`): what it
-    -- changes is not in the checkout the session works in.
+    -- A subagent working in a worktree — given one of its own (`isolation:
+    -- "worktree"`), or started by one that was: what it changes is not in the
+    -- checkout the session works in.
     local in_worktree = not is_shell and not is_workflow and row.worktree ~= nil
     local kind_mark = is_workflow and WORKFLOW_MARK or (is_monitor and MONITOR_MARK or SHELL_MARK)
     if in_worktree then

@@ -116,6 +116,14 @@ local function new_state()
     -- seconds`, until its result: the window its changes were made in, for a
     -- result the transcript does not hold yet (`transcript.provisional`).
     bash_started = {}, ---@type table<string, number>
+    -- What each conversation's runs (its subagents and workflow agents) changed
+    -- between them, `[session_id] = { added, removed }`, added to its row's
+    -- counts. Keyed by conversation, not kept on the row, for `interrupted`'s
+    -- reason: `refresh_list` replaces every row table. Absent until the runs have
+    -- been counted, which is what holds a row's counts back until then.
+    run_totals = {}, ---@type table<string, { added: integer, removed: integer }>
+    -- Conversations whose runs are being counted, so the drain does not ask twice.
+    runs_folding = {}, ---@type table<string, true>
   }
 end
 
@@ -772,15 +780,19 @@ local function row_at(session_id, path, known)
   local previous = state.by_id[session_id]
   local summary = transcript.get(path) or carried_fold(previous, path)
   local cwd, worktree = place_of(summary)
+  -- See `refresh_list`: a fold still reading has not said where or when yet.
+  local reading = summary ~= nil and summary.partial == true and previous ~= nil
   return {
     session_id = session_id,
     path = path,
     title = display_title(summary) or (previous and previous.title) or known.title or nil,
-    cwd = cwd or known.cwd or state.cwd,
-    worktree = worktree or (not summary and previous and previous.worktree) or nil,
+    cwd = cwd or (reading and previous.cwd) or known.cwd or state.cwd,
+    worktree = worktree or ((not summary or reading) and previous and previous.worktree) or nil,
     added = summary and summary.added or nil,
     removed = summary and summary.removed or nil,
-    last_ts = (summary and summary.last_ts and summary.last_ts > 0) and summary.last_ts or 0,
+    last_ts = (reading and previous.last_ts)
+      or ((summary and summary.last_ts and summary.last_ts > 0) and summary.last_ts)
+      or 0,
     folded = summary ~= nil and not summary.partial,
   }
 end
@@ -887,20 +899,26 @@ function M.refresh_list()
       local previous = state.by_id[entry.id]
       local summary = entry.summary or carried_fold(previous, entry.path)
       local cwd, worktree = place_of(summary)
+      -- A fold from the top that is still reading (`partial`) has not reached the
+      -- lines that say where the conversation ran or when it last spoke; what
+      -- the row said before stands until it has.
+      local reading = summary ~= nil and summary.partial == true and previous ~= nil
       local row = {
         session_id = entry.id,
         path = entry.path,
         title = display_title(summary) or (previous and previous.title) or launch_name(entry.id),
-        cwd = cwd or state.cwd,
+        cwd = cwd or (reading and previous.cwd) or state.cwd,
         -- Carried like the title while nothing has been read: a transcript the CLI
         -- has just moved is a path with no fold yet, and its row is still the
         -- conversation that was in a worktree a moment ago.
-        worktree = worktree or (not summary and previous and previous.worktree) or nil,
+        worktree = worktree or ((not summary or reading) and previous and previous.worktree) or nil,
         -- Kept even for a partial summary: `rows()` gates on `folded`, so a count
         -- from a half-read transcript is carried but not shown.
         added = summary and summary.added or nil,
         removed = summary and summary.removed or nil,
-        last_ts = (summary and summary.last_ts and summary.last_ts > 0) and summary.last_ts or entry.mtime,
+        last_ts = (reading and previous.last_ts)
+          or ((summary and summary.last_ts and summary.last_ts > 0) and summary.last_ts)
+          or entry.mtime,
         folded = summary ~= nil and not summary.partial,
       }
       rows[#rows + 1] = row
@@ -1025,18 +1043,110 @@ function M.refresh_list()
   notify_change()
 end
 
+---Every run of a row's conversation with a transcript of its own: its subagents
+---and its workflow agents (`subagents.runs`).
+---@param row table|nil
+---@return ClaudeCodeSubagentRun[]
+local function runs_of(row)
+  if not row or type(row.path) ~= "string" then
+    return {}
+  end
+  local ok, subagents = pcall(require, "claude_agents.agents.subagents")
+  if not ok or type(subagents.runs) ~= "function" then
+    return {}
+  end
+  local ok_runs, runs = pcall(subagents.runs, row.path)
+  return ok_runs and runs or {}
+end
+
+---Whether a row's conversation is read but its runs are not counted yet.
+---@param row table
+---@return boolean
+local function runs_pending(row)
+  return row.folded == true and state.run_totals[row.session_id] == nil and not state.runs_folding[row.session_id]
+end
+
+---@param row table
+local function count_runs(row)
+  if type(row.path) ~= "string" or type(transcript.run_totals) ~= "function" then
+    state.run_totals[row.session_id] = state.run_totals[row.session_id] or { added = 0, removed = 0 }
+    return
+  end
+  local session_id = row.session_id
+  local runs = runs_of(row)
+  ---@param added integer
+  ---@param removed integer
+  local function settle(added, removed)
+    state.runs_folding[session_id] = nil
+    local previous = state.run_totals[session_id]
+    if not previous or previous.added ~= added or previous.removed ~= removed then
+      state.run_totals[session_id] = { added = added, removed = removed }
+      notify_change()
+    end
+  end
+  if #runs == 0 then
+    settle(0, 0)
+    return
+  end
+  state.runs_folding[session_id] = true
+  local waiting, added, removed = #runs, 0, 0
+  for _, run in ipairs(runs) do
+    transcript.run_totals(run.path, function(totals)
+      if totals then
+        added = added + (tonumber(totals.added) or 0)
+        removed = removed + (tonumber(totals.removed) or 0)
+      end
+      waiting = waiting - 1
+      if waiting == 0 then
+        settle(added, removed)
+      end
+    end)
+  end
+end
+
+---Count what a conversation's runs changed, onto its row.
+---
+---A subagent's edits are written to its own transcript and never to the
+---conversation's, so without this a row counted only what the main thread did.
+---The session's own fold comes first: it is what says which runs a rewind took
+---back and which workflow runs were launched. Each run answers from its last
+---fold while its file has not moved (`transcript.run_totals`), so a project's
+---finished runs cost a stat each after the first time.
+---@param row table|nil
+local function fold_runs(row)
+  if not row then
+    return
+  end
+  local ok, err = pcall(count_runs, row)
+  if not ok then
+    -- Counted as nothing rather than left pending: the drain would ask again
+    -- every tick for ever.
+    state.runs_folding[row.session_id] = nil
+    state.run_totals[row.session_id] = state.run_totals[row.session_id] or { added = 0, removed = 0 }
+    require("claude_agents.logger").debug("agents", "counting the runs of", row.session_id, "failed:", tostring(err))
+  end
+end
+
+--- Defined below `fold_pending`, which arms it.
+local schedule_fold
+
 ---Fold a few unfolded transcripts per call, newest first.
 ---
 ---A mature project has a hundred of these and folding them all up front would
 ---stall the open. The list paints immediately from whatever the cache knows, and
----this fills in the rest a slice at a time.
+---this fills in the rest a slice at a time. A row whose own transcript is read
+---has its runs counted the same way (`fold_runs`).
 function M.fold_pending()
   local batch = opts().fold_batch or 2
   local selected = state.selected
 
   -- The selected session always folds first: its feed and file list are on screen.
-  if selected and state.by_id[selected] and not state.by_id[selected].folded then
-    M.fold_row(state.by_id[selected])
+  local selected_row = selected and state.by_id[selected]
+  if selected_row and not selected_row.folded then
+    M.fold_row(selected_row)
+    batch = batch - 1
+  elseif selected_row and runs_pending(selected_row) then
+    fold_runs(selected_row)
     batch = batch - 1
   end
 
@@ -1047,8 +1157,15 @@ function M.fold_pending()
     if not row.folded and not row.folding then
       M.fold_row(row)
       batch = batch - 1
+    elseif runs_pending(row) then
+      fold_runs(row)
+      batch = batch - 1
     end
   end
+  -- The rest a batch per tick. A row whose own fold is already in memory only
+  -- needs its runs counted, which often answers at once and so never reaches a
+  -- fold's callback to ask for the next batch.
+  schedule_fold()
 end
 
 ---Keep folding until every row has its counts, a batch at a time.
@@ -1057,12 +1174,12 @@ end
 ---keep their placeholder counts and no title until something else happens to
 ---re-enumerate — which is why the list only appeared to fill in when a session
 ---was opened. Self-terminating: it stops scheduling once nothing is left.
-local function schedule_fold()
+schedule_fold = function()
   if state.fold_armed then
     return
   end
   for _, row in ipairs(state.rows) do
-    if not row.folded and not row.folding and not row.fold_failed then
+    if (not row.folded and not row.folding and not row.fold_failed) or runs_pending(row) then
       state.fold_armed = true
       M._scheduler(function()
         state.fold_armed = false
@@ -1081,14 +1198,25 @@ function M.fold_row(row)
   row.folding = true
   transcript.summary(row.path, function(summary)
     row.folding = false
+    -- Onto the row the list holds now: `refresh_list` replaces every row table,
+    -- and a fold of a long transcript outlasts a pass of it.
+    local current = state.by_id[row.session_id]
+    local target = (current and current.path == row.path) and current or row
     if not summary then
       -- Nothing to read (the file went away mid-scan). Remember, so the drain
       -- below does not come back to it forever.
-      row.fold_failed = true
+      target.fold_failed = true
       schedule_fold()
       return
     end
-    apply_summary(row, summary)
+    if summary.partial then
+      -- The scan was stopped part way (the view closed, the transcript moved): a
+      -- count of what it got through is not the session's. The drain asks again.
+      schedule_fold()
+      return
+    end
+    apply_summary(target, summary)
+    fold_runs(target)
     notify_change()
     schedule_fold()
   end)
@@ -1409,12 +1537,17 @@ function M.rows()
 
   for _, row in ipairs(state.rows) do
     local live = is_live(row, foreign)
-    local touched = (row.added or 0) > 0 or (row.removed or 0) > 0
-    -- `not row.folded` keeps a session listed while its counts are still being
-    -- read. That is only sound because empty sessions are listed by default: with
+    -- What its subagents and workflow agents changed is the conversation's work
+    -- too; their transcripts are their own (`fold_runs`).
+    local runs = state.run_totals[row.session_id]
+    local touched = (row.added or 0) > 0
+      or (row.removed or 0) > 0
+      or (runs ~= nil and (runs.added > 0 or runs.removed > 0))
+    -- Listed while its counts are still being read, its runs' included. That is
+    -- only sound because empty sessions are listed by default: with
     -- `include_empty = false` a row does disappear once it is known to have
     -- changed nothing, which is exactly what that setting asks for.
-    if include_empty or touched or live or not row.folded then
+    if include_empty or touched or live or not (row.folded and runs ~= nil) then
       local entry = state.status[row.session_id]
       -- Our own record of the conversation first; a Claude running in another tab
       -- next; "it is up but we have heard nothing from it" last.
@@ -1444,8 +1577,11 @@ function M.rows()
         group = nil
       end
 
-      local added = row.folded and row.added or nil
-      local removed = row.folded and row.removed or nil
+      -- Held back until the runs are counted too: a count that jumped once they
+      -- landed would flash as new work.
+      local counted = row.folded and runs ~= nil
+      local added = counted and (row.added or 0) + runs.added or nil
+      local removed = counted and (row.removed or 0) + runs.removed or nil
       -- With what the transcript does not hold yet (`transcript.provisional`).
       local held = added and transcript.provisional_view(row.path)
       if held then
@@ -1531,7 +1667,9 @@ function M.given_name(session_id)
   if not summary then
     return nil, false
   end
-  return summary.name, true
+  -- A fold still reading may not have reached the name yet: no name from it is
+  -- not an answer (the warm cache's own record of one is).
+  return summary.name, summary.name ~= nil or not summary.partial
 end
 
 --- The longest run of digits after a name's last dash that is still read as a
@@ -1706,28 +1844,32 @@ local function files_by_key(sum)
   return map
 end
 
----Every other transcript the view knows that could have written the selected
+---Every transcript the view knows that could have written the selected
 ---session's files: the other conversations it lists, and the selected one's own
----subagents, which run beside it in the same process.
+---and its runs', which run beside each other in the same process. Each change
+---is then judged against all of them but the one it came from.
 ---@param row table The selected session's row.
----@return ClaudeCodeAgentsSummary[]
-local function other_writers(row)
+---@return { path: string, sum: ClaudeCodeAgentsSummary }[]
+local function writers(row)
   local out = {}
   for _, other in ipairs(state.rows) do
-    if other.session_id ~= row.session_id and type(other.path) == "string" then
+    if type(other.path) == "string" then
       local sum = transcript.get(other.path)
       if sum then
-        out[#out + 1] = sum
+        out[#out + 1] = { path = other.path, sum = sum }
       end
     end
   end
-  local ok, subagents = pcall(require, "claude_agents.agents.subagents")
-  if ok and type(row.path) == "string" then
-    for _, agent in ipairs(subagents.scan(row.path)) do
-      local sum = transcript.get(agent.path)
-      if sum then
-        out[#out + 1] = sum
-      end
+  if type(row.path) == "string" and not state.by_id[row.session_id] then
+    local sum = transcript.get(row.path)
+    if sum then
+      out[#out + 1] = { path = row.path, sum = sum }
+    end
+  end
+  for _, run in ipairs(runs_of(row)) do
+    local sum = transcript.get(run.path)
+    if sum then
+      out[#out + 1] = { path = run.path, sum = sum }
     end
   end
   return out
@@ -1748,12 +1890,12 @@ end
 ---Answers lazily: the other transcripts are only gathered once a change of the
 ---selected session asks.
 ---@param row table The selected session's row.
----@return fun(path: string, edit: table): boolean
+---@return fun(path: string, edit: table, source: string|nil): boolean `source`: the transcript the change was read from, the session's own when nil.
 local function uncertainty_judge(row)
   local others = nil
   local utils = require("claude_agents.utils")
   local writes = require("claude_agents.agents.writes")
-  return function(path, edit)
+  return function(path, edit, source)
     if type(edit) ~= "table" or edit.via ~= "bash" or type(path) ~= "string" then
       return false
     end
@@ -1766,10 +1908,11 @@ local function uncertainty_judge(row)
     if writes.during(path, from, to) then
       return true
     end
-    others = others or other_writers(row)
+    others = others or writers(row)
+    local own = source or row.path
     local key = utils.path_key(path)
-    for _, sum in ipairs(others) do
-      local file = files_by_key(sum)[key]
+    for _, writer in ipairs(others) do
+      local file = writer.path ~= own and files_by_key(writer.sum)[key] or nil
       for _, other in ipairs(file and file.edits or {}) do
         local other_ts = tonumber(other.ts) or 0
         if other.via == "bash" then
@@ -1981,11 +2124,110 @@ function M.cycle_feed_filter()
   return next_entry
 end
 
+---@class ClaudeCodeAgentsChangesSection A git worktree other than the checkout the panes name files from.
+---@field root string Its directory.
+---@field key string `utils.path_key(root)`.
+---@field name string|nil What its rule says; see `section_name`.
+---@field owner ClaudeCodeSubagentRun|nil The run that worked there.
+---@field owned boolean|nil `owner` was given it, rather than inheriting it.
+
+--- The CLI's own place for every worktree it makes — `--worktree`, `EnterWorktree`,
+--- a subagent's `isolation: "worktree"` — and so what still says a file was in
+--- one once the worktree, and a run's record of it, are gone.
+local WORKTREE_SHAPE = "^(.*/%.claude/worktrees/[^/]+)/"
+
+---The worktrees a session's runs say they worked in, keyed by their roots.
+---@param runs ClaudeCodeSubagentRun[]
+---@return table<string, ClaudeCodeAgentsChangesSection> by_key
+---@return table<string, ClaudeCodeSubagentRun> by_id
+local function run_worktrees(runs)
+  local utils = require("claude_agents.utils")
+  local by_key, by_id = {}, {}
+  for _, run in ipairs(runs) do
+    by_id[run.id] = run
+    if run.worktree then
+      local root = utils.normalize_path(run.worktree)
+      local key = utils.path_key(root)
+      local section = by_key[key]
+      if not section then
+        section = { root = root, key = key }
+        by_key[key] = section
+      end
+      -- Named after the run it was made for; one that inherited it (a run that
+      -- run started) only while that one is not known.
+      if not run.worktree_inherited and not section.owned then
+        section.owner, section.owned = run, true
+      elseif not section.owner then
+        section.owner = run
+      end
+    end
+  end
+  return by_key, by_id
+end
+
+---What a worktree's rule calls it: what the run that worked there was sent to
+---do, else the directory's own name (`agent-a1b2…` for a run's, whatever
+---`--worktree` was given for a session's).
+---@param section ClaudeCodeAgentsChangesSection
+---@return string
+local function section_name(section)
+  local owner = section.owner
+  local description = owner and owner.description
+  if type(description) == "string" then
+    description = vim.trim((description:gsub("%s+", " ")))
+    if description ~= "" then
+      return description
+    end
+  end
+  return section.root:match("([^/]+)$") or section.root
+end
+
+---The worktree a changed file is in, when that is not where the panes name files
+---from (`M.selected_cwd`): a root a run stated (a `WorktreeCreate` hook may put
+---one anywhere), else the CLI's own layout.
+---@param path string
+---@param by_key table<string, ClaudeCodeAgentsChangesSection> Grown with the worktrees found by layout.
+---@param by_id table<string, ClaudeCodeSubagentRun>
+---@param here string `utils.path_key` of the directory files are named from.
+---@return ClaudeCodeAgentsChangesSection|nil
+local function section_of(path, by_key, by_id, here)
+  local utils = require("claude_agents.utils")
+  local key = utils.path_key(path)
+  local best = nil
+  for root_key, section in pairs(by_key) do
+    if key:sub(1, #root_key + 1) == root_key .. "/" and (not best or #root_key > #best.key) then
+      best = section
+    end
+  end
+  if not best then
+    local root = utils.normalize_path(path):match(WORKTREE_SHAPE)
+    if root then
+      local root_key = utils.path_key(root)
+      best = { root = root, key = root_key }
+      -- A run's own (`agent-<id>`), whose record of it the CLI dropped when it
+      -- removed the worktree.
+      local id = root:match("/agent%-([^/]+)$")
+      best.owner = id and by_id[id] or nil
+      by_key[root_key] = best
+    end
+  end
+  if not best or here == best.key or here:sub(1, #best.key + 1) == best.key .. "/" then
+    return nil
+  end
+  return best
+end
+
 ---Files the selected session touched, with git's letter where we have one.
 ---
 ---The counts come from the transcript rather than git so this pane and the
 ---session row can never disagree; git only says what the file looks like on disk
 ---now, which is the part the transcript cannot know.
+---
+---What its runs changed is listed with the session's own: a subagent's edits are
+---written to its transcript, never to the conversation's. A file both changed is
+---one row with both counts. A file in a git worktree other than the checkout the
+---panes name files from is listed under a `kind = "worktree"` rule for that
+---worktree, after the files that are not, named relative to the worktree.
 ---@return table[]
 function M.changes()
   local row = state.selected and state.by_id[state.selected]
@@ -1996,7 +2238,8 @@ function M.changes()
   -- With what the transcript does not hold yet (`transcript.provisional`) — for a
   -- new conversation the CLI is holding, that may be everything there is.
   local held = transcript.provisional_view(row.path)
-  if not summary and not held then
+  local runs = runs_of(row)
+  if not summary and not held and #runs == 0 then
     return {}
   end
   local files, order = summary and summary.files or {}, summary and summary.order or {}
@@ -2031,9 +2274,89 @@ function M.changes()
     files, order = merged_files, merged_order
   end
 
+  -- The runs', in the order they started, after the session's own. Merged into
+  -- new tables: the ones handed in are the transcripts' own.
+  ---@type table<table, string> The run transcript each of their edits came from.
+  local source_of = {}
+  table.sort(runs, function(a, b)
+    if (a.started or 0) ~= (b.started or 0) then
+      return (a.started or 0) < (b.started or 0)
+    end
+    return a.id < b.id
+  end)
+  local copied = false
+  for _, run in ipairs(runs) do
+    local sum = transcript.get(run.path)
+    for _, path in ipairs(sum and sum.order or {}) do
+      local file = sum.files[path]
+      if file and file.kind ~= "read" then
+        if not copied then
+          local merged_files, merged_order = {}, {}
+          for key, value in pairs(files) do
+            merged_files[key] = value
+          end
+          for index, key in ipairs(order) do
+            merged_order[index] = key
+          end
+          files, order, copied = merged_files, merged_order, true
+        end
+        for _, edit in ipairs(file.edits or {}) do
+          source_of[edit] = run.path
+        end
+        local into = files[path]
+        if not into then
+          files[path] = file
+          order[#order + 1] = path
+        else
+          local edits, position = {}, {}
+          for _, edit in ipairs(into.edits or {}) do
+            edits[#edits + 1] = edit
+            position[edit] = #edits
+          end
+          for _, edit in ipairs(file.edits or {}) do
+            edits[#edits + 1] = edit
+            position[edit] = #edits
+          end
+          -- In the order they happened, as one transcript's are: an era's row
+          -- takes the kind of its latest.
+          table.sort(edits, function(a, b)
+            if (a.ts or 0) ~= (b.ts or 0) then
+              return (a.ts or 0) < (b.ts or 0)
+            end
+            return position[a] < position[b]
+          end)
+          -- Which kind of change the row is: the latest, as within one transcript.
+          local later = (file.last_ts or 0) >= (into.last_ts or 0)
+          files[path] = {
+            added = (into.added or 0) + (file.added or 0),
+            removed = (into.removed or 0) + (file.removed or 0),
+            kind = (into.kind == "read" or later) and file.kind or into.kind,
+            last_ts = math.max(into.last_ts or 0, file.last_ts or 0),
+            edits = edits,
+          }
+        end
+      end
+    end
+  end
+
   local utils = require("claude_agents.utils")
   local entries = {}
   local uncertain = uncertainty_judge(row)
+
+  -- Which worktree each file is in, when not the one files are named from.
+  local worktrees, runs_by_id = run_worktrees(runs)
+  local here = utils.path_key(M.selected_cwd() or "")
+  local section_cache = {}
+  ---@param path string
+  ---@return ClaudeCodeAgentsChangesSection|nil
+  local function section_for(path)
+    local hit = section_cache[path]
+    if hit == nil then
+      hit = section_of(path, worktrees, runs_by_id, here) or false
+      section_cache[path] = hit
+    end
+    return hit or nil
+  end
 
   ---What a span of a file's edits leaves unsure: whether a shell command's change
   ---was all its own (`uncertain`), and whether every change's counts are known.
@@ -2044,9 +2367,26 @@ function M.changes()
     if edit.unknown then
       into.unknown = true
     end
-    if not into.uncertain and edit.via == "bash" and uncertain(path, edit) then
+    if not into.uncertain and edit.via == "bash" and uncertain(path, edit, source_of[edit]) then
       into.uncertain = true
     end
+  end
+
+  ---The rule a worktree's files are listed under.
+  ---@param section ClaudeCodeAgentsChangesSection
+  ---@param era table|nil
+  local function push_rule(section, era)
+    section.name = section.name or section_name(section)
+    local owner = section.owner
+    entries[#entries + 1] = {
+      kind = "worktree",
+      name = section.name,
+      root = section.root,
+      branch = owner and owner.worktree_branch or nil,
+      agent_id = owner and owner.id or nil,
+      agent_path = owner and owner.path or nil,
+      era = era,
+    }
   end
 
   ---One row: a file, with the counts of whichever span of the session is asked
@@ -2054,7 +2394,8 @@ function M.changes()
   ---@param path string
   ---@param counts { added: integer, removed: integer, kind: string, uncertain: boolean?, unknown: boolean? }
   ---@param era { index: integer, count: integer, from: number?, to: number?, note: string }|nil
-  local function push(path, counts, era)
+  ---@param section ClaudeCodeAgentsChangesSection|nil The worktree it is in.
+  local function push(path, counts, era, section)
     -- Keyed the way `git.parse_status` keys it: git answers with `/`
     -- separators whatever the platform, and this path is the CLI's own.
     local key = utils.path_key(path)
@@ -2082,11 +2423,45 @@ function M.changes()
       era = era,
       uncertain = counts.uncertain or nil,
       unknown = counts.unknown or nil,
+      -- Named from its worktree, and the float opened on it says which.
+      root = section and section.root or nil,
+      worktree = section and { name = section.name or section_name(section), path = section.root } or nil,
     }
+  end
+
+  ---List one span's files: those in the checkout files are named from first,
+  ---then each worktree's under its rule, in the order each first appears.
+  ---@param span_order string[]
+  ---@param by_path table<string, table>
+  ---@param era table|nil
+  local function emit(span_order, by_path, era)
+    local main, groups, group_order = {}, {}, {}
+    for _, path in ipairs(span_order) do
+      local section = section_for(path)
+      if section then
+        if not groups[section] then
+          groups[section] = {}
+          group_order[#group_order + 1] = section
+        end
+        table.insert(groups[section], path)
+      else
+        main[#main + 1] = path
+      end
+    end
+    for _, path in ipairs(main) do
+      push(path, by_path[path], era, nil)
+    end
+    for _, section in ipairs(group_order) do
+      push_rule(section, era)
+      for _, path in ipairs(groups[section]) do
+        push(path, by_path[path], era, section)
+      end
+    end
   end
 
   local marks = checkpoints.list(row.session_id)
   if #marks == 0 then
+    local listed, by_path = {}, {}
     for _, path in ipairs(order) do
       local file = files[path]
       if file and file.kind ~= "read" then
@@ -2094,9 +2469,11 @@ function M.changes()
         for _, edit in ipairs(file.edits or {}) do
           weigh(path, edit, counts)
         end
-        push(path, counts, nil)
+        listed[#listed + 1] = path
+        by_path[path] = counts
       end
     end
+    emit(listed, by_path, nil)
     return entries
   end
 
@@ -2142,9 +2519,7 @@ function M.changes()
       local from, to = checkpoints.bounds(marks, index)
       local span =
         { index = index, count = #marks, from = from, to = to, note = checkpoints.era_note(marks, index, now) }
-      for _, path in ipairs(era.order) do
-        push(path, era.by_path[path], span)
-      end
+      emit(era.order, era.by_path, span)
     end
     -- The rule below an era is the checkpoint that opened it.
     if index > 1 then
@@ -2209,10 +2584,22 @@ function M.toggle_subagent_label()
 end
 
 ---Fold the selected session's subagent transcripts, repainting when one grew.
+---
+---A run that grew may have changed files: its counts go onto the session's row,
+---and git is asked about the files again.
 function M.refresh_subagents()
   local row = state.selected and state.by_id[state.selected]
   if row then
-    require("claude_agents.agents.subagents").refresh(row.path, notify_change)
+    require("claude_agents.agents.subagents").refresh(row.path, function()
+      local current = state.by_id[row.session_id]
+      if current then
+        fold_runs(current)
+      end
+      if state.selected == row.session_id then
+        M.refresh_git()
+      end
+      notify_change()
+    end)
   end
 end
 
@@ -2242,6 +2629,33 @@ end
 function M.worktree_of(session_id)
   local row = state.by_id[session_id or state.selected or ""]
   return row and worktree_elsewhere(row) or nil
+end
+
+---The transcripts of the selected session that touched a file: its own first,
+---then each of its runs that did, in the order they started — what a file's
+---history is merged from (`transcript.merged_history`), ties broken in this order.
+---@param path string
+---@return string[]
+function M.file_sources(path)
+  local row = state.selected and state.by_id[state.selected]
+  if not row or type(row.path) ~= "string" then
+    return {}
+  end
+  local out = { row.path }
+  local runs = runs_of(row)
+  table.sort(runs, function(a, b)
+    if (a.started or 0) ~= (b.started or 0) then
+      return (a.started or 0) < (b.started or 0)
+    end
+    return a.id < b.id
+  end)
+  for _, run in ipairs(runs) do
+    local sum = transcript.get(run.path)
+    if sum and sum.files and sum.files[path] then
+      out[#out + 1] = run.path
+    end
+  end
+  return out
 end
 
 --------------------------------------------------------------------------------
@@ -2521,7 +2935,8 @@ function M._flush()
     if row then
       local last_ts = row.last_ts
       transcript.summary(row.path, function(summary)
-        if summary then
+        -- Not one a stopped scan answered with: that is half the transcript.
+        if summary and not summary.partial then
           apply_summary(row, summary)
           -- The conversation said something new, and any of it — a shell `rm`
           -- included — may have changed the disk. Only the editing tools mark
@@ -2534,12 +2949,14 @@ function M._flush()
         end
       end)
     end
-    -- A running agent's counts must move even while another session is selected.
+    -- A running agent's counts must move even while another session is selected,
+    -- its subagents' included.
     for _, other in ipairs(state.rows) do
       if other ~= row and is_live(other) then
         transcript.summary(other.path, function(summary)
-          if summary then
+          if summary and not summary.partial then
             apply_summary(other, summary)
+            fold_runs(other)
           end
         end)
       end
@@ -2678,6 +3095,22 @@ function M.poll(tick_opts)
       end
       if other ~= row and other.path and is_live(other) and transcript.stale(other.path) then
         state.dirty.transcript = true
+      end
+    end
+    -- And their runs': a subagent's edit is written to its own transcript, which
+    -- a missed hook would otherwise leave uncounted until the conversation's own
+    -- next line.
+    for _, other in ipairs(state.rows) do
+      if state.dirty.transcript then
+        break
+      end
+      if other.path and (other == row or is_live(other)) and type(transcript.run_stale) == "function" then
+        for _, run in ipairs(runs_of(other)) do
+          if transcript.run_stale(run.path) then
+            state.dirty.transcript = true
+            break
+          end
+        end
       end
     end
   end

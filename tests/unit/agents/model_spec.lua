@@ -2727,4 +2727,269 @@ describe("agents.model", function()
       expect(calls > 0).to_be_true()
     end)
   end)
+
+  describe("a fold that outlasts a pass of the list", function()
+    local answers -- the stubbed store's pending answers, in the order they were asked
+
+    before_each(function()
+      answers = {}
+      summaries.aaa = summary_for("aaa", { added = 10, removed = 2 })
+      package.loaded["claude_agents.agents.transcript"].summary = function(path, cb)
+        answers[#answers + 1] = function(sum)
+          cb(sum)
+        end
+      end
+      -- What the list sees while the store reads from the top: half the file.
+      summaries.aaa.partial, summaries.aaa.added = true, 3
+    end)
+
+    it("lands on the row the list holds now, not the one it replaced", function()
+      model.attach(1, "/proj")
+      expect(model.rows()[1].added).to_be_nil()
+      -- The poll's pass rebuilds every row table while the fold is still reading.
+      model.refresh_list()
+      expect(model.rows()[1].added).to_be_nil()
+      summaries.aaa.partial, summaries.aaa.added = nil, 10
+      -- The first fold's answer, asked for by a row table the list no longer has.
+      answers[1](summaries.aaa)
+      expect(model.rows()[1].added).to_be(10)
+    end)
+
+    it("takes nothing from a scan that was stopped part way", function()
+      model.attach(1, "/proj")
+      answers[1](summaries.aaa) -- still partial: stopped, not finished
+      expect(model.rows()[1].added).to_be_nil()
+      expect(model.row("aaa").folded).to_be_false()
+    end)
+  end)
+
+  describe("what the session's subagents changed", function()
+    local runs -- [session transcript] = what the stubbed `subagents.runs` answers
+    local run_sums -- [run transcript] = its summary
+    local ROOT = "/proj/.claude/worktrees/agent-x1"
+
+    ---A file record as `transcript`'s fold keeps it.
+    local function file(added, removed, ts, kind, fields)
+      local edit =
+        vim.tbl_extend("force", { ts = ts, added = added, removed = removed, kind = kind or "edit" }, fields or {})
+      return { added = added, removed = removed, kind = kind or "edit", last_ts = ts, edits = { edit } }
+    end
+
+    ---A run of session `aaa`, with the files its transcript records.
+    local function run(id, fields, files, order)
+      local path = "/p/aaa/subagents/agent-" .. id .. ".jsonl"
+      runs["/p/aaa.jsonl"] = runs["/p/aaa.jsonl"] or {}
+      table.insert(runs["/p/aaa.jsonl"], vim.tbl_extend("force", { id = id, path = path, started = 50 }, fields or {}))
+      local added, removed = 0, 0
+      for _, f in pairs(files or {}) do
+        added, removed = added + f.added, removed + f.removed
+      end
+      run_sums[path] = { path = path, added = added, removed = removed, files = files or {}, order = order or {} }
+      return path
+    end
+
+    local function drawn()
+      local out = {}
+      for _, entry in ipairs(model.changes()) do
+        if entry.kind == "worktree" then
+          out[#out + 1] = "── " .. entry.name
+        elseif entry.kind == "checkpoint" then
+          out[#out + 1] = "── checkpoint"
+        else
+          out[#out + 1] = string.format("%s +%d -%d", entry.path, entry.added, entry.removed)
+        end
+      end
+      return table.concat(out, "|")
+    end
+
+    before_each(function()
+      runs, run_sums = {}, {}
+      package.loaded["claude_agents.agents.subagents"] = {
+        runs = function(path)
+          return vim.deepcopy(runs[path] or {})
+        end,
+        refresh = function() end,
+        rows = function()
+          return {}
+        end,
+        scan = function()
+          return {}
+        end,
+      }
+      local stub = package.loaded["claude_agents.agents.transcript"]
+      local base_get = stub.get
+      stub.get = function(path)
+        return run_sums[path] or base_get(path)
+      end
+      stub.run_totals = function(path, cb)
+        local sum = run_sums[path]
+        cb(sum and { added = sum.added, removed = sum.removed, workflows = {} } or nil)
+      end
+      stub.run_stale = function()
+        return false
+      end
+      summaries.aaa = summary_for("aaa", {
+        added = 10,
+        removed = 2,
+        files = { ["/proj/a.lua"] = file(10, 2, 100) },
+        order = { "/proj/a.lua" },
+      })
+    end)
+
+    after_each(function()
+      package.loaded["claude_agents.agents.subagents"] = nil
+    end)
+
+    it("counts them in the session's row", function()
+      run("r1", {}, { ["/proj/b.lua"] = file(5, 1, 110) }, { "/proj/b.lua" })
+      model.attach(1, "/proj")
+      local row = model.rows()[1]
+      expect(row.added).to_be(15)
+      expect(row.removed).to_be(3)
+    end)
+
+    it("counts every row's subagents, a batch at a time, when the rows are already read", function()
+      -- More rows than one batch (10 here), each already folded: counting a row's
+      -- runs answers at once, so no fold's callback asks for the next batch.
+      for i = 1, 14 do
+        local id = string.format("s%02d", i)
+        summaries[id] = summary_for(id, { added = 1, removed = 0 })
+      end
+      model.attach(1, "/proj")
+      local function uncounted()
+        local n = 0
+        for _, row in ipairs(model.rows()) do
+          if row.added == nil then
+            n = n + 1
+          end
+        end
+        return n
+      end
+      expect(uncounted() > 0).to_be_true()
+      for _ = 1, 3 do
+        tick()
+      end
+      expect(uncounted()).to_be(0)
+    end)
+
+    it("holds a row's counts back until its subagents are counted", function()
+      local stub = package.loaded["claude_agents.agents.transcript"]
+      local pending = {}
+      stub.run_totals = function(path, cb)
+        pending[#pending + 1] = function()
+          cb({ added = run_sums[path].added, removed = run_sums[path].removed })
+        end
+      end
+      run("r1", {}, { ["/proj/b.lua"] = file(5, 1, 110) }, { "/proj/b.lua" })
+      model.attach(1, "/proj")
+      -- Not the session's own 10 first and 15 a moment later: that jump would
+      -- flash as new work.
+      expect(model.rows()[1].added).to_be_nil()
+      for _, answer in ipairs(pending) do
+        answer()
+      end
+      expect(model.rows()[1].added).to_be(15)
+    end)
+
+    it("lists them with the session's own files, one row per file", function()
+      run("r1", {}, {
+        ["/proj/a.lua"] = file(3, 3, 120),
+        ["/proj/b.lua"] = file(5, 1, 110),
+        ["/proj/read.lua"] = { added = 0, removed = 0, kind = "read", last_ts = 105, edits = {} },
+      }, { "/proj/read.lua", "/proj/b.lua", "/proj/a.lua" })
+      model.attach(1, "/proj")
+      model.select("aaa")
+      expect(drawn()).to_be("/proj/a.lua +13 -5|/proj/b.lua +5 -1")
+    end)
+
+    it("lists a worktree's files under a rule named for the subagent, named from the worktree", function()
+      run(
+        "x1",
+        { description = "rewrite\nthe parser", worktree = ROOT, worktree_branch = "worktree-agent-x1" },
+        { [ROOT .. "/lua/p.lua"] = file(40, 9, 120) },
+        { ROOT .. "/lua/p.lua" }
+      )
+      model.attach(1, "/proj")
+      model.select("aaa")
+      expect(drawn()).to_be("/proj/a.lua +10 -2|── rewrite the parser|" .. ROOT .. "/lua/p.lua +40 -9")
+      local entries = model.changes()
+      expect(entries[2].root).to_be(ROOT)
+      expect(entries[2].agent_id).to_be("x1")
+      expect(entries[2].agent_path).to_be("/p/aaa/subagents/agent-x1.jsonl")
+      expect(entries[2].branch).to_be("worktree-agent-x1")
+      expect(entries[3].root).to_be(ROOT)
+      expect(entries[3].worktree.name).to_be("rewrite the parser")
+      expect(entries[1].root).to_be_nil()
+    end)
+
+    it("names the worktree for the run given it, not one that inherited it", function()
+      run("helper", { description = "look around", worktree = ROOT, worktree_inherited = true, started = 60 }, {
+        [ROOT .. "/a.lua"] = file(1, 0, 130),
+      }, { ROOT .. "/a.lua" })
+      run("x1", { description = "rewrite the parser", worktree = ROOT, started = 55 }, {
+        [ROOT .. "/b.lua"] = file(2, 0, 120),
+      }, { ROOT .. "/b.lua" })
+      model.attach(1, "/proj")
+      model.select("aaa")
+      expect(drawn()).to_be(
+        "/proj/a.lua +10 -2|── rewrite the parser|" .. ROOT .. "/b.lua +2 -0|" .. ROOT .. "/a.lua +1 -0"
+      )
+    end)
+
+    it("knows a worktree the CLI removed by where the CLI puts them", function()
+      local gone = "/proj/.claude/worktrees/agent-y2"
+      run("y2", { description = "try it", worktree_removed = true }, { [gone .. "/z.lua"] = file(1, 1, 120) }, {
+        gone .. "/z.lua",
+      })
+      model.attach(1, "/proj")
+      model.select("aaa")
+      expect(drawn()).to_be("/proj/a.lua +10 -2|── try it|" .. gone .. "/z.lua +1 -1")
+    end)
+
+    it("does not set off the worktree the session itself works in", function()
+      local own = "/proj/.claude/worktrees/wt"
+      summaries.aaa.worktree = { path = own, name = "wt", original_cwd = "/proj" }
+      summaries.aaa.files = { [own .. "/a.lua"] = file(10, 2, 100) }
+      summaries.aaa.order = { own .. "/a.lua" }
+      run("r1", {}, { [own .. "/b.lua"] = file(1, 0, 110) }, { own .. "/b.lua" })
+      model.attach(1, "/proj")
+      model.select("aaa")
+      expect(drawn()).to_be(own .. "/a.lua +10 -2|" .. own .. "/b.lua +1 -0")
+    end)
+
+    it("heads a worktree's files inside each checkpoint's era", function()
+      run("x1", { description = "rewrite", worktree = ROOT }, { [ROOT .. "/p.lua"] = file(4, 0, 50) }, {
+        ROOT .. "/p.lua",
+      })
+      model.attach(1, "/proj")
+      model.select("aaa")
+      checkpoints.add("aaa", 70)
+      expect(drawn()).to_be("/proj/a.lua +10 -2|── checkpoint|── rewrite|" .. ROOT .. "/p.lua +4 -0")
+    end)
+
+    it("judges a subagent's shell change against the session's own edits, not its own", function()
+      local bash = { via = "bash", from = 98.5, to = 101.5 }
+      run("r1", {}, { ["/proj/a.lua"] = file(1, 1, 101, "edit", bash) }, { "/proj/a.lua" })
+      model.attach(1, "/proj")
+      model.select("aaa")
+      -- The session edited a.lua at 100, inside the command's window.
+      expect(model.changes()[1].uncertain).to_be_true()
+
+      summaries.aaa.files = { ["/proj/other.lua"] = file(10, 2, 100) }
+      summaries.aaa.order = { "/proj/other.lua" }
+      local by_path = {}
+      for _, entry in ipairs(model.changes()) do
+        by_path[entry.path] = entry
+      end
+      expect(by_path["/proj/a.lua"].uncertain).to_be_nil()
+    end)
+
+    it("names the transcripts a file's history is read from", function()
+      local r1 = run("r1", { started = 60 }, { ["/proj/a.lua"] = file(1, 0, 110) }, { "/proj/a.lua" })
+      run("r2", { started = 70 }, { ["/proj/b.lua"] = file(1, 0, 120) }, { "/proj/b.lua" })
+      model.attach(1, "/proj")
+      model.select("aaa")
+      expect(table.concat(model.file_sources("/proj/a.lua"), "|")).to_be("/p/aaa.jsonl|" .. r1)
+    end)
+  end)
 end)

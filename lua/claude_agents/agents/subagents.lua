@@ -10,7 +10,7 @@
 ---   <session>/subagents/agent-<id>.meta.json   agentType, description,
 ---                                              toolUseId, parentAgentId,
 ---                                              spawnDepth, requestShape,
----                                              worktreePath
+---                                              worktreePath | inheritedWorktreePath
 ---
 --- Nested subagents sit in the same flat directory; `parentAgentId` is what makes
 --- it a tree. How a run *ended* is recorded by whoever launched it:
@@ -104,6 +104,34 @@ local function started_at(path, fallback)
   return fallback
 end
 
+---@param value any
+---@return string|nil
+local function nonempty(value)
+  return (type(value) == "string" and value ~= "") and value or nil
+end
+
+---Where a run's descriptor says it works, when that is a git worktree.
+---
+---Read from the 2.1.319 binary: a run spawned with `isolation: "worktree"` names
+---its own (`worktreePath`, `worktreeBranch`); a run started by one, with no
+---worktree of its own, works in its parent's and says so with
+---`inheritedWorktreePath`. A worktree the run left nothing changed in is removed
+---when it ends, and the CLI then drops `worktreePath` and writes
+---`worktreeCleanlyRemoved` instead — its files are gone, and only the CLI's own
+---layout (`<repo>/.claude/worktrees/agent-<id>`) still says where they were.
+---@param meta table
+---@return { worktree: string?, worktree_branch: string?, worktree_inherited: true?, worktree_removed: true? }
+local function worktree_fields(meta)
+  local own = nonempty(meta.worktreePath)
+  local inherited = nonempty(meta.inheritedWorktreePath)
+  return {
+    worktree = own or inherited,
+    worktree_branch = own and nonempty(meta.worktreeBranch) or nil,
+    worktree_inherited = (not own and inherited) and true or nil,
+    worktree_removed = meta.worktreeCleanlyRemoved == true or nil,
+  }
+end
+
 ---@class ClaudeCodeSubagent
 ---@field id string
 ---@field agent_type string
@@ -111,7 +139,10 @@ end
 ---@field tool_use_id string|nil
 ---@field parent_id string|nil
 ---@field shape string|nil `background` | `foreground`
----@field worktree string|nil The git worktree it was given to work in (`isolation: "worktree"`).
+---@field worktree string|nil The git worktree it works in: its own (`isolation: "worktree"`), or the one it inherited from the run that started it.
+---@field worktree_branch string|nil The branch of a worktree of its own.
+---@field worktree_inherited true|nil `worktree` is its parent's.
+---@field worktree_removed true|nil The CLI removed its worktree when it ended, having found nothing changed there.
 ---@field path string Its transcript.
 ---@field started number Epoch seconds it started (`started_at`).
 ---@field mtime number Epoch seconds its transcript was last written (0 when it has none yet).
@@ -146,6 +177,9 @@ function M.scan(transcript_path)
       if st and meta then
         local path = dir .. "/agent-" .. id .. ".jsonl"
         local log = fs.stat(path)
+        -- A run working in a worktree says where in its descriptor
+        -- (`worktree_fields`). Its transcript stays here with its siblings'.
+        local where = worktree_fields(meta)
         out[#out + 1] = {
           id = id,
           agent_type = type(meta.agentType) == "string" and meta.agentType or "agent",
@@ -153,10 +187,10 @@ function M.scan(transcript_path)
           tool_use_id = type(meta.toolUseId) == "string" and meta.toolUseId or nil,
           parent_id = type(meta.parentAgentId) == "string" and meta.parentAgentId or nil,
           shape = type(meta.requestShape) == "string" and meta.requestShape or nil,
-          -- A run spawned with `isolation: "worktree"` says where in its
-          -- descriptor (`worktreePath`, with `spawnedWithWorktree`; measured
-          -- against CLI 2.1.291). Its transcript stays here with its siblings'.
-          worktree = (type(meta.worktreePath) == "string" and meta.worktreePath ~= "") and meta.worktreePath or nil,
+          worktree = where.worktree,
+          worktree_branch = where.worktree_branch,
+          worktree_inherited = where.worktree_inherited,
+          worktree_removed = where.worktree_removed,
           path = path,
           started = started_at(path, st.mtime or 0),
           mtime = log and log.mtime or 0,
@@ -191,6 +225,85 @@ function M.scan(transcript_path)
   return kept
 end
 
+---The workflow runs a transcript launched, as far as anything read so far says.
+---@param path string
+---@return table[] tasks `{ run_id, transcript_dir, started_ts, task_id }`
+local function workflows_launched(path)
+  if type(transcript.workflows_of) == "function" then
+    return transcript.workflows_of(path)
+  end
+  local out = {}
+  local sum = transcript.get(path)
+  for task_id, task in pairs(sum and sum.tasks or {}) do
+    if task.task_type == "workflow" then
+      out[#out + 1] = vim.tbl_extend("force", task, { task_id = task_id })
+    end
+  end
+  return out
+end
+
+---@class ClaudeCodeSubagentRun
+---@field id string The agent id.
+---@field path string Its transcript.
+---@field description string|nil What it was sent to do.
+---@field started number Epoch seconds it started.
+---@field worktree string|nil See `ClaudeCodeSubagent`.
+---@field worktree_branch string|nil
+---@field worktree_inherited true|nil
+---@field worktree_removed true|nil
+---@field workflow string|nil A workflow's agent: the task id of its run.
+
+---Every run of a session with a transcript of its own: the subagents it started
+---(`scan`, rewound runs left out), and the agents of every workflow run that it
+---or one of those launched.
+---
+---A workflow run is found from its launch, so one launched since the last fold
+---is picked up once that launch has been read. `transcript.workflows_of` also
+---answers for a run transcript the warm cache remembers without folding it.
+---@param transcript_path string
+---@return ClaudeCodeSubagentRun[]
+function M.runs(transcript_path)
+  local out = {}
+  if type(transcript_path) ~= "string" then
+    return out
+  end
+  for _, agent in ipairs(M.scan(transcript_path)) do
+    out[#out + 1] = agent
+  end
+  local sources = { transcript_path }
+  for _, agent in ipairs(out) do
+    sources[#sources + 1] = agent.path
+  end
+  -- Walked by index: a workflow agent's own launches are sources in turn.
+  local seen_runs = {}
+  local index = 1
+  while index <= #sources do
+    for _, task in ipairs(workflows_launched(sources[index])) do
+      local key = task.run_id or task.task_id
+      if key and not seen_runs[key] then
+        seen_runs[key] = true
+        local run = M.scan_workflow(transcript_path, task)
+        for _, agent in ipairs(run and run.agents or {}) do
+          out[#out + 1] = {
+            id = agent.id,
+            path = agent.path,
+            description = agent.label,
+            started = agent.started,
+            worktree = agent.worktree,
+            worktree_branch = agent.worktree_branch,
+            worktree_inherited = agent.worktree_inherited,
+            worktree_removed = agent.worktree_removed,
+            workflow = task.task_id,
+          }
+          sources[#sources + 1] = agent.path
+        end
+      end
+    end
+    index = index + 1
+  end
+  return out
+end
+
 ---Fold the session's transcript and every subagent's up to date.
 ---
 ---Asynchronous, and cheap when nothing moved: each `transcript.summary` answers
@@ -203,25 +316,8 @@ function M.refresh(transcript_path, on_change)
     return
   end
   local paths = { transcript_path }
-  for _, agent in ipairs(M.scan(transcript_path)) do
-    paths[#paths + 1] = agent.path
-  end
-  -- A workflow's agents, from whatever is already folded: a run launched since the
-  -- last fold is picked up on the next refresh, once its launch has been read.
-  local seen_runs = {}
-  local index = 1
-  while index <= #paths do
-    local sum = transcript.get(paths[index])
-    for task_id, task in pairs(sum and sum.tasks or {}) do
-      if task.task_type == "workflow" and not seen_runs[task_id] then
-        seen_runs[task_id] = true
-        local run = M.scan_workflow(transcript_path, task)
-        for _, agent in ipairs(run and run.agents or {}) do
-          paths[#paths + 1] = agent.path
-        end
-      end
-    end
-    index = index + 1
+  for _, run in ipairs(M.runs(transcript_path)) do
+    paths[#paths + 1] = run.path
   end
   for _, path in ipairs(paths) do
     transcript.summary(path, function(sum)
@@ -613,6 +709,10 @@ end
 ---@field returned boolean|nil The journal recorded its result.
 ---@field failed boolean|nil The journal recorded it failing.
 ---@field progress table|nil Its entry in the run record's `workflowProgress`.
+---@field worktree string|nil See `ClaudeCodeSubagent`.
+---@field worktree_branch string|nil
+---@field worktree_inherited true|nil
+---@field worktree_removed true|nil
 
 ---@class ClaudeCodeWorkflowRun
 ---@field dir string Where its agents' transcripts and journal are.
@@ -669,6 +769,7 @@ function M.scan_workflow(transcript_path, task)
     local path = dir .. "/agent-" .. id .. ".jsonl"
     local log = fs.stat and fs.stat(path)
     run.written = math.max(run.written, log and log.mtime or 0)
+    local where = worktree_fields(meta)
     run.agents[#run.agents + 1] = {
       id = id,
       label = type(meta.description) == "string" and meta.description or (progress[id] and progress[id].label) or nil,
@@ -679,6 +780,10 @@ function M.scan_workflow(transcript_path, task)
       returned = journal.results[id] or nil,
       failed = journal.failed[id] or nil,
       progress = progress[id],
+      worktree = where.worktree,
+      worktree_branch = where.worktree_branch,
+      worktree_inherited = where.worktree_inherited,
+      worktree_removed = where.worktree_removed,
     }
   end
   for _, id in ipairs(journal.order) do
