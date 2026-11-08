@@ -66,6 +66,8 @@ A rewind (`/rewind`, or `Esc Esc`) is drawn as a rule in Activity, and the calls
 
 **Files a shell command changed** (`sed -i`, a script, `rm`) are listed too, from what Claude Code (2.1.300 or newer) records about each Bash command: Activity lists each such file under the command, and `<CR>` shows that command's change. Claude Code records whatever changed in the repository while the command ran, so a file something else wrote in that time is marked `≈` — another agent, one of the session's subagents, or you saving it in this Neovim. A writer the view does not know of (another editor, a build) cannot be told apart, so no `≈` means only that nothing known says otherwise. A change Claude Code kept no diff of (a binary file, a very large one) counts as `+? -?`. Only the repository the shell is in is recorded, ignored files are not, and the PowerShell tool on Windows records nothing. `bash_changes = false` turns this off.
 
+**What a command prints before its pipe.** Agents filter long output (`cargo test 2>&1 | grep FAIL`), and Claude Code keeps only what gets through. For a listed command (`cargo`, `go`, `make`, `npm`, `pytest` and others: `agents.live_output.commands`) the view also shows the last lines the command itself printed: in the float of a running or finished command, where the last 20 stay after it ends; under the command in a subagent's transcript while it runs; and as the newest line beside a running command in Activity. The agent's command and what it gets back are unchanged, and nothing is written to disk. It covers the Bash tool (Git Bash on Windows) and commands called by name, so not `./gradlew` and not the PowerShell tool. On Windows with the PowerShell tool on, PowerShell commands lose the variables your SessionStart hooks export, since Claude Code reads that file only as plain `VAR=value` lines for PowerShell. `agents.live_output = false` turns it off.
+
 ## Checkpoints
 
 `gc` draws a line through the selected session's history: from then on, what it does is listed apart from what it did before, in all three panes. Take one after you have reviewed an agent's work, and only the new work is above the line. A file edited on both sides gets a row on each, and `<CR>` on either shows just that part. `a` on the rule names it, and `gC` drops the newest. Checkpoints survive restarts.
@@ -82,7 +84,7 @@ Each agent has its own connection to Neovim, so a diff goes to the agent that as
 
 ## Configuration
 
-Every option is in the `agents` block of [`lua/claude_agents/config.lua`](../lua/claude_agents/config.lua), except the fade animation's, which [`agents/fade.lua`](../lua/claude_agents/agents/fade.lua) owns. The ones people change:
+Every option is in the `agents` block of [`lua/claude_agents/config.lua`](../lua/claude_agents/config.lua), except the fade animation's, which [`agents/fade.lua`](../lua/claude_agents/agents/fade.lua) owns, and the live output's, which [`agents/live_output.lua`](../lua/claude_agents/agents/live_output.lua) owns. The ones people change:
 
 ```lua
 agents = {
@@ -92,6 +94,7 @@ agents = {
   resume_mode = "resume",    -- "fork" resumes into a copy of the conversation
   tab_name = false,          -- e.g. "agents", for tablines that show tab names
   keymaps = { delete = false }, -- any key can be rebound, or unbound with false
+  live_output = { commands = { "cargo", "just" }, lines = 10, keep = 20, ticker = true }, -- or false
 }
 ```
 

@@ -475,6 +475,15 @@ local function get_claude_command_and_env(cmd_args, effective_config, instance, 
       env_table[key] = value
     end
   end
+
+  -- What a piped command prints before the agent's filter reads it (agents view):
+  -- shell functions the CLI runs ahead of every Bash command, through
+  -- `CLAUDE_ENV_FILE`. They report to the address the hooks above report to.
+  if env_table.CLAUDECODE_NVIM_SERVER then
+    pcall(function()
+      require("claude_agents.agents.live_output").launch_env(env_table)
+    end)
+  end
   if lc_ok then
     -- What each Bash command changed, recorded by the CLI itself (2.1.300+): it
     -- draws the diff under the command, and the agents view counts those files.

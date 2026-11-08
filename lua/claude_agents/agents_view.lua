@@ -229,6 +229,23 @@ function M.setup(full_config)
   render.setup(full_config)
   model.setup(full_config)
   require("claude_agents.agents.float").setup(full_config)
+  -- What a running command printed before the agent's pipe: the Activity row's
+  -- ticker repaints as it moves, for the session on screen.
+  local live_output = require("claude_agents.agents.live_output")
+  live_output.setup(full_config)
+  live_output.on_change("agents_view", function(changed)
+    if not (M.is_open() and tab_visible()) then
+      return
+    end
+    -- Only the selected session's rows carry a ticker: another agent's build
+    -- talking is no reason to repaint.
+    local selected = model.selected()
+    for tool_id in pairs(changed) do
+      if live_output.session_of(tool_id) == selected then
+        return model.request_refresh()
+      end
+    end
+  end)
   -- The one writer besides the agents the view can name (see `agents/writes.lua`).
   require("claude_agents.agents.writes").setup(M.is_enabled())
   model.on_change("agents_view", function()
@@ -2449,6 +2466,38 @@ local function drop_lost_float_rows(pane)
   end
 end
 
+---The last line each running shell command on screen printed before the agent's
+---pipe read it, by tool id (`agents/live_output`). The transcript's record of
+---the call goes along, so a tap is matched to it with no hook having noted it.
+---@param events table[]
+---@return table<string, string>|nil
+local function feed_tickers(events)
+  local live_output = package.loaded["claude_agents.agents.live_output"]
+  if not live_output or not live_output.is_enabled() or type(model.transcript_path) ~= "function" then
+    return nil
+  end
+  local calls
+  local session_id = model.selected()
+  local out
+  for _, event in ipairs(events) do
+    if event.kind == "tool" and event.status == "running" and event.tool_id and calls == nil then
+      -- Read only once a running call is on screen: most frames have none.
+      local path = model.transcript_path()
+      local summary = path and require("claude_agents.agents.transcript").get(path) or nil
+      calls = summary and summary.task_calls or {}
+    end
+    local call = event.kind == "tool" and event.status == "running" and calls and calls[event.tool_id]
+    if call then
+      local text = live_output.ticker(session_id, event.tool_id, { command = call.command, at = call.at })
+      if text then
+        out = out or {}
+        out[event.tool_id] = text
+      end
+    end
+  end
+  return out
+end
+
 function M.redraw()
   if not M.is_open() then
     return
@@ -2568,6 +2617,7 @@ function M.redraw()
       cwd = model.selected_cwd(),
       ages = ages,
       uncertain = uncertain,
+      tickers = feed_tickers(events),
       now = os.time(),
     })
     if same_session then

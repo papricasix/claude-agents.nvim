@@ -251,6 +251,8 @@ function M.fold_line(doc, line)
             name = block.name,
             path = type(path) == "string" and path or nil,
             label = tools.label(block.name, input),
+            -- A shell's, for matching what it printed before its pipe (`live_output`).
+            command = type(input.command) == "string" and input.command or nil,
           }
         end
       end
@@ -478,7 +480,8 @@ function M.render(doc, ctx)
       if child then
         links[#lines] = child.id
       elseif shell then
-        calls[#lines] = { tool_id = item.id, tool = item.name, label = item.label, shell = shell }
+        calls[#lines] =
+          { tool_id = item.id, tool = item.name, label = item.label, command = item.command, shell = shell }
       elseif item.id then
         -- Everything the Activity pane's row for this call would carry, so `<CR>`
         -- can open the same float it opens.
@@ -490,6 +493,9 @@ function M.render(doc, ctx)
           path = item.path,
           read = result and result.read or nil,
           status = result and result.status or nil,
+          command = item.command,
+          -- Still waiting for its result while the run goes on.
+          running = not result and (not row.state or row.state == "running") or nil,
         }
       end
     elseif item.kind == "note" then
@@ -629,6 +635,35 @@ local function restore_folds(win, folds, open)
   end)
 end
 
+local ns_live = vim.api.nvim_create_namespace("claudecode_agents_subagent_view_live")
+
+---Under each shell call still running, what its command has printed before the
+---run's pipe read it (`agents/live_output`). Virtual lines: the transcript is
+---rewritten from its first changed line every tick, and real lines would move
+---that line up to them.
+---@param buf integer
+---@param view table
+local function paint_live(buf, view)
+  local live_output = package.loaded["claude_agents.agents.live_output"]
+  pcall(vim.api.nvim_buf_clear_namespace, buf, ns_live, 0, -1)
+  if not live_output or not live_output.is_enabled() then
+    return
+  end
+  local live_panel = require("claude_agents.agents.live_panel")
+  view.live_ids = {}
+  for lnum, call in pairs(view.calls or {}) do
+    local running = call.running or (call.shell and call.shell.kind == "shell" and call.shell.state == "running")
+    if running and call.tool_id and transcript.SHELL_TOOLS[call.tool] then
+      view.live_ids[call.tool_id] = true
+      local out = live_output.get(view.opts.session_id, call.tool_id, { command = call.command })
+      local virt = out and out.running and live_panel.virt_lines(out, "    ") or nil
+      if virt then
+        pcall(vim.api.nvim_buf_set_extmark, buf, ns_live, lnum - 1, 0, { virt_lines = virt })
+      end
+    end
+  end
+end
+
 ---Rewrite only what changed, keeping the reader's folds and place.
 ---@param buf integer
 ---@param view table
@@ -691,6 +726,7 @@ local function paint(buf, view)
       end
     end
   end
+  paint_live(buf, view)
 
   local title = M.title(ctx.row)
   if title ~= view.title and vim.fn.has("nvim-0.9") == 1 then
@@ -777,6 +813,10 @@ end
 local function forget(buf)
   local view = views[buf]
   views[buf] = nil
+  local live_output = package.loaded["claude_agents.agents.live_output"]
+  if live_output then
+    live_output.on_change("subagent_view:" .. buf, nil)
+  end
   if view and view.timer then
     pcall(function()
       view.timer:stop()
@@ -898,6 +938,22 @@ function M.open(opts, done)
     opts = opts,
   }
   views[buf] = view
+
+  -- A running command's panel follows its output between transcript ticks.
+  local live_output = package.loaded["claude_agents.agents.live_output"]
+  if live_output then
+    live_output.on_change("subagent_view:" .. buf, function(changed)
+      local current = views[buf]
+      if not current or not vim.api.nvim_buf_is_valid(buf) then
+        return
+      end
+      for id in pairs(changed) do
+        if current.live_ids and current.live_ids[id] then
+          return paint_live(buf, current)
+        end
+      end
+    end)
+  end
 
   local ctx = context(opts.session_path, opts.agent_id, opts.row_for, opts.history)
   view.title = M.title(ctx.row)

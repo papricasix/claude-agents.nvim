@@ -279,6 +279,18 @@ function M.open(opts, done)
     end
     local title = title_for(tool, opts.label or tools.label(tool, call.input), status)
     local win = show(opts.session_id, body, title, "claudecode://tool/" .. tool_id, opts.reuse)
+    if win and transcript.SHELL_TOOLS[tool] then
+      -- What the command printed before the agent's pipe read it, under the
+      -- command: kept a while after it ended, followed while it runs.
+      local input = type(call.input) == "table" and call.input or {}
+      local below = #tools.command_lines(tool, input)
+      require("claude_agents.agents.live_panel").attach(vim.api.nvim_win_get_buf(win), {
+        row = below > 0 and (below + 1) or 0,
+        session_id = opts.session_id,
+        tool_id = tool_id,
+        hint = { command = type(input.command) == "string" and input.command or nil, at = call.at or call.ts },
+      })
+    end
     if win and running_shell then
       wait_for_output(opts, call, tool, win)
     end

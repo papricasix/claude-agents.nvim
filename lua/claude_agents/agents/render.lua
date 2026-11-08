@@ -880,7 +880,8 @@ end
 ---Draw the activity feed, oldest first.
 ---@param buf integer
 ---@param events table[] `{ ts, kind, path, added, removed }`
----@param opts { cwd: string?, width: integer?, now: number?, ages: number[]?, uncertain: table<integer, true>? }|nil
+---@param opts { cwd: string?, width: integer?, now: number?, ages: number[]?, uncertain: table<integer, true>?,
+---             tickers: table<string, string>? }|nil `tickers`: a running command's last line, by tool id.
 function M.feed(buf, events, opts)
   opts = opts or {}
   local width = opts.width or 32
@@ -890,6 +891,8 @@ function M.feed(buf, events, opts)
   -- change may be someone else's, which other transcripts decide (`model.feed`).
   local ages = opts.ages or {}
   local uncertain = opts.uncertain or {}
+  -- By tool id, like `ages` by position: output is the view's to know, not the event's.
+  local tickers = opts.tickers or {}
   local lines, marks, payload_map = {}, {}, {}
 
   if #events == 0 then
@@ -920,7 +923,15 @@ function M.feed(buf, events, opts)
     -- Floors at 1 cell, so the marker is cut into rather than pushed off the edge.
     local room = math.max(1, width - #head - 1 - (mark and (vim.fn.strdisplaywidth(mark.text) + 1) or 0))
     local name
-    if is_tool then
+    -- A running command's latest line of output, before the agent's pipe read it
+    -- (`agents/live_output`): what it is doing now, beside what it is for.
+    local ticker = is_tool and event.status == "running" and event.tool_id and tickers[event.tool_id] or nil
+    local ticker_at
+    if is_tool and ticker then
+      local title, note = M.fit_title(event.label or event.tool or "", ticker, room)
+      name = title .. note
+      ticker_at = note ~= "" and (#head + #title) or nil
+    elseif is_tool then
       -- Cut from the end: a label is a sentence, and its first words are the ones
       -- that identify it. A path is the opposite, hence `shorten_path` below.
       name = M.truncate(event.label or event.tool or "", room)
@@ -981,7 +992,13 @@ function M.feed(buf, events, opts)
     -- drawn in the pane's own foreground so the two kinds of row are told apart
     -- by more than their column.
     local text_group = is_tool and hl("title") or hl("path")
-    marks[#marks + 1] = { row = lnum, col = #head, end_col = #head + #name, hl = fade.dim_group(text_group, age) }
+    local text_end = ticker_at or (#head + #name)
+    marks[#marks + 1] = { row = lnum, col = #head, end_col = text_end, hl = fade.dim_group(text_group, age) }
+    if ticker_at then
+      -- Quiet, and not faded: it is the newest thing on the row however old the
+      -- row is, and it changes too often to be news each time.
+      marks[#marks + 1] = { row = lnum, col = ticker_at, end_col = #head + #name, hl = hl("time") }
+    end
     if mark and mark_at then
       -- The marker does not fade with the row: "this is still running" and "this
       -- failed" are true now, however long ago the row arrived.

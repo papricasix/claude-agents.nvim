@@ -489,6 +489,12 @@ function M.dispatch(event, source_tab, agent_id)
   pcall(function()
     require("claude_agents.agents_view").note(event, source_tab, agent_id)
   end)
+  -- The shell calls a piped command's tap is matched to (`agents/live_output`).
+  if package.loaded["claude_agents.agents.live_output"] then
+    pcall(function()
+      require("claude_agents.agents.live_output").note(event)
+    end)
+  end
 
   -- Every hook payload names the session it came from. Recording it makes the
   -- id we persist per tab authoritative rather than the one we guessed at launch.

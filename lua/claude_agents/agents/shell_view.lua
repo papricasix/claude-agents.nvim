@@ -277,20 +277,23 @@ local function with_modifiable(buf, fn)
   pcall(vim.api.nvim_set_option_value, "modifiable", false, { buf = buf })
 end
 
----Rewrite the status line and the rule when what they say has changed.
+---Rewrite the status line and the rule when what they say has changed. The
+---live-output panel sits between them (`rule_row` moves with it).
 ---@param buf integer
 ---@param view table
 local function paint_head(buf, view)
   local status, glyph = M.status_text(view.row)
   local rule = M.rule_text(view)
-  if status == view.status_shown and rule == view.rule_shown then
+  if status == view.status_shown and rule == view.rule_shown and view.rule_row == view.rule_row_shown then
     return
   end
-  view.status_shown, view.rule_shown = status, rule
+  view.status_shown, view.rule_shown, view.rule_row_shown = status, rule, view.rule_row
   with_modifiable(buf, function()
-    vim.api.nvim_buf_set_lines(buf, view.status_row, view.status_row + 2, false, { status, rule })
+    vim.api.nvim_buf_set_lines(buf, view.status_row, view.status_row + 1, false, { status })
+    vim.api.nvim_buf_set_lines(buf, view.rule_row, view.rule_row + 1, false, { rule })
   end)
-  pcall(vim.api.nvim_buf_clear_namespace, buf, ns_head, view.status_row, view.status_row + 2)
+  pcall(vim.api.nvim_buf_clear_namespace, buf, ns_head, view.status_row, view.status_row + 1)
+  pcall(vim.api.nvim_buf_clear_namespace, buf, ns_head, view.rule_row, view.rule_row + 1)
   local render = require("claude_agents.agents.render")
   local group = view.row and STATE_HL[view.row.state]
   if glyph and group then
@@ -299,7 +302,7 @@ local function paint_head(buf, view)
       hl_group = render.highlight(group),
     })
   end
-  pcall(vim.api.nvim_buf_set_extmark, buf, ns_head, view.status_row + 1, 0, {
+  pcall(vim.api.nvim_buf_set_extmark, buf, ns_head, view.rule_row, 0, {
     end_col = #rule,
     hl_group = render.highlight("time"),
   })
@@ -538,6 +541,7 @@ local function show(opts, command, done)
   head[#head + 1] = ""
   view.status_row = #head
   head[#head + 1] = "" -- status, painted by paint_head
+  view.rule_row = #head
   head[#head + 1] = "" -- rule
   view.head_rows = #head
 
@@ -556,6 +560,23 @@ local function show(opts, command, done)
   end
   float.bind_close(win)
   paint_head(buf, view)
+
+  -- What the command printed before the agent's pipe read it, between how it
+  -- stands and what came out the other end (`agents/live_output`).
+  if opts.tool_id then
+    view.panel = require("claude_agents.agents.live_panel").attach(buf, {
+      row = function()
+        return view.status_row + 1
+      end,
+      session_id = opts.session_id,
+      tool_id = opts.tool_id,
+      hint = { command = view.command, at = row.started or (opts.foreground and opts.foreground.started) },
+      on_resize = function(delta)
+        view.rule_row = view.rule_row + delta
+        view.head_rows = view.head_rows + delta
+      end,
+    })
+  end
 
   pcall(vim.api.nvim_create_autocmd, "BufWipeout", {
     buffer = buf,

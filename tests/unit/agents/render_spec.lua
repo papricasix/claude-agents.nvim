@@ -88,6 +88,36 @@ describe("agents.render", function()
     end)
   end)
 
+  describe("a running command's ticker", function()
+    it("follows the row's label with the last line the command printed", function()
+      local feed = render.create_buf("feed")
+      render.feed(feed, {
+        { ts = 1785700120, kind = "tool", tool = "Bash", tool_id = "toolu_1", label = "Run tests", status = "running" },
+        { ts = 1785700000, kind = "tool", tool = "Bash", tool_id = "toolu_0", label = "Build", status = "done" },
+      }, { width = 60, tickers = { toolu_1 = "Compiling serde v1.0", toolu_0 = "never drawn: not running" } })
+      local lines = lines_of(feed)
+      expect(lines[1]:find("Run tests · Compiling serde v1.0", 1, true) ~= nil).to_be(true)
+      expect(lines[2]:find("never drawn", 1, true)).to_be(nil)
+    end)
+
+    it("gives way to the label in a narrow pane", function()
+      local feed = render.create_buf("feed")
+      render.feed(feed, {
+        {
+          ts = 1785700120,
+          kind = "tool",
+          tool = "Bash",
+          tool_id = "t",
+          label = "Run the whole suite",
+          status = "running",
+        },
+      }, { width = 28, tickers = { t = "Compiling a crate with a long name" } })
+      local line = lines_of(feed)[1]
+      expect(vim.fn.strdisplaywidth(line) <= 28).to_be_true()
+      expect(line:find("Run", 1, true) ~= nil).to_be(true)
+    end)
+  end)
+
   describe("paint", function()
     local writes, set_lines
 

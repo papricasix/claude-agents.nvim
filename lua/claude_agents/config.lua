@@ -202,6 +202,12 @@ M.defaults = {
     -- of retuning the timings changed nothing the user could see, because these
     -- copies kept overriding them. See the README for the shape and the
     -- validator below for the accepted ranges.
+    --
+    -- `live_output`: what a piped command (`cargo test 2>&1 | grep FAIL`) prints
+    -- before the agent's filter reads it, shown in the shell and tool floats and
+    -- beside a running command's Activity row. Like `fade`, its defaults live in
+    -- `agents/live_output.lua` alone: `{ enabled = true, commands = <list>,
+    -- lines = 10, keep = 20, ticker = true, frame_ms = 250 }`; `false` disables it.
     fold_batch = 2, -- transcripts folded per tick while filling the list
     follow_cursor = false, -- selecting follows the cursor in the sessions pane
     restore_panes = true, -- rebuild a sidebar the user closed
@@ -918,6 +924,34 @@ function M.validate(config)
     check("tab_name_var", function(v)
       return type(v) == "string" and v ~= ""
     end, "must be a non-empty string")
+
+    if ag.live_output ~= nil and ag.live_output ~= false then
+      assert(type(ag.live_output) == "table", "agents.live_output must be a table, or false to disable it")
+      local check_live = checker(ag.live_output, "agents.live_output")
+      check_live("enabled", is_boolean, "must be a boolean")
+      check_live("ticker", is_boolean, "must be a boolean")
+      local function count_up_to(max)
+        return function(v)
+          return type(v) == "number" and v >= 1 and v <= max and math.floor(v) == v
+        end
+      end
+      check_live("lines", count_up_to(100), "must be a whole number from 1 to 100")
+      check_live("keep", count_up_to(200), "must be a whole number from 1 to 200")
+      check_live("frame_ms", function(v)
+        return type(v) == "number" and v >= 50
+      end, "must be a number of at least 50")
+      check_live("commands", function(v)
+        if type(v) ~= "table" then
+          return false
+        end
+        for _, name in ipairs(v) do
+          if type(name) ~= "string" or not name:match("^[%w][%w._-]*$") then
+            return false
+          end
+        end
+        return true
+      end, "must be a list of command names (letters, digits, '.', '_', '-')")
+    end
 
     if ag.layout ~= nil then
       assert(type(ag.layout) == "table", "agents.layout must be a table")
