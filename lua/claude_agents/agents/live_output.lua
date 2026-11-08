@@ -74,8 +74,8 @@ M.DEFAULT_COMMANDS = {
 local DEFAULTS = {
   enabled = true,
   commands = nil, -- nil: DEFAULT_COMMANDS
-  lines = 10, -- lines shown while the command runs
-  keep = 20, -- lines kept once it has ended
+  lines = 20, -- lines shown while the command runs
+  keep = 40, -- lines kept once it has ended
   ticker = true, -- the last line beside a running command's Activity row
   frame_ms = 250, -- how often a tap reports, at most
 }
@@ -207,7 +207,7 @@ end
 ---@return string
 function M.functions_script(nvim, tap, commands)
   local n, t = sh_quote(M.sh_path(nvim)), sh_quote(M.sh_path(tap))
-  local frame, lines, keep = tostring(opts.frame_ms or 250), tostring(opts.lines or 10), tostring(opts.keep or 20)
+  local frame, lines, keep = tostring(opts.frame_ms or 250), tostring(opts.lines or 20), tostring(opts.keep or 40)
   ---@param stream string
   local function tap_cmd(stream)
     return table.concat({ n, "--headless -u NONE -i NONE -n -l", t, stream, frame, lines, keep, '"${@:1:7}"' }, " ")

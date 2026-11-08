@@ -207,7 +207,7 @@ M.defaults = {
     -- before the agent's filter reads it, shown in the shell and tool floats and
     -- beside a running command's Activity row. Like `fade`, its defaults live in
     -- `agents/live_output.lua` alone: `{ enabled = true, commands = <list>,
-    -- lines = 10, keep = 20, ticker = true, frame_ms = 250 }`; `false` disables it.
+    -- lines = 20, keep = 40, ticker = true, frame_ms = 250 }`; `false` disables it.
     fold_batch = 2, -- transcripts folded per tick while filling the list
     follow_cursor = false, -- selecting follows the cursor in the sessions pane
     restore_panes = true, -- rebuild a sidebar the user closed

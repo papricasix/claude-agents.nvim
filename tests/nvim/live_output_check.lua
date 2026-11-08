@@ -195,7 +195,7 @@ for _, shell in ipairs(shells) do
     check(got.name == "gen", k .. ": tap names " .. tostring(got and got.name))
     check(got.total == 80, k .. ": counted " .. tostring(got and got.total) .. " lines, not 80")
     check(got.lines[#got.lines] == "err 40", k .. ": last line is " .. tostring(got and got.lines[#got.lines]))
-    check(#got.lines == 20, k .. ": kept " .. tostring(got and #got.lines) .. " lines after the end, not 20")
+    check(#got.lines == 40, k .. ": kept " .. tostring(got and #got.lines) .. " lines after the end, not 40")
     local stdout_only = wait_ended(only_out.tool_id)
     check(stdout_only and stdout_only.lines[#stdout_only.lines] == "out 40", k .. ": stdout tap saw stderr")
   end

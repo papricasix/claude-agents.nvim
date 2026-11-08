@@ -27,8 +27,8 @@ local argv = _G.arg or {}
 
 local stream = argv[1] or "out"
 local frame_ms = tonumber(argv[2]) or 250
-local lines_running = tonumber(argv[3]) or 10
-local lines_kept = tonumber(argv[4]) or 20
+local lines_running = tonumber(argv[3]) or 20
+local lines_kept = tonumber(argv[4]) or 40
 local name = argv[5] or "?"
 local args = {}
 for i = 6, math.min(#argv, 11) do
@@ -36,8 +36,9 @@ for i = 6, math.min(#argv, 11) do
   args[#args + 1] = #a > 200 and a:sub(1, 200) or a
 end
 
---- Bytes of output kept to cut the last lines from.
-local TAIL = 16 * 1024
+--- Bytes of output kept to cut the last lines from: room for the kept lines
+--- at their full LINE_BYTES each.
+local TAIL = 32 * 1024
 --- A line is cut to this many bytes before it is sent.
 local LINE_BYTES = 400
 --- Stop reading while this much is queued for a slow reader.
