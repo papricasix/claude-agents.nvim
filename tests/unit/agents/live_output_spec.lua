@@ -88,6 +88,34 @@ describe("agents.live_output", function()
       expect(text:find("[ ! -x '/usr/bin/nvim' ]", 1, true) ~= nil).to_be(true)
     end)
 
+    it("on Git Bash makes tee the writer into the agent's pipe and the tap a reader of its copy", function()
+      local text = live.functions_script("/usr/bin/nvim", "/tap.lua", { "cargo" }, "tee")
+      expect(text:find("( exec > >(command tee >(", 1, true) ~= nil).to_be(true)
+      expect(text:find("both:sink 250 20 40", 1, true) ~= nil).to_be(true)
+      expect(text:find("out:sink 250 20 40", 1, true) ~= nil).to_be(true)
+      expect(text:find("err:sink 250 20 40", 1, true) ~= nil).to_be(true)
+      -- The command replaces the subshell, so no bash holds the pipe into tee.
+      expect(text:find('; exec "$@" )', 1, true) ~= nil).to_be(true)
+      -- A sink that cannot start leaves cat to drain tee's copy.
+      expect(text:find("|| exec cat >/dev/null)", 1, true) ~= nil).to_be(true)
+      expect(text:sub(-2)).to_be(":\n")
+    end)
+
+    it("stays off on Windows until the real-Neovim check has passed there", function()
+      local has = vim.fn.has
+      vim.fn.has = function(feature)
+        return feature == "win32" and 1 or has(feature)
+      end
+      finally(function()
+        vim.fn.has = has
+      end)
+      expect(live.is_enabled()).to_be(false)
+      expect(live.design()).to_be("tee")
+      live._windows = true
+      expect(live.is_enabled()).to_be(true)
+      live._windows = false
+    end)
+
     it("ends in a zero status, since the CLI runs the command only after it", function()
       local text = live.functions_script("/usr/bin/nvim", "/tap.lua", { "cargo" })
       expect(text:sub(-2)).to_be(":\n")

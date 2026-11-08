@@ -44,13 +44,35 @@ vim.fn.writefile({
   'exit "${GEN_EXIT:-3}"',
 }, gen)
 uv.fs_chmod(gen, 493) -- 0755
--- Endless, for the early-exit check.
+-- Endless, for the early-exit checks: one the shell runs itself, and one that
+-- is a native program as `cargo` is (on Windows, not a Cygwin one).
 local spew = dir .. "/bin/spew"
 vim.fn.writefile({ "#!/bin/sh", "while :; do echo y; done" }, spew)
 uv.fs_chmod(spew, 493)
-
 local live = require("claude_agents.agents.live_output")
-live.setup({ agents = { enabled = true, live_output = { commands = { "gen", "spew" }, frame_ms = 50 } } })
+local yes_lua = dir .. "/yes.lua"
+vim.fn.writefile({
+  "local uv = vim.uv or vim.loop",
+  'local chunk = string.rep("y\\n", 4096)',
+  "while uv.fs_write(1, chunk, -1) do end",
+  "os.exit(0)",
+}, yes_lua)
+local nyes = dir .. "/bin/nyes"
+vim.fn.writefile({
+  "#!/bin/sh",
+  ("exec '%s' --headless -u NONE -i NONE -n -l '%s'"):format(live.sh_path(vim.v.progpath), live.sh_path(yes_lua)),
+}, nyes)
+uv.fs_chmod(nyes, 493)
+
+-- Windows is off until this check passes there; it is what turns it on.
+live._windows = true
+-- `LIVE_OUTPUT_DESIGN=tee` runs the Git Bash design on any system.
+local design = os.getenv("LIVE_OUTPUT_DESIGN")
+if design == "tee" or design == "direct" then
+  live._design = design
+end
+live.setup({ agents = { enabled = true, live_output = { commands = { "gen", "spew", "nyes" }, frame_ms = 50 } } })
+io.write(("design: %s\n"):format(live.design()))
 
 local server = vim.v.servername
 if server == nil or server == "" then
@@ -84,8 +106,12 @@ else
   if exists("/bin/bash") and uv.fs_realpath("/bin/bash") ~= found then
     add_shell("bash", "/bin/bash")
   end
-  add_shell("zsh", vim.fn.exepath("zsh"))
-  add_shell("sh", vim.fn.exepath("sh"))
+  -- The tee design is Git Bash's, where commands always run in bash: zsh does
+  -- not apply a `2>&1` the way it needs inside its `exec`ed subshell.
+  if live.design() ~= "tee" then
+    add_shell("zsh", vim.fn.exepath("zsh"))
+    add_shell("sh", vim.fn.exepath("sh"))
+  end
 end
 check(#shells > 0, "found no bash or zsh to run")
 
@@ -113,11 +139,26 @@ end
 local session = "11111111-2222-3333-4444-555555555555"
 local tool_counter = 0
 
+---Stop a job and everything it started: a hung pipeline leaves its producer
+---running otherwise.
+---@param job integer
+local function kill_tree(job)
+  local ok, pid = pcall(vim.fn.jobpid, job)
+  if ok and type(pid) == "number" and pid > 0 then
+    if windows then
+      vim.fn.system({ "taskkill", "/T", "/F", "/PID", tostring(pid) })
+    else
+      pcall(uv.kill, -pid, "sigkill") -- its own process group (`detach`)
+    end
+  end
+  pcall(vim.fn.jobstop, job)
+end
+
 ---Run a command the way the CLI does: `<earlier steps> && <env file> : && eval <cmd>`.
 ---@param shell { kind: string, path: string }
 ---@param command string
----@param opts { env_file: string?, call: boolean?, preamble: string? }|nil
----@return { out: string, code: integer, tool_id: string, ms: number }
+---@param opts { env_file: string?, call: boolean?, preamble: string?, timeout_ms: integer?, may_hang: boolean? }|nil
+---@return { out: string, code: integer, tool_id: string, ms: number, hung: boolean? }
 local function run(shell, command, opts)
   opts = opts or {}
   tool_counter = tool_counter + 1
@@ -138,6 +179,8 @@ local function run(shell, command, opts)
   local code
   local job = vim.fn.jobstart({ shell.path, "-c", script }, {
     cwd = dir,
+    -- A process group of its own on Unix, so a hung pipeline can be killed whole.
+    detach = not windows,
     env = {
       PATH = dir .. "/bin" .. (windows and ";" or ":") .. (vim.env.PATH or ""),
       CLAUDECODE_NVIM_SERVER = server,
@@ -153,15 +196,19 @@ local function run(shell, command, opts)
   })
   check(job > 0, shell.kind .. ": could not start")
   -- Not `jobwait`: it would keep this Neovim from answering the tap.
-  local done = vim.wait(20000, function()
+  local done = vim.wait(opts.timeout_ms or 20000, function()
     return code ~= nil
   end, 10)
-  check(done, shell.kind .. ": `" .. command .. "` did not finish")
+  if not done then
+    kill_tree(job)
+    check(opts.may_hang, shell.kind .. ": `" .. command .. "` did not finish (killed)")
+  end
   return {
     out = table.concat(chunks, ""),
     code = code,
     tool_id = tool_id,
     ms = (uv.hrtime() - started) / 1e6,
+    hung = not done or nil,
   }
 end
 
@@ -208,10 +255,44 @@ for _, shell in ipairs(shells) do
   end
   check(run(shell, "gen >/dev/null 2>&1; echo status=$?").out:find("status=3", 1, true), k .. ": unpiped exit status")
 
-  -- A reader that leaves early stops the producer, as without the tap.
-  local early = run(shell, "spew | head -1")
-  check(early.out:gsub("%s+$", "") == "y", k .. ": `| head -1` printed " .. early.out)
-  check(early.ms < 5000, k .. ": `| head -1` took " .. math.floor(early.ms) .. " ms")
+  -- A reader that leaves early stops the producer, as without the tap. Each
+  -- case is printed, so one run on a new platform says which link holds: the
+  -- shell stopping a native writer at all (`baseline`, which the tapped cases
+  -- need), a function holding the pipe with no tap (`info`: it decides nothing,
+  -- it says why a design is needed), and the tap with a shell-run and a native
+  -- producer.
+  if real then
+    local cases = {
+      { kind = "baseline", label = "native writer, plain", cmd = "command nyes | head -1" },
+      {
+        kind = "info",
+        label = "native writer in a function, no tap",
+        cmd = "__check_plain | head -1",
+        preamble = "__check_plain() { command nyes; }",
+      },
+      { kind = "tapped", label = "shell-run writer, tapped", cmd = "spew | head -1" },
+      { kind = "tapped", label = "native writer, tapped", cmd = "nyes | head -1" },
+    }
+    local baseline_ok = true
+    for _, case in ipairs(cases) do
+      local r = run(shell, case.cmd, { preamble = case.preamble, timeout_ms = 10000, may_hang = true })
+      local ok = not r.hung and r.out:gsub("%s+$", "") == "y"
+      io.write(
+        ("  %s · %-38s %s\n"):format(
+          k,
+          case.label,
+          r.hung and "HUNG (killed)" or ("%s %d ms"):format(ok and "ok" or "wrong output", r.ms)
+        )
+      )
+      if case.kind == "baseline" then
+        baseline_ok = ok
+        check(ok, k .. ": this shell does not stop a native writer whose reader quit, with no tap at all")
+      elseif case.kind == "tapped" then
+        check(ok, k .. ": `" .. case.cmd .. "` " .. (r.hung and "did not finish" or ("printed " .. r.out)))
+      end
+    end
+    check(baseline_ok, k .. ": baseline failed")
+  end
 
   -- Unpiped output reaches the CLI's file whole: no tap.
   local unpiped = run(shell, "gen >/dev/null 2>&1")

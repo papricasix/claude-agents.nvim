@@ -9,7 +9,9 @@
 --                           <stream> <frame_ms> <lines> <keep> cargo <args…>)
 --
 -- `<stream>` is which of the command's streams come through here: `out`,
--- `both` (stdout and stderr shared one pipe, `2>&1`), or `err`.
+-- `both` (stdout and stderr shared one pipe, `2>&1`), or `err`. With `:sink`
+-- after it (`both:sink`) the tap only reads: on Git Bash `tee` passes the bytes
+-- on and hands it a copy (see `agents/live_output.lua`).
 --
 -- Rules this file keeps, since a mistake here breaks the agent's command rather
 -- than a view:
@@ -19,6 +21,7 @@
 --   are flowing; a Neovim that is gone or busy costs nothing but the frames.
 -- * Never outlive the reader: once the downstream end is closed (`| head -1`)
 --   it stops reading, so the command gets SIGPIPE as it would have without us.
+--   A sink reads to the end, whatever happens: `tee` dies when a reader goes.
 -- * Raw libuv handles on both ends. Lua's `io` would translate line ends on
 --   Windows.
 
@@ -26,6 +29,10 @@ local uv = vim.uv or vim.loop
 local argv = _G.arg or {}
 
 local stream = argv[1] or "out"
+local sink = stream:sub(-5) == ":sink"
+if sink then
+  stream = stream:sub(1, -6)
+end
 local frame_ms = tonumber(argv[2]) or 250
 local lines_running = tonumber(argv[3]) or 20
 local lines_kept = tonumber(argv[4]) or 40
@@ -59,7 +66,7 @@ local id = ("%d-%.0f"):format(uv.os_getpid(), uv.hrtime())
 
 local src = uv.new_pipe(false)
 local dst
-if uv.guess_handle(1) == "pipe" then
+if not sink and uv.guess_handle(1) == "pipe" then
   dst = uv.new_pipe(false)
   if not dst:open(1) then
     dst = nil
@@ -69,7 +76,7 @@ if not src:open(0) then
   -- Not a pipe after all (the wrappers only start us on one): copy and leave.
   while true do
     local data = uv.fs_read(0, 65536, -1)
-    if not data or data == "" or not uv.fs_write(1, data, -1) then
+    if not data or data == "" or (not sink and not uv.fs_write(1, data, -1)) then
       os.exit(0)
     end
   end
@@ -232,6 +239,9 @@ local function on_read(err, data)
     return drain_then_finish()
   end
   keep(data)
+  if sink then
+    return
+  end
   if not dst then
     if not uv.fs_write(1, data, -1) then
       stop_reading()
