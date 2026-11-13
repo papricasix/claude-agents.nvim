@@ -569,14 +569,16 @@ local UUID = table.concat({
   string.rep("%x", 12),
 }, "%-")
 
---- `claude[-<uid>]/<slug>/<session>/scratchpad/<something>`, whole segments,
+--- `claude[-<uid>]/<project>/<session>/scratchpad/<something>`, whole segments,
 --- either separator. See `M.is_scratchpad`.
 local SCRATCHPAD_PATTERN = "[/\\]claude%-?%d*[/\\][^/\\]+[/\\]" .. UUID .. "[/\\]scratchpad[/\\][^/\\]"
 
 ---Whether a path lies inside a CLI session's scratchpad directory.
 ---
----The CLI builds it as `<temp root>/<claude dir>/<slug of cwd>/<session>/scratchpad`,
----and only the part from the claude directory on is the same everywhere. On
+---The CLI builds it as `<temp root>/<claude dir>/<project>/<session>/scratchpad`,
+---and only the part from the claude directory on is the same everywhere.
+---`<project>` is the slug of the cwd, or on Windows a hash of it (win32-x64
+---2.1.323; `subagents._project_temp_names`), so any one segment is taken. On
 ---Unix that directory is `claude-<uid>` under `/tmp` resolved through symlinks
 ---(`/private/tmp` on macOS). On Windows it is a bare `claude` — there is no uid —
 ---under `os.tmpdir()` (`%TEMP%`, e.g. `C:\Users\me\AppData\Local\Temp\claude\

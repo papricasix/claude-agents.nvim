@@ -134,12 +134,18 @@ describe("agents.subagents", function()
     end)
 
     describe("the tasks directory, when no record names it", function()
-      local vars, win, getenv, has
+      local vars, win, getenv, has, sha256
       local ID = "0b3c2f4e-1a2b-4c3d-8e9f-0123456789ab"
+      -- sha256("d--git-proj"): the CLI hashes the slug lowercased.
+      local DIGESTS = {
+        ["d--git-proj"] = "c6c6cac5d3834d96fd6c8e418f785490bb644be134f051dbfb91b4dcc22d108b",
+      }
+      local WIN_TEMP = "C:\\Users\\me\\AppData\\Local\\Temp/claude/"
+      local WIN_TRANSCRIPT = "C:\\Users\\me\\.claude\\projects\\D--Git-proj\\" .. ID .. ".jsonl"
 
       before_each(function()
         vars, win = {}, false
-        getenv, has = os.getenv, vim.fn.has
+        getenv, has, sha256 = os.getenv, vim.fn.has, vim.fn.sha256
         os.getenv = function(name) -- luacheck: ignore 122
           return vars[name]
         end
@@ -149,10 +155,13 @@ describe("agents.subagents", function()
           end
           return has(feature)
         end
+        vim.fn.sha256 = function(text)
+          return assert(DIGESTS[text], "unexpected sha256 input: " .. text)
+        end
       end)
 
       after_each(function()
-        os.getenv, vim.fn.has = getenv, has -- luacheck: ignore 122
+        os.getenv, vim.fn.has, vim.fn.sha256 = getenv, has, sha256 -- luacheck: ignore 122
       end)
 
       it("is the CLI's Unix rule: claude-<uid> under /tmp or the variable", function()
@@ -164,12 +173,46 @@ describe("agents.subagents", function()
         expect(dir).to_be("/scratch/claude-0/-Users-me-proj/" .. ID .. "/tasks")
       end)
 
-      it("is a bare claude under %TEMP% on Windows, where there is no uid", function()
-        win = true
-        vars.TEMP = "C:\\Users\\me\\AppData\\Local\\Temp\\"
+      it("keeps the slug on Unix, where the CLI never hashes it", function()
+        local sums = { { cwd = "/Users/me/proj" } }
+        put("/tmp/claude-0/0123456789abcdef/" .. ID .. "/tasks", {})
+        local dir = subagents.tasks_dir("/store/-Users-me-proj/" .. ID .. ".jsonl", sums)
+        expect(dir).to_be("/tmp/claude-0/-Users-me-proj/" .. ID .. "/tasks")
+      end)
+
+      describe("on Windows, a bare claude under %TEMP% (no uid)", function()
         local sums = { { cwd = "D:\\Git\\proj" } }
-        local dir = subagents.tasks_dir("C:\\Users\\me\\.claude\\projects\\D--Git-proj\\" .. ID .. ".jsonl", sums)
-        expect(dir).to_be("C:\\Users\\me\\AppData\\Local\\Temp/claude/D--Git-proj/" .. ID .. "/tasks")
+        local HASHED = WIN_TEMP .. "c6c6cac5d3834d96/" .. ID .. "/tasks"
+        local SLUG = WIN_TEMP .. "D--Git-proj/" .. ID .. "/tasks"
+
+        before_each(function()
+          win = true
+          vars.TEMP = "C:\\Users\\me\\AppData\\Local\\Temp\\"
+        end)
+
+        it("is the hashed project folder once the CLI has made it", function()
+          put(HASHED, {})
+          put(SLUG, {})
+          expect(subagents.tasks_dir(WIN_TRANSCRIPT, sums)).to_be(HASHED)
+        end)
+
+        it("is the slug folder when only that one exists (desktop hosts, older CLIs)", function()
+          put(SLUG, {})
+          expect(subagents.tasks_dir(WIN_TRANSCRIPT, sums)).to_be(SLUG)
+        end)
+
+        it("is the hashed folder when neither exists yet", function()
+          expect(subagents.tasks_dir(WIN_TRANSCRIPT, sums)).to_be(HASHED)
+        end)
+
+        it("still prefers a path the session's records state", function()
+          put(HASHED, {})
+          local stated = {
+            cwd = "D:\\Git\\proj",
+            tasks = { b1 = { output_path = "E:\\t\\claude\\x\\" .. ID .. "\\tasks\\b1.output" } },
+          }
+          expect(subagents.tasks_dir(WIN_TRANSCRIPT, { stated })).to_be("E:\\t\\claude\\x\\" .. ID .. "\\tasks")
+        end)
       end)
 
       it("follows Bun's os.tmpdir() order on Windows, skipping empty variables", function()

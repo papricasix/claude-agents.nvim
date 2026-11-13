@@ -573,14 +573,35 @@ local function env(name)
   return value ~= "" and value or nil
 end
 
+---The names the CLI may give a project's folder under its temp directory, in the
+---order they are looked for (the CLI's `projectTempDirNames`).
+---
+---On Windows the folder is the first 16 hex digits of the SHA-256 of the
+---lowercased slug (win32-x64 2.1.323), unless `CLAUDE_CODE_HOST_SHORT_TEMP_DIRS`
+---is false or the CLI runs under a desktop-app entrypoint (`claude-desktop`,
+---`claude-desktop-3p`, `local-agent`); older CLIs used the slug itself. Linux
+---and macOS keep the slug: the hashing is compiled out of those builds
+---(linux-x64, darwin-arm64 2.1.323).
+---@param slug string
+---@param win boolean
+---@return string[]
+function M._project_temp_names(slug, win)
+  if not win then
+    return { slug }
+  end
+  return { vim.fn.sha256(slug:lower()):sub(1, 16), slug }
+end
+
 ---The `tasks/` directory a session's background output is written to.
 ---
 ---Taken from any path the session's records already state (a shell's result, a
----notification's `<output-file>`), since a monitor's result states none. Failing
----that, the CLI's rule, read out of the binary (2.1.270; win32-x64 2.1.280):
----`<realpath($CLAUDE_CODE_TMPDIR or /tmp)>/claude-<uid>/<slug of cwd>/<session>/tasks`,
+---notification's `<output-file>`), since a monitor's result and a running
+---foreground command state none. Failing that, the CLI's rule, read out of the
+---binary (2.1.270; win32-x64 2.1.280, 2.1.323):
+---`<realpath($CLAUDE_CODE_TMPDIR or /tmp)>/claude-<uid>/<project>/<session>/tasks`,
 ---and on Windows `<realpath($CLAUDE_CODE_TMPDIR or os.tmpdir())>\claude\…` — no
----uid there.
+---uid there. `<project>` is one of `_project_temp_names`: the first whose
+---`tasks/` exists, else the first.
 ---@param transcript_path string
 ---@param sums table[] The session's summary and its subagents'.
 ---@return string|nil
@@ -612,7 +633,16 @@ function M.tasks_dir(transcript_path, sums)
   local root = env("CLAUDE_CODE_TMPDIR") or (win and M._win_tmpdir() or "/tmp")
   root = (uv.fs_realpath and uv.fs_realpath(root)) or root
   local claude = win and "claude" or ("claude-%d"):format(uv.getuid and uv.getuid() or 0)
-  return ("%s/%s/%s/%s/tasks"):format(root, claude, transcript.slugify(session.cwd), id)
+  local fs = transcript._io
+  local first
+  for _, name in ipairs(M._project_temp_names(transcript.slugify(session.cwd), win)) do
+    local dir = ("%s/%s/%s/%s/tasks"):format(root, claude, name, id)
+    if fs.stat and fs.stat(dir) then
+      return dir
+    end
+    first = first or dir
+  end
+  return first
 end
 
 ---Bun's `os.tmpdir()` on Windows, which the CLI's temp root falls back to:

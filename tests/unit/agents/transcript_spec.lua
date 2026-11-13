@@ -448,6 +448,8 @@ describe("agents.transcript", function()
         "/var/folders/ct/claude-501/-Users-me-proj/" .. ID .. "/scratchpad/a.md",
         "C:\\Users\\me\\AppData\\Local\\Temp\\claude\\D--Git-proj\\" .. ID .. "\\scratchpad\\a.py",
         "C:/Users/me/AppData/Local/Temp/claude/D--Git-proj/" .. ID .. "/scratchpad/a.py",
+        -- Windows names the project folder by a hash of the slug (2.1.323).
+        "C:\\Users\\me\\AppData\\Local\\Temp\\claude\\c6c6cac5d3834d96\\" .. ID .. "\\scratchpad\\a.py",
         "D:\\tmp\\claude\\D--Git-proj\\" .. ID .. "\\scratchpad\\notes\\run.txt",
       }) do
         expect(transcript.is_scratchpad(path)).to_be_true()
